@@ -225,6 +225,10 @@ in-session — see `reference-factcheck.md`).
   detector waivers (config JSON only; no inline in-file comments).
 - `mari rules add <name> --paths "<globs>" --notify "<msg>" [--exclude …]` — edit-notify rules;
   `rules discover` proposes code↔docs couplings.
+- `mari nudge add <name> --when "<glob>[#symbol]" --edit "<file>[#symbol]" [--edit …] [--message …]`
+  — directed edit obligations: when the `--when` file (or symbol span — a code function/class or
+  a markdown heading) is edited, the hook tells you to edit every `--edit` target now. "Whenever
+  X changes, update Y" → compose this. `nudge check` verifies endpoints still resolve (CI).
 - `mari zero add|remove|list <rule-id>` — per-rule zero tolerance (fires on first occurrence,
   bypassing density gates; e.g. `zero add em-dash-overuse` bans em-dashes outright).
 - `mari pin <command>` / `mari unpin <command>` — expose a verb as a standalone slash command

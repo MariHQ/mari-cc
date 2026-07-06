@@ -2,15 +2,13 @@
 
 This is the master behavioral specification for Mari, a local-first Claude Code plugin. Mari lets teams curate, search, and share their product knowledge layer, and enforces prose quality on everything Claude writes. This document defines every command, subcommand, switch, configuration key, rule, and behavior — independent of implementation language, library, or cloud choices. A companion document (the "how") will map this spec onto concrete technology.
 
-Everything here is harvested and unified from two prototypes: **bean** (knowledge connectors, hybrid search, team sync) and **mari-cli** (deterministic prose detector, editorial skill, hooks, grounding). Where the prototypes disagreed or left gaps, this document resolves them; §22 lists those resolutions explicitly.
-
 ---
 
 ## 1. Product overview
 
 Mari answers "What should our AI know, trust, and reuse?" It has five pillars:
 
-1. **Ingest & search** — make the knowledge teams already use retrievable by Claude with local hybrid search. Sources: Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, git history, and local files.
+1. **Ingest & search** — make the knowledge teams already use retrievable by Claude with local hybrid search via a rich context graph. Sources: Slack, GitHub, Granola, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, git history, and local files.
 2. **Curate** — tag knowledge as canonical, stale, deprecated, draft, internal, customer-facing, or needs-review; maintain a glossary and a facts ledger; audit the knowledge base.
 3. **Improve AI-authored content** — an editorial vocabulary (`deslop`, `tighten`, `understate`, `clarify`, `critique`, `polish`, …) plus a deterministic ~170-rule detector for AI slop, clarity, house style, and inclusive language.
 4. **Ground claims** — factcheck content against FACTS.md, source-of-truth files, and the knowledge base; catch contradictions and unsupported claims before publish.
@@ -20,34 +18,10 @@ Mari answers "What should our AI know, trust, and reuse?" It has five pillars:
 
 These are non-negotiable behaviors, carried over from the prototypes:
 
-- **Local-first.** All indexing, embedding, and search run on the user's machine. No SaaS dependency, no external LLM calls from the CLI. Team sharing goes through infrastructure the team already controls (Git, Git LFS, S3).
+- **Local-first.** All indexing, embedding, and search run on the user's machine. No hard SaaS dependency, no external LLM calls from the CLI. Team sharing goes through infrastructure the team already controls (Git LFS, S3, Mari SaaS).
 - **Configuration is files, never environment variables.** No config env vars are read. (A small set of *capability toggles* for optional ML features are permitted; see §17.4.)
 - **Credentials never enter the repo.** They live under the user's home Mari directory with restrictive permissions (dir `0700`, files `0600`).
-- **Mari never auto-syncs.** Sync hits live services; it runs only when the user asks. Read commands warn when the index is stale (see `sync.stale_days`) so the assistant can nudge.
-- **The detector reports; it never autofixes.** Rewriting is the agent's job, guided by findings. Findings are leads, not verdicts — Mari never claims text "was AI-written."
-- **Deterministic before generative.** Every quality gate has a deterministic core that runs instantly and offline. Local ML models are additive; generative passes are opt-in.
-- **Reversible-safe.** Scaffolds never overwrite without `--force`; licenses are copied verbatim, never generated; Mari never edits files outside the repo.
 - **Hooks never break the turn.** A hook always exits 0 and emits nothing on internal failure.
-- **The assistant drives the CLI; users never have to run anything.** Setup is assistant-guided. A privacy path lets users run credential commands themselves, so tokens never reach the assistant.
-
-### 1.2 Positioning
-
-- Glean is company-wide search; **Mari is project-level curated memory.**
-- Vale/Grammarly lint text; **Mari is a design system for text** wired into the agent loop: detect → rewrite → verify, plus retrieval and grounding.
-- Not an LLM wrapper: no added AI spend, no duplicate model hosting.
-
----
-
-## 2. Delivery surfaces
-
-Mari ships as a **Claude Code plugin** containing:
-
-1. **A CLI** (`mari`) — every capability is a CLI command; the plugin's skills drive it via `${CLAUDE_PLUGIN_ROOT}`. The CLI is also installable standalone.
-2. **Skills** — one router skill (`/mari`) plus connector-setup skills (`/mari:connect-slack`, etc.). Skills are user-invocable and also trigger on natural language ("what did we decide about pricing?", "tighten this README").
-3. **Pinned commands** — users can pin frequent verbs as standalone slash commands (`/search`, `/deslop`, `/factcheck`, `/tag`, `/sync`, …) via `mari pin`.
-4. **Hooks** — a post-edit hook (`PostToolUse` on `Edit|Write|MultiEdit`) that lints edited prose, fires edit-notify rules, and raises lineage/localization impact notices. Provider adapters exist for Claude Code, Cursor, Codex, and Copilot (§15).
-
-Skill/command routing rules are in §16.
 
 ---
 
@@ -62,12 +36,10 @@ Skill/command routing rules are in §16.
 | `~/.mari/scopes.json` | Per-source scope map `{source_key: "global"\|"local"}`. Default `local`. |
 | `~/.mari/<repo-slug>-<hash8>/` | Personal workspace for one repo: tracked-ref config, personal settings, state DB, index catalog, local credentials. |
 | `~/.mari/_global/` | Workspace for globally-scoped connectors (same shape as a repo workspace). |
-| `~/.mari/plugins/` | Drop-in connector plugins (§6.14). |
 | `~/.mari/skills/` | Vendored external skills (e.g. humanizer). |
 | `<repo>/.mari/config.json` | Committed, team-shared config: tracked refs, detector settings, tags policy, edit-notify rules. Versioned with code. |
 | `<repo>/.mari/config.local.json` | Personal, gitignored overrides (deep-merged over committed; `null` deletes a key). |
 | `<repo>/.mari/catalog/` | (git cloud backend only) shared index catalog, data files on Git LFS. |
-| `<repo>/.mari/knowledge/` | Gitignored markdown mirror of scanned external docs (§5.2.9). |
 | `<repo>/PRODUCT.md` | Editorial context: audience, register, voice, banned words, reading-grade target. |
 | `<repo>/STYLE.md` | House style: base guide, terminology table, formatting rules, forbidden phrasings, glossary. |
 | `<repo>/FACTS.md` | Facts ledger: one fact per line, `- fact  (source)`. |
@@ -76,12 +48,7 @@ Workspace identity: `<repo-slug>-<first-8-hex-of-hash(abs-path)>`.
 
 ### 3.2 Scopes
 
-Every connector is scoped `global` (one index shared across all repos, lives in `_global`) or `local` (per-repo). Defaults per source are listed in §6. Changing scope (`mari scope <source> <value>`):
-
-1. Moves tracked-ref lists between the repo workspace and `_global`.
-2. Moves the credential file.
-3. Purges the old workspace's index rows and vectors for that source.
-4. Updates `scopes.json` and prints a reminder to run `mari sync`.
+Every connector is scoped `global` (one index shared across all repos, lives in `_global`) or `local` (per-repo). Defaults per source are listed in §6.
 
 Searches automatically union the repo workspace and `_global` whenever any connector is global; results dedupe by `(source, doc_id, chunk_id)`.
 
@@ -90,7 +57,7 @@ Searches automatically union the repo workspace and `_global` whenever any conne
 Effective config = deep-merge, later wins:
 
 ```
-DEFAULTS → ~/.mari/config.json → <repo>/.mari/config.json → <repo>/.mari/config.local.json → personal workspace settings
+DEFAULTS → ~/.mari/config.json → <repo>/.mari/config.json
 ```
 
 List-valued tracked refs **union** across layers; scalars from more-personal layers win. `chunking` resolves as global `chunking` with `<source>.chunking` merged on top. `mari config set` coerces values to the type of the default at that dotted path (booleans accept `1/true/yes/on`).
@@ -105,9 +72,6 @@ Complete key registry with defaults. All keys settable via `mari config set <dot
 
 ```
 embedding.batch_size          = 64
-embedding.plugin              = null      # path/module exposing embed(texts) [+ embed_query(q)];
-                                          # null = built-in local model (implementation-chosen,
-                                          # task-aware doc/query prompts, normalized vectors)
 chunking.lines                = 40        # lines per window
 chunking.overlap              = 8         # shared lines between windows
 chunking.max_chars            = 2000
@@ -120,7 +84,7 @@ chunking.large_chunk_ratio    = 4         # base chunks joined per large chunk
 Per-source chunking overrides (defaults ship for chat-like sources):
 
 ```
-slack.chunking    = {lines:15, overlap:3, max_chars:1000, min_chars:20}
+slack.chunking    = {lines:5, overlap:3, max_chars:1000, min_chars:20}
 git.chunking      = {lines:15, overlap:3, max_chars:1000, min_chars:10}
 ```
 
@@ -160,17 +124,6 @@ ocr.backend            = "auto"  # auto | text | ocr-model  (§8.6)
 ocr.model              = <implementation-chosen OCR/VLM id>
 ocr.dpi                = 200
 ocr.auto_install       = true    # provision OCR toolchain on first use
-graph.enabled          = true    # deterministic edge graph (§8.4)
-plugins.paths          = []      # extra connector-plugin directories
-```
-
-Tracked-ref lists (populated by `mari track`, may live in committed or personal config; see §6 per-source):
-
-```
-slack.channels, google.docs, google.folders, github.repos, git.repos,
-confluence.spaces, confluence.pages, jira.projects, zendesk.include,
-salesforce.objects, hubspot.include, microsoft.drives, microsoft.mail,
-microsoft.teams, discord.channels, discord.guilds, localfiles.paths
 ```
 
 Any source block also accepts a per-block `lookback_days` override (resolution: source block → `<key>.lookback_days` → built-in default).
@@ -180,7 +133,6 @@ Any source block also accepts a per-block `lookback_days` override (resolution: 
 ```
 cloud.enabled  = false
 cloud.backend  = "s3"       # s3 | git
-cloud.role     = "writer"   # writer | consumer
 cloud.bucket   = ""
 cloud.prefix   = ""
 cloud.region   = ""
@@ -203,21 +155,32 @@ Waivers live **only** in config JSON — there are no inline in-file disable com
 ### 4.6 Hook
 
 ```
-hook.enabled      = true
-hook.quiet        = true    # suppress output when a file is clean
-hook.maxFindings  = 10      # per-file cap in hook output
+hook.maxFindings  = 20      # per-file cap in hook output
 hook.grammar      = false
-hook.lineage      = true    # lineage impact notices on/off
-hook.knowledge    = true    # knowledge pending-impact notices on/off
 ```
 
-### 4.7 Edit-notify rules
+### 4.7 Edit-notify rules & nudges
 
 ```
-rules = [ {name, paths: [globs], notify: "message", exclude: [globs]} ]
+rules  = [ {name, paths: [globs], notify: "message", exclude: [globs]} ]
+nudges = [ {name,
+            when:    {path: "<glob>", symbol: "<symbol>"?},     # trigger (source)
+            edit:    [{path: "<file>", symbol: "<symbol>"?}],   # targets (sinks)
+            message: "…"?,                                      # optional context for the agent
+            exclude: [globs]?} ]
 ```
 
-When any edited file matches a rule's `paths` and none of `exclude`, the post-edit hook reminds the agent to do `notify`. Fires on **any** file type, not just markdown.
+When any edited file matches a rule's `paths` and none of `exclude`, the post-edit hook reminds the agent to do `notify`.
+
+A **nudge** is stronger: when an edited file matches `when` (and none of `exclude`), the hook directs the agent to **edit** each `edit` target now — a directed edit obligation, not just a reminder. The hook itself still never modifies files (§15.1 invariants); the agent makes the edits in-session.
+
+**Span scoping via `symbol`.** Either side may name a symbol, written `path#symbol` on the CLI:
+- in code files — an exported function/class/const name, resolved to its definition span with the same symbol extraction lineage proposals use (§8.3);
+- in markdown — a heading, resolved to its section span (§11.0.4).
+
+With `when.symbol` set, the nudge fires only when the edit intersects that span, not on any edit to the file. A `symbol` on an `edit` target scopes *what* to edit there ("update the `## Rate limits` section", not "touch the file somewhere"). Symbols re-resolve at hook time, so nudges survive file rewrites where line-based spans would drift; a symbol that no longer resolves falls back to whole-file matching with a warning.
+
+A nudge is the hand-declared counterpart of a confirmed lineage edge (§8.3): the same span↔span maintenance promise, but stated by name/glob up front instead of curated from machine proposals, and matched by symbol rather than by line span + content hash. Both `rules` and `nudges` live in committed `.mari/config.json` — team-shared.
 
 ### 4.8 Curation
 
@@ -235,7 +198,6 @@ scan.google.docs        = []
 scan.google.folders     = []
 scan.slack.channels     = []
 scan.slack.lookbackDays = 14
-attn.model              = null   # path to local attention-capable model (enables --deep passes)
 assoc.attn              = 0.5    # attention blend weight for assoc scoring
 ```
 
@@ -245,11 +207,9 @@ assoc.attn              = 0.5    # attention blend weight for assoc scoring
 
 Conventions for all commands:
 
-- **Exit codes:** `0` success; `1` runtime/operation error or "no results"; `2` usage error / unknown argument. Detector-family commands: non-zero when any `error` finding exists; `--strict` also fails on `warn`.
-- Long option forms `--opt value` and `--opt=value` both accepted.
-- `--json` produces machine-readable output wherever listed.
+- **Exit codes:** `0` success; `1` runtime/operation error or "no results"; `2` usage error / unknown argument. Detector-family commands: non-zero when any `error` finding exists.
 - Mutating commands print `✓`/`✗` result lines; read commands print results or a "no matches — have you run mari sync?" nudge.
-- Read commands (`search recent doc thread neighbors related sql explore`) auto-pull the cloud replica first when cloud-enabled; on failure they warn to stderr and read the stale replica. They also warn to stderr when index age ≥ `sync.stale_days`.
+- Read commands (`search recent doc thread neighbors related sql`) auto-pull the cloud replica first when cloud-enabled; on failure they warn to stderr and read the stale replica. They also warn to stderr when index age ≥ `sync.stale_days`.
 
 ### 5.1 Setup & lifecycle
 
@@ -268,24 +228,11 @@ Providers: `confluence discord github google hubspot jira microsoft salesforce s
 #### `mari scope [source] [global|local]`
 No args → list all sources and scopes. One arg → print that source's scope. Two args → change scope per §3.2.
 
-#### `mari track <add|remove|list> [source] [ref…]`
-The single routing command for tracked refs (replaces the prototypes' write-the-config-file-directly convention and the phantom `add` command).
-- `add <source> <ref…>` — parse the ref (URL, `#channel`, `owner/repo`, `PROJ`, `source:kind:id`, path), normalize it, and append it to the right list in the right config layer (asks: personal or team-shared committed config).
-- `remove <source> <ref>` — remove; next sync prunes everything under it.
-- `list [source]` — show tracked refs per source and which config layer each came from.
-Ref grammar per source is defined in §6.
-
 #### `mari config [get PATH | set PATH VALUE | list] [--json]`
 `get` prints the JSON value at a dotted path. `list` (or bare `mari config`) prints the whole resolved config, annotated with where each value can be set. `set` writes to global config with type coercion; prints a `--rebuild` reminder when the path touches `embedding.*` or `*.chunking.*`. Unknown path → prints all known dotted paths, exit 2.
 
 #### `mari features [--json]`
 Self-description catalog: every capability grouped by intent, with the command that provides it. (Used by the skill to answer "what can Mari do?")
-
-#### `mari install [--providers=claude,cursor,codex,copilot] [--force]`
-Wires post-edit hooks and installs the skill for each provider (§15). Default: Claude always, plus any provider whose config dir already exists. Idempotent; prunes stale hook entries.
-
-#### `mari update`
-Rebuilds installed skills and re-wires hooks from the current package. Idempotent.
 
 #### `mari hooks <status|on|off|reset|ignore-rule <id>|ignore-file <glob>|ignore-value <rule> <value>> [--reason "…"]`
 Hook management + hook-scoped waivers.
@@ -299,20 +246,16 @@ Zero-tolerance list. A zero-tolerance rule fires on the first occurrence, bypass
 #### `mari rules <list|discover [--json] [--write]|add <name> --paths "<globs>" --notify "<msg>" [--exclude "<globs>"]|remove <name>>`
 Edit-notify rules (§4.7). `discover` scans the repo for code↔docs couplings (API code ↔ API docs, config ↔ config reference, …) and proposes rules; `--write` saves them.
 
-#### `mari pin <command>` / `mari unpin <command>`
-Creates/removes `.claude/commands/<command>.md` so the verb is a standalone slash command. Pinnable set: `search sync audit deslop understate tighten clarify critique polish document draft outline glossary sharpen soften harden voice cadence format delight adapt localize live factcheck docsite tag extract`.
-
-#### `mari plugins`
-Lists core connectors (always available) and drop-in plugins loaded from plugin dirs.
+#### `mari nudge <list [--json]|add <name> --when "<glob>[#symbol]" --edit "<file>[#symbol]" [--edit "…"]… [--message "…"] [--exclude "<globs>"]|remove <name>|check [--json]>`
+Nudges (§4.7): directed edit obligations — when a file matching `--when` is edited, the agent is told to edit every `--edit` target. `--edit` is repeatable (one nudge, many targets). `#symbol` scopes either side to a code symbol's definition span or a markdown heading's section. `add` validates that every named symbol resolves — unresolvable → `✗` + exit 1. `check` re-verifies all endpoints (files exist, symbols still resolve), for CI; exit 1 on any broken endpoint. Written to committed `.mari/config.json`.
 
 ### 5.2 Knowledge: sync & retrieval
 
 #### `mari sync [source] [--rebuild] [--since N]`
-Sync tracked sources into the index. Never runs automatically.
+Sync tracked sources into the index. The last sync time should be injected to remind the user to resync if too much time has gone by.
 - `source` — restrict to one source key.
 - `--rebuild` — full resweep: ignore cursors, re-fetch back `--since` days, re-embed every stored doc. Unsupported on a cloud consumer/cloud index (rebuild locally, then re-`cloud init`).
-- `--since N` — reach-back days for rebuild/first-sync (default **90**).
-Runs local-scoped sources into the repo workspace, global-scoped into `_global`. Per-doc progress to stderr. Summary: `✓ N document(s) updated, M removed — C chunk(s) embedded.` or `✓ knowledge base is up to date.` Git-backed cloud writer prints a "commit .mari" nudge. Exit 1 if any source errored (other sources still complete).
+Runs local-scoped sources into the repo workspace, global-scoped into `_global`. Per-doc progress to stderr. Summary: `✓ N document(s) updated, M removed — C chunk(s) embedded.` Git-backed cloud writer prints a "commit .mari" nudge. Exit 1 if any source errored (other sources still complete).
 
 #### `mari search "question" [flags]`
 Hybrid search (§7). Flags:
@@ -345,15 +288,7 @@ Docs one hop away in the edge graph (§8.4) from the best id/title match; each h
 #### `mari sql "SELECT …" [--global]`
 Read-only SQL over the catalog (`SELECT`/`WITH` only, else exit 2). No query → prints the schema doc. Tables: `documents`, `revisions`, `edges`, `tags`, `state`, `_chunks`. ASCII table output, cells truncated to 80 chars, `N row(s)` footer.
 
-#### `mari scan <sub>` — lightweight external-doc mirror
-For teams that want gdocs/Slack snapshots in-repo (gitignored) rather than only in the index:
-- `auth google [--method gcloud|oauth] [--credentials <file>]`, `auth slack [--token xoxp-…]`
-- `add <gdoc-url|folder-url|#channel>` / `remove <item>`
-- `sync [google|slack] [--full] [--since N] [--json]` — snapshot to `.mari/knowledge/gdocs/<slug>--<id>.md` and `.mari/knowledge/slack/<channel>/<week>.md`, re-embed, then run lineage impact.
-- `status`.
-Slack lookback default 14 days; `--since` default 90.
-
-#### `mari cloud <init|connect|role> …` and `mari pull`
+#### `mari cloud <init|connect|role> …`
 See §9.
 
 ### 5.3 Curation
@@ -405,14 +340,8 @@ Each verb has an authoritative reference flow the skill loads (§13). All preser
 
 `deslop` (strip AI tells; `--narrative` adds discourse tier §13.3) · `understate` (cut over-explanation — the #1 durable tell) · `tighten` (concision) · `clarify` (jargon, acronyms, passive→active, error-message formula) · `sharpen` (cut hedges/weasels, commit to claims without inflating) · `soften` (superlatives→checkable facts) · `critique` (score 1–5 on argument/clarity/voice-fidelity/reader-experience; no rewrite) · `polish` (final pass: resolve critique + findings error→warn→advisory, align to STYLE.md, read aloud) · `voice` (inject brand voice from PRODUCT.md) · `cadence` (vary rhythm, thin tricolons) · `format` (headings, lists, emphasis, link text, backticks) · `delight` (restrained human touches) · `harden` (edge-case microcopy, error formula, i18n expansion budget ~30%) · `adapt` (rework for another channel) · `localize` (prep for translation + global English) · `draft` (outline→write→self-deslop→detect) · `outline` (annotated outline only) · `document` (infer STYLE.md from good existing writing) · `humanize` (apply vendored humanizer skill, then re-detect).
 
-#### `mari live [<file>] [--n=K] [--stdin]`
-Sentence iteration: prints a tighter deterministic variant (lexicon swaps) plus its findings; the agent supplies bolder/quieter variants in-session.
-
 #### `mari humanize [ensure|update|status] [--json]`
 Vendored external humanizer skill management: `ensure` clones on first use into `~/.mari/skills/humanizer` and prints the SKILL.md path; `update` fetches + hard-resets that checkout only; `status` prints revision.
-
-#### `mari narrative <questions [--register prose|fiction] [--json] | score --answers <file> [--json]>`
-Narrative-slop scoring (0–100, lower = more human) from a fixed research questionnaire (prose register = 15 items, fiction = 33). The CLI does arithmetic only; the agent answers the questionnaire. Human baseline ~30–35; the flow explicitly does not chase zero and never fabricates mess.
 
 ### 5.5 Grounding
 
@@ -435,9 +364,6 @@ Doc-platform detection and scaffolding. Scaffoldable: `mkdocs docusaurus sphinx 
 #### `mari check [--json] [--strict] [--deep [--limit N] [--threshold 0.3]]`
 Whole-project docs validation: internal links + anchors resolve; nav↔files agree; community-health files present (README/LICENSE/CONTRIBUTING required; CODE_OF_CONDUCT/SECURITY/CHANGELOG recommended) and structurally valid. Rules: `link-broken`, `nav-missing-target`, `nav-orphan-page`, `community-missing-file`, plus asset rules. Respects `ignoreRules` but **not** `ignoreFiles` (structural defects can't be hidden by prose waivers). `--deep` adds attention passes over the public API surface: undocumented symbols and doc sentences anchored to nothing.
 
-#### `mari surface [dir] [--json]`
-Prints the extracted public API surface (exports/public symbols for the repo's languages) with `file:line`. Feeds `check --deep` and docsite grounding.
-
 #### `docsite` (agent flow; entry `mari docsite` via pin or `/mari docsite`)
 Seven phases: survey codebase → choose platform (`mari platform`) → design IA (Diátaxis) → write every page grounded in code (`mari surface`, `mari explore`) → community-health files (license copied verbatim, everything else templated with `<placeholders>`) → validate `mari check --strict` (+ `--deep`) → keep alive (hook + `rules discover` + CI gate).
 
@@ -447,31 +373,13 @@ Seven phases: survey codebase → choose platform (`mari platform`) → design I
 List a file's translations/source across supported localization layouts (suffix `README.es.md`; dir `docs/{en,fr}/`; Hugo `content.zh`; Docusaurus `i18n/<lang>/...`).
 
 #### `mari i18n conform <file|dir> [--deep [--limit N]] [--strict]`
-Check translations share the source's structure (headings, code blocks, links). Directory = one-pass sweep. `--deep` adds attention prose-coverage. Mari never translates — structural lockstep only.
+Check translations share the source's structure (headings, code blocks, links). Directory = one-pass sweep. `--deep` adds attention prose-coverage.
 
 #### `mari i18n coverage <source> [translation]`
 Attention pass: flag source passages the translation barely covers.
 
 The post-edit hook raises an i18n staleness note when a source-language file with siblings is edited (e.g. editing `docs/en/pricing.md` flags `docs/es/pricing.md`, `docs/fr/pricing.md`).
 
-### 5.8 Context graph & exploration
-
-#### `mari explore "<question>" | <file> [flags]`
-RAG search over the current repo's own content (distinct from `search`, which queries connected sources). Flags: `--k N` (default 20), `--deep` (attention rerank), `--focus` (localize attention within top files), `--limit N`, `--threshold t`, `--knowledge` (search only the `.mari/knowledge/` mirror), `--json`, `--build`, `--keep-comments`. Auto-builds its index on first use and self-maintains from git diffs. A file argument explores from that file's mean-chunk embedding.
-
-#### `mari assoc <build [--attn] | update | list [file] [--json] | check <file>>`
-Derived semantic associations between repo files (embeddings + nearest-neighbor + optional attention blend). `update` is git-diff-driven incremental. Powers hook "related files" notices.
-
-#### `mari lineage <sub>` — curated span↔span edges (the maintained context graph)
-- `propose [--symbols|--assoc] [--min-score s]` — candidate edges from symbol mentions and the assoc index.
-- `refine [--limit N] [--threshold t] [--id N…]` — attention pass shrinks coarse spans to precise ones.
-- `review [--limit N] [--json]` / `show <id> [--json]` — inspect.
-- `confirm <id…> [--rel r] [--note "…"] [--by llm|human]` / `reject <id…>`.
-- `link <fileA:start-end> <fileB:start-end> [--rel r]` — manual edge.
-- `impact [file…] [--json]` — edges whose endpoints drifted (content-hash change) since stamping.
-- `stamp [file…|--all] [--id N…]` — mark current content as reconciled.
-- `list [--status proposed|confirmed|rejected] [--file f] [--json]` / `stats`.
-Relations: `documents implements describes duplicates derives-from related`. A confirmed edge is a maintenance promise: the post-edit hook notices drift on either endpoint. Deprecated docs should carry a `derives-from`/`documents` edge to their replacement (used by tag display, §5.3).
 
 ---
 
@@ -552,15 +460,12 @@ Shared sync semantics:
 - **Credential:** personal API key. Stored: `{token, name}`.
 - **Documents:** one per issue (title + description + comments). Refs: `linear:TEAM`, issue/project URL. Must track ≥1. Incremental: per-team `updatedAt` cursor; prunes untracked teams.
 
-### 6.14 Connector plugins
-Any plugin file in `~/.mari/plugins/` (plus `plugins.paths`) exporting a source definition (single `SOURCE`, list `SOURCES`, or a `register()` factory) is loaded at startup, appended after core connectors and before `localfiles`. A broken plugin is logged and skipped, never fatal. A documented connector template ships with the plugin.
-
 ---
 
 ## 7. Indexing & retrieval
 
 ### 7.1 Embedding
-One built-in local embedding model (implementation-chosen; must run fully offline), task-aware (distinct document vs query encoding), normalized vectors. `embedding.plugin` swaps in any module exposing `embed(texts) -> vectors` (+ optional `embed_query`). The embedding identity (model id or `plugin:<ref>`) is recorded in state; `status` warns on mismatch with the index and recommends `mari sync --rebuild`. No silent fallback — embedding failure is loud.
+One built-in local embedding model (implementation-chosen; must run fully offline), task-aware (distinct document vs query encoding), normalized vectors. `status` warns on mismatch with the index and recommends `mari sync --rebuild`. No silent fallback — embedding failure is loud.
 
 ### 7.2 Chunking
 Fixed line windows: `lines` per window, `overlap` shared, step `max(1, lines−overlap)`; windows `< min_chars` dropped; each capped at `max_chars`. **Stable chunk ids** `<source>/<doc_id>#L<start>` (1-based) so unchanged docs re-embed nothing. `title_prefix` prepends the doc title to embedded text only (stored text stays raw). `large_chunks` joins every `large_chunk_ratio` base chunks into a coarse vector-only chunk (excluded from keyword and neighbor queries).
@@ -1281,28 +1186,62 @@ Registered per provider: Claude Code `PostToolUse` matcher `Edit|Write|MultiEdit
 1. **Prose lint** — run the detector on edited markdown (+ grammar if enabled). Output capped at `hook.maxFindings`; silent when clean and `hook.quiet`.
 2. **i18n staleness** — if the edited file has translation siblings, note which localized files likely need updates.
 3. **Edit-notify rules** — for any edited file matching a rule, emit its `notify` message (e.g. "API code changed — update docs/api/").
-4. **Lineage impact** — if a confirmed lineage edge's endpoint drifted, emit a semantic-lineage notice (`⛓ …`) telling the agent which spans to reconcile.
-5. **Association notice** — derived-assoc "related files" note (suppressed when a lineage notice already fired).
-6. **Knowledge pending-impact** — note when scanned knowledge affecting this file changed.
-7. **Tag advisories** — editing a `stale`/`deprecated`-tagged file, or referencing `internal` content from a `customer-facing` file (§10.1).
+4. **Nudges** — for any edited file matching a nudge's `when` (and, if `when.symbol` is set, an edit intersecting that resolved span), emit a directive per nudge: `✎ nudge <name>: <when-target> changed — edit <target>[, <target>…]` plus its `message`. This tells the agent to make those edits now; the hook itself still never modifies files. A symbol that fails to resolve degrades to whole-file matching with a warning.
+5. **Lineage impact** — if a confirmed lineage edge's endpoint drifted, emit a semantic-lineage notice (`⛓ …`) telling the agent which spans to reconcile. Suppressed for a span pair a nudge already fired on.
+6. **Association notice** — derived-assoc "related files" note (suppressed when a nudge or lineage notice already fired).
+7. **Knowledge pending-impact** — note when scanned knowledge affecting this file changed.
+8. **Tag advisories** — editing a `stale`/`deprecated`-tagged file, or referencing `internal` content from a `customer-facing` file (§10.1).
 
 Invariants: always exit 0; emit nothing on internal failure; respect `hook.*` toggles; never modify files.
 
 ### 15.2 Commit association (git hook, optional)
-An opt-in `post-commit` hook associates new commits with relevant knowledge (issues, conversations, docs) via the edge graph and embedding neighbors. It also flags commits that touched code covered by an edit-notify rule without a matching doc change — "context is never lost."
+An opt-in `post-commit` hook associates new commits with relevant knowledge (issues, conversations, docs) via the edge graph and embedding neighbors. It also flags commits that touched code covered by an edit-notify rule or a nudge's `when` without a matching change to the notify target / nudge `edit` targets — "context is never lost."
 
 ---
 
-## 16. Skill routing
+## 16. Command router & skill routing
 
-The `/mari` router skill:
+Mari's slash surface has two layers: a set of **standalone commands** for the high-frequency actions (so `/search why did we change pricing tiers` works without a `/mari` prefix), and the **`/mari` general router** that covers everything else — subcommand dispatch, natural-language questions, and intent phrases. Every standalone command is a thin skill wrapper over the same flow the router would run; behavior is identical whichever entry point is used.
+
+### 16.1 Standalone commands (ship by default)
+
+| Command | Flow | Notes |
+|---|---|---|
+| `/search <question>` | Knowledge flow (§16.3) | Accepts natural language ("theres an outage in #incidents, what is causing it"), not just keyword queries. Flags pass through to `mari search`. |
+| `/sync [source]` | `mari sync` | The one command **never** run unprompted; `/sync` is the explicit user prompt. |
+| `/tag <path-or-ref> <status>` | `mari tag` | Also `/tag list`, `/tag remove`. |
+| `/factcheck <file> [--source F]` | `mari factcheck` | Agent adds `--decompose` claim decomposition when depth is asked for. |
+| `/audit [path]` | `mari audit` / `mari audit kb` | Bare path → detector report; "audit the knowledge base" phrasing → `audit kb`. |
+| `/deslop <target>` | deslop verb (§13) | |
+| `/tighten <target>` | tighten verb | |
+| `/clarify <target>` | clarify verb | |
+| `/sharpen <target>` | sharpen verb | |
+| `/understate <target>` | understate verb | |
+| `/critique <target>` | critique verb | Review only; never rewrites. |
+| `/polish <target>` | polish verb | |
+| `/draft <brief>` | draft verb | |
+
+`<target>` may be a path, a natural-language reference ("the changelog", "the error copy"), or omitted — then the command applies to the file(s) just edited in the session, else asks.
+
+**Pinning.** Teams can pin any other router-reachable action as a standalone command (e.g. `/docsite`, `/glossary`, `/outline`, `/soften`) or unpin defaults; the standalone set is a projection of the router, so pinning changes discovery, never behavior. Everything remains reachable as `/mari <verb|subcommand>` regardless of what is pinned.
+
+### 16.2 The `/mari` general router
 
 - **Bare `/mari <file>` or no-arg** → run detector, surface the top 2–3 recommended verbs; never auto-edit.
-- **`/mari <known-subcommand> …`** → route to the command (init, sync, status, search, tag, config, features, docsite, …).
-- **Natural-language question** → knowledge flow: compose a toolbox, not one search — `search` with agent-generated `--variant`s, then `doc`/`thread`/`related`/`recent`/`neighbors`/`sql` as needed. Extract identifiers from early hits and feed them back as variants. **Never conclude from a truncated preview** — use `--full`. Answer from the current index even when stale; suggest `/mari sync` but never run it unprompted.
+- **`/mari <known-subcommand> …`** → route to the command (init, sync, status, search, tag, config, features, docsite, glossary, facts, extract, nudge, rules, audit, localize, …). Any standalone command's verb also works here (`/mari deslop README.md` ≡ `/deslop README.md`).
+- **Natural-language question** → knowledge flow (§16.3).
 - **Editing intent phrases** map to verbs: "make it punchier"→sharpen, "cut it down"→tighten, "make it less salesy"→soften, "sounds like AI"→deslop, "prepare for launch"→polish, etc.
+- **Coupling intent phrases** map to `nudge add`: "whenever X changes, update Y", "keep this section in sync with that function" → compose the `--when`/`--edit` pair (with `#symbol` when the user names a function or heading), confirm, and run it.
 - **Connector setup** → the relevant `connect-<source>` skill: scope question (with per-source default), method choice, click-by-click credential walkthrough, the three credential-handling paths, `mari auth` + `mari track add` + first `mari sync`, confirmation.
-- **Guardrails:** setup is assistant-guided end-to-end; the user never has to run anything (but always may). Sync is the one command never run unprompted.
+- **Ambiguity rule:** when input could be either a question or an edit request, prefer the knowledge flow for interrogatives and the detector-first flow for file references; ask only when both readings are plausible and consequential.
+
+### 16.3 Knowledge flow (shared by `/search` and `/mari <question>`)
+
+Compose a toolbox, not one search — `search` with agent-generated `--variant`s, then `doc`/`thread`/`related`/`recent`/`neighbors`/`sql` as needed. Extract identifiers from early hits and feed them back as variants. **Never conclude from a truncated preview** — use `--full`. Answer from the current index even when stale; suggest `/sync` but never run it unprompted.
+
+### 16.4 Guardrails
+
+Setup is assistant-guided end-to-end; the user never has to run anything (but always may). Sync is the one command never run unprompted — `/sync` (or an explicit ask) is the only trigger. Standalone editorial commands follow the same verb contract as the router: preserve meaning and voice, rewrite-not-delete, re-run the detector after.
 
 Connector-setup skills ship per source: `connect-slack connect-github connect-gdocs connect-confluence connect-jira connect-zendesk connect-salesforce connect-hubspot connect-microsoft connect-discord connect-linear`.
 
@@ -1314,7 +1253,7 @@ Detection and grounding are layered by model size, never "rules vs AI":
 
 1. **Tier 0 — deterministic (always on):** the full rule registry, typed-span factcheck, structural checks. Instant, offline, dependency-free.
 2. **Tier 1 — local small models (default-on once provisioned, `--no-models` to skip):** machine-likelihood (perplexity), NLI entailment/contradiction (factcheck + audit contradictions), zero-shot slop-span extraction (labels: marketing buzzword, hype phrase, vague corporate jargon, empty filler phrase, overused cliché), embeddings (search/explore/assoc). Models load lazily into a resident sidecar; only structured output crosses the boundary. *Rust:* `ort` (ONNX Runtime) or `candle` for the NLI cross-encoder and embedding models, `tokenizers` for tokenization, `gline-rs` for GLiNER slop spans, `fastembed` (fastembed-rs) as a batteries-included embedding/rerank alternative — all in-process, which removes the prototype's Python sidecar entirely.
-3. **Tier 2 — local attention/generative (opt-in via configured model):** attention grounding with three modes — **coverage** (context the query ignores: dropped translation content, stale docs↔code), **grounding** (query sentences that ignore context: fabricated/unsupported), **focus** (where attention mass lands). Powers every `--deep` flag and `lineage refine`. ~seconds per document. *Rust:* `llama-cpp-2` (llama.cpp bindings) loads the GGUF model, computes perplexity, and exposes attention capture for the mid-layer band — replacing the prototype's custom C++ binary.
+3. **Tier 2 — local attention/generative (opt-in via configured model):** attention grounding with three modes — **coverage** (context the query ignores: dropped translation content, stale docs↔code), **grounding** (query sentences that ignore context: fabricated/unsupported), **focus** (where attention mass lands). Powers every `--deep` flag and `lineage refine`. ~seconds per document. *Rust:* `llama-cpp-2` (llama.cpp bindings) loads the GGUF model (qwen3.6 0.8b only), computes perplexity, and exposes attention capture for the mid-layer band — replacing the prototype's custom C++ binary.
 4. **Agent tier:** anything requiring generation — query expansion, claim decomposition, rewriting, glossary harvest, narrative questionnaire — is done by Claude in-session. The CLI never calls an LLM.
 
 Capability env toggles (the only permitted env vars): model paths/ids for the sidecar and attention binary, device selection, and feature switches equivalent to `--models`/`--slop-spans`.
@@ -1367,20 +1306,5 @@ Capability env toggles (the only permitted env vars): model paths/ids for the si
 - **catalog** — the shared document/chunk index.
 - **tag** — a curation status on a doc or file.
 - **lineage edge** — a confirmed span↔span maintenance promise.
+- **nudge** — a hand-declared edit obligation: when a file (or symbol span) changes, the agent is directed to edit named target files/spans.
 
----
-
-## 22. Resolutions of prototype inconsistencies
-
-Decisions made in this spec where the prototypes disagreed or were incomplete:
-
-1. **`add` command:** bean's skills referenced a nonexistent `bean add`; bean's router said "write the config file directly." This spec introduces `mari track add|remove|list` as the single real command (§5.1).
-2. **Connector count:** manifests variously said 10/11/5-more. Canonical: **10 cloud connectors + git + localfiles + Linear = 13 sources**, 11 with auth.
-3. **Naming:** all bean state moves from `~/.bean`/`.bean` to `~/.mari`/`.mari`; bean's `search`/`sync`/etc. and mari-cli's `detect`/etc. merge under one `mari` binary with no namespace collisions (verified: the command sets are disjoint).
-4. **Inline waivers:** legacy `<!-- mari-disable -->` comments are dropped; waivers are config-JSON-only (`ignores`, `zero`, `hooks ignore-*`).
-5. **Env vars:** bean's "no env vars ever" holds for configuration; mari-cli's ML capability toggles survive as the narrow exception (§17.4).
-6. **Tags, glossary harvest, `extract facts`, `audit kb`, commit-association hook, Linear connector, per-team templates:** promised in PRODUCT.md but absent from both prototypes — specified here for the first time (§5.3, §10, §15.2, §6.13, §14).
-7. **mari-cli `scan` vs bean connectors:** both survive with distinct jobs — connectors feed the searchable index; `scan` keeps an in-repo, gitignored markdown mirror for lineage/impact tracking (§5.2.9).
-8. **Source-string linting:** built but disabled in the prototype; remains out of scope (§20).
-9. **Default local models:** the prototype shipped them opt-in but the roadmap intended default-on; this spec adopts default-on-once-provisioned with `--no-models` (§17).
-10. **Readability:** stays plain-pack-only (deliberately not core), honoring the prototype's design note.
