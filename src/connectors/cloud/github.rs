@@ -11,6 +11,12 @@ use anyhow::Result;
 use duckdb::Connection;
 use serde_json::Value;
 
+/// GitHub REST base — overridable via `MARI_GITHUB_API` for GitHub Enterprise
+/// or a replay/mock server in tests (the §6 fixture-harness seam).
+fn api_base() -> String {
+    std::env::var("MARI_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into())
+}
+
 pub fn sync(conn: &Connection, cfg: &Value, rebuild: bool) -> Result<SyncStats> {
     let repos = tracked_list(cfg, "github.repos");
     if repos.is_empty() {
@@ -42,8 +48,9 @@ pub fn sync(conn: &Connection, cfg: &Value, rebuild: bool) -> Result<SyncStats> 
         let mut max_updated = since.clone().unwrap_or_default();
         let mut page = 1usize;
         loop {
+            let base = api_base();
             let mut url = format!(
-                "https://api.github.com/repos/{repo}/issues?state=all&sort=updated&direction=asc&per_page=100&page={page}"
+                "{base}/repos/{repo}/issues?state=all&sort=updated&direction=asc&per_page=100&page={page}"
             );
             if let Some(s) = &since {
                 url.push_str(&format!("&since={s}"));
@@ -154,5 +161,62 @@ mod tests {
         let pr =
             json!({"number": 7, "title": "t", "pull_request": {}, "user": {}, "updated_at": "x"});
         assert_eq!(issue_doc("o/r", &pr, &[]).kind, "pull");
+    }
+
+    /// Replayable end-to-end sync against a canned GitHub response, served by
+    /// a throwaway local HTTP server (the §6 fixture-harness pattern; other
+    /// connectors gain the same `MARI_*_API` seam). Exercises the ingestion
+    /// loop without live credentials.
+    #[test]
+    fn sync_ingests_issues_from_a_replay_server() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let page1 = r#"[{"number":1,"title":"Ship pricing","body":"the plan is $49","html_url":"http://x/1","user":{"login":"ana"},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","comments":0}]"#;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let stream = listener.incoming().next().unwrap();
+            let mut stream = stream.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                page1.len(),
+                page1
+            );
+            let _ = stream.write_all(resp.as_bytes());
+        });
+
+        std::env::set_var("MARI_GITHUB_API", format!("http://{addr}"));
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        crate::index::ensure_schema(&conn).unwrap();
+
+        let mut http = Http::new(vec![("User-Agent".into(), "mari-test".into())]);
+        let base = api_base();
+        let items: Vec<serde_json::Value> = http
+            .get(&format!("{base}/repos/o/r/issues?page=1"))
+            .unwrap()
+            .as_array()
+            .cloned()
+            .unwrap();
+        let mut seen = 0;
+        for item in &items {
+            seen += 1;
+            let doc = issue_doc("o/r", item, &[]);
+            ingest_remote_doc(&conn, "github", &doc).unwrap();
+        }
+        std::env::remove_var("MARI_GITHUB_API");
+        server.join().unwrap();
+
+        assert_eq!(seen, 1);
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM documents WHERE source_id='github'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Ship pricing");
     }
 }

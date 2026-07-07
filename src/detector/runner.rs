@@ -378,6 +378,19 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     })
 }
 
+/// `mari audit [path]` — human-facing report grouped by family with
+/// bad→good example fixes. Report only; no edits.
+pub fn audit(args: &[String], json: bool) -> Result<i32> {
+    let s = settings(false, None);
+    let results = run_over(args, &s);
+    if json {
+        render::render_json(&results, false);
+    } else {
+        render::render_audit(&results);
+    }
+    Ok(0)
+}
+
 #[cfg(test)]
 mod self_test {
     use super::*;
@@ -422,17 +435,4 @@ mod self_test {
             clean.findings
         );
     }
-}
-
-/// `mari audit [path]` — human-facing report grouped by family with
-/// bad→good example fixes. Report only; no edits.
-pub fn audit(args: &[String], json: bool) -> Result<i32> {
-    let s = settings(false, None);
-    let results = run_over(args, &s);
-    if json {
-        render::render_json(&results, false);
-    } else {
-        render::render_audit(&results);
-    }
-    Ok(0)
 }

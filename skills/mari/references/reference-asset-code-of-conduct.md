@@ -21,6 +21,6 @@ Recommended: **Scope** (where it applies), **Attribution** (keep it if you adapt
 2. Enforcement gives a working, private reporting contact.
 3. Standards list both encouraged and unacceptable behavior concretely.
 4. Attribution/version retained if adapted from a known template.
-5. No placeholder emails or "[INSERT CONTACT]" left in.
+5. No unfilled placeholder emails or bracketed contact stubs left in.
 
 Leans on: structure check + `assistant-meta` (placeholder detection), `vague-link-text`.

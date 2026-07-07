@@ -316,6 +316,71 @@ fn source_table() -> Vec<(
     ]
 }
 
+/// `mari doctor` — report which optional external tools and models are present
+/// and which features they gate (SPEC §22 / portability). Never fails; it is a
+/// diagnostic.
+pub fn doctor() -> Result<i32> {
+    println!("mari doctor — optional dependencies and models\n");
+
+    println!("external tools:");
+    for (tool, gates) in [
+        (
+            "git",
+            "git-history connector, commit-association hook, humanizer, curator identity",
+        ),
+        (
+            "gcloud",
+            "Google Drive connector (rides your gcloud session)",
+        ),
+        ("aws", "S3 cloud-sharing backend"),
+        (
+            "python3",
+            "optional Unlimited-OCR model tiers (ocr.backend=auto|ocr-model)",
+        ),
+    ] {
+        let present = which(tool);
+        println!(
+            "  [{}] {:<8} {}",
+            if present { "x" } else { " " },
+            tool,
+            gates
+        );
+    }
+
+    println!("\nmodels (~/.mari/models):");
+    for spec in [
+        crate::index::vector::model_spec(),
+        crate::attn::model_spec(),
+    ] {
+        let path = crate::models::model_path(spec.file);
+        let state = if path.exists() {
+            format!(
+                "present ({} MB)",
+                std::fs::metadata(&path).map(|m| m.len() >> 20).unwrap_or(0)
+            )
+        } else {
+            format!("missing — `mari model pull {}`", spec.kind)
+        };
+        println!("  {:<10} {:<40} {state}", spec.kind, spec.file);
+    }
+
+    println!("\nfeatures:");
+    println!("  detector, factcheck, curation, connectors  — always available");
+    println!("  semantic search                            — needs the embedding model");
+    println!("  --deep / --focus / i18n coverage           — needs the attention model");
+    println!("  --grammar                                  — Harper, compiled in");
+    println!("  ocr.backend=auto|ocr-model                 — needs python3 + explicit opt-in");
+    Ok(0)
+}
+
+fn which(tool: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success() || !o.stdout.is_empty())
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{catalog_status_from_paths, combined_tag_counts, embedding_line, CatalogStatus};
@@ -512,69 +577,4 @@ mod tests {
             .unwrap();
         }
     }
-}
-
-/// `mari doctor` — report which optional external tools and models are present
-/// and which features they gate (SPEC §22 / portability). Never fails; it is a
-/// diagnostic.
-pub fn doctor() -> Result<i32> {
-    println!("mari doctor — optional dependencies and models\n");
-
-    println!("external tools:");
-    for (tool, gates) in [
-        (
-            "git",
-            "git-history connector, commit-association hook, humanizer, curator identity",
-        ),
-        (
-            "gcloud",
-            "Google Drive connector (rides your gcloud session)",
-        ),
-        ("aws", "S3 cloud-sharing backend"),
-        (
-            "python3",
-            "optional Unlimited-OCR model tiers (ocr.backend=auto|ocr-model)",
-        ),
-    ] {
-        let present = which(tool);
-        println!(
-            "  [{}] {:<8} {}",
-            if present { "x" } else { " " },
-            tool,
-            gates
-        );
-    }
-
-    println!("\nmodels (~/.mari/models):");
-    for spec in [
-        crate::index::vector::model_spec(),
-        crate::attn::model_spec(),
-    ] {
-        let path = crate::models::model_path(spec.file);
-        let state = if path.exists() {
-            format!(
-                "present ({} MB)",
-                std::fs::metadata(&path).map(|m| m.len() >> 20).unwrap_or(0)
-            )
-        } else {
-            format!("missing — `mari model pull {}`", spec.kind)
-        };
-        println!("  {:<10} {:<40} {state}", spec.kind, spec.file);
-    }
-
-    println!("\nfeatures:");
-    println!("  detector, factcheck, curation, connectors  — always available");
-    println!("  semantic search                            — needs the embedding model");
-    println!("  --deep / --focus / i18n coverage           — needs the attention model");
-    println!("  --grammar                                  — Harper, compiled in");
-    println!("  ocr.backend=auto|ocr-model                 — needs python3 + explicit opt-in");
-    Ok(0)
-}
-
-fn which(tool: &str) -> bool {
-    std::process::Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success() || !o.stdout.is_empty())
-        .unwrap_or(false)
 }

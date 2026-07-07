@@ -706,7 +706,10 @@ mod tests {
         let missing = dir.path().join("missing.md");
         let missing_arg = missing.to_string_lossy().to_string();
 
-        assert_eq!(run(&[missing_arg.clone()], false, None, false).unwrap(), 1);
+        assert_eq!(
+            run(std::slice::from_ref(&missing_arg), false, None, false).unwrap(),
+            1
+        );
         assert_eq!(
             run(
                 &[String::from("conform"), missing_arg.clone()],

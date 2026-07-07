@@ -147,8 +147,15 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
         match open_catalog(g).and_then(|conn| super::vector::sync_vectors(&conn, g, rebuild)) {
             Ok(n) => embedded_vectors += n,
             Err(e) => {
-                eprintln!("✗ vector embedding failed: {e:#}");
-                had_errors = true;
+                let msg = e.to_string();
+                if msg.contains("auto_download is off") {
+                    // Deliberately offline / keyword-only mode — warn, don't
+                    // fail the sync (docs are still indexed for keyword search).
+                    eprintln!("note: embedding model unavailable ({msg}); indexed for keyword-only search");
+                } else {
+                    eprintln!("✗ vector embedding failed: {e:#}");
+                    had_errors = true;
+                }
             }
         }
     }
