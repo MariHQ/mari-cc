@@ -14,6 +14,7 @@ pub mod rules_c;
 pub mod rules_d;
 pub mod runner;
 pub mod score;
+pub mod strings;
 
 use std::collections::HashSet;
 

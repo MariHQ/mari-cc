@@ -22,6 +22,10 @@ pub struct DetectArgs {
     pub slop_spans: bool,
     pub grammar: bool,
     pub no_config: bool,
+    /// `--strings <dir>`: lint user-facing copy extracted from code (§5.4).
+    pub strings: Option<String>,
+    /// `--labels`: treat each input line as its own unit (§5.4).
+    pub labels: bool,
 }
 
 pub struct FileResult {
@@ -122,6 +126,8 @@ pub struct DetectorSettings {
     #[allow(dead_code)] // raw globs kept for status/reporting surfaces
     pub ignore_file_globs: Vec<String>,
     pub ignore_values: serde_json::Value,
+    /// {path: [[startLine,endLine], …]} — waive findings within line ranges (§4.5).
+    pub ignore_spans: serde_json::Value,
     pub zero_tolerance: HashSet<String>,
     pub grammar: bool,
     pub glossary_groups: Vec<Vec<String>>,
@@ -177,6 +183,7 @@ pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettin
         ignore_files: b.build().unwrap_or_else(|_| GlobSet::empty()),
         ignore_file_globs: globs,
         ignore_values: det["ignoreValues"].clone(),
+        ignore_spans: det["ignoreSpans"].clone(),
         zero_tolerance: zero,
         grammar: det["grammar"].as_bool().unwrap_or(false),
         glossary_groups: crate::curation::glossary_groups(&workspace::work_root(), &cfg),
@@ -193,6 +200,7 @@ pub fn test_settings(style: &str) -> DetectorSettings {
         ignore_files: GlobSet::empty(),
         ignore_file_globs: Vec::new(),
         ignore_values: serde_json::json!({}),
+        ignore_spans: serde_json::json!({}),
         zero_tolerance: HashSet::new(),
         grammar: false,
         glossary_groups: Vec::new(),
@@ -278,6 +286,26 @@ pub fn detect_text(path: &str, text: &str, s: &DetectorSettings) -> FileResult {
         }
         (rule.run)(&ctx, &mut em);
     }
+    // ignoreSpans: {path: [[startLine,endLine], …]} — waive findings whose line
+    // falls within any listed range for this file (§4.5). Config-only, finer
+    // than ignoreFiles; lets a file that deliberately demonstrates slop waive
+    // just those spans while genuine violations elsewhere stay visible.
+    let waived_ranges: Vec<(usize, usize)> = s
+        .ignore_spans
+        .get(path)
+        .and_then(|v| v.as_array())
+        .map(|ranges| {
+            ranges
+                .iter()
+                .filter_map(|r| {
+                    let pair = r.as_array()?;
+                    let start = pair.first()?.as_u64()? as usize;
+                    let end = pair.get(1).and_then(|v| v.as_u64()).unwrap_or(start as u64) as usize;
+                    Some((start.min(end), start.max(end)))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // ignoreValues: {ruleId: [exact span values to waive]}
     let mut findings: Vec<Finding> = em
         .findings
@@ -289,6 +317,11 @@ pub fn detect_text(path: &str, text: &str, s: &DetectorSettings) -> FileResult {
                 true
             }
         })
+        .filter(|f| {
+            !waived_ranges
+                .iter()
+                .any(|(lo, hi)| f.line >= *lo && f.line <= *hi)
+        })
         .collect();
     findings.sort_by_key(|f| (f.offset, f.rule_id.clone()));
     FileResult {
@@ -296,6 +329,121 @@ pub fn detect_text(path: &str, text: &str, s: &DetectorSettings) -> FileResult {
         findings,
         word_count: ctx.word_count,
         text: text.to_string(),
+    }
+}
+
+/// Run the detector over a set of independent units (a `(source_line, text)`
+/// each), remapping every finding's line back to its source line. This backs
+/// both `--labels` (one line per unit) and `--strings` (one extracted copy
+/// string per unit), so a whole-document rule like `long-sentence` evaluates
+/// per unit instead of across unrelated units.
+pub fn detect_units(
+    path: &str,
+    full_text: &str,
+    units: &[(usize, String)],
+    s: &DetectorSettings,
+) -> FileResult {
+    let mut findings = Vec::new();
+    let mut words = 0usize;
+    for (line, unit) in units {
+        let r = detect_text(path, unit, s);
+        words += r.word_count;
+        for mut f in r.findings {
+            // detect_text located findings within the unit; shift onto the
+            // source line the unit started at (multi-line units add the rest).
+            f.line = line + f.line.saturating_sub(1);
+            findings.push(f);
+        }
+    }
+    findings.sort_by(|a, b| (a.line, a.col, &a.rule_id).cmp(&(b.line, b.col, &b.rule_id)));
+    FileResult {
+        path: path.to_string(),
+        findings,
+        word_count: words,
+        text: full_text.to_string(),
+    }
+}
+
+/// `--strings <dir>`: one `FileResult` per source file whose extracted copy
+/// produced findings, with lines pointing back into the real source.
+pub fn run_strings(dir: &str, s: &DetectorSettings) -> Vec<FileResult> {
+    let root = workspace::work_root();
+    let start = {
+        let p = PathBuf::from(dir);
+        if p.is_absolute() {
+            p
+        } else {
+            root.join(p)
+        }
+    };
+    super::strings::extract_dir(&root, &start)
+        .into_iter()
+        .map(|(rel, raw, copies)| {
+            let units: Vec<(usize, String)> =
+                copies.into_iter().map(|c| (c.line, c.text)).collect();
+            detect_units(&rel, &raw, &units, s)
+        })
+        .collect()
+}
+
+/// Why an explicitly-named markdown file produced no findings — so a file that
+/// scanned as zero units reads as an explanation, never silence (§5.4).
+pub fn skip_reason(
+    s: &DetectorSettings,
+    rel: &str,
+    path: &Path,
+    text: &str,
+) -> Option<&'static str> {
+    if file_ignored(s, rel) {
+        return Some("waived by detector.ignoreFiles");
+    }
+    if is_generated(path) {
+        return Some("generated file (CHANGELOG/HISTORY/LICENSE/NOTICE/llms.txt)");
+    }
+    if crate::i18n::is_translation_file(path) {
+        return Some("localized translation file");
+    }
+    if is_non_latin(text) {
+        return Some("non-Latin/CJK prose");
+    }
+    if is_data_like(text) {
+        return Some("data-like or link-only (few sentences; e.g. a nav list such as SUMMARY.md)");
+    }
+    if super::ctx::count_words(text) == 0 {
+        return Some("no prose content");
+    }
+    None
+}
+
+/// Split text into `(line_number, line_text)` units for `--labels`, dropping
+/// blank lines.
+fn line_units(text: &str) -> Vec<(usize, String)> {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .map(|(idx, l)| (idx + 1, l.to_string()))
+        .collect()
+}
+
+/// For each explicitly-named markdown file that will be skipped, print why.
+fn report_skips(paths: &[String], s: &DetectorSettings) {
+    let root = workspace::work_root();
+    for arg in paths {
+        let p = Path::new(arg);
+        if !p.is_file() || !is_markdown(p) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(p) else {
+            continue;
+        };
+        let rel = p
+            .strip_prefix(&root)
+            .unwrap_or(p)
+            .to_string_lossy()
+            .to_string();
+        if let Some(reason) = skip_reason(s, &rel, p, &text) {
+            eprintln!("note: {arg} scanned as zero units — {reason}");
+        }
     }
 }
 
@@ -348,12 +496,35 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
             }
         }
     }
-    let mut results: Vec<FileResult> = if args.stdin {
+    let mut results: Vec<FileResult> = if let Some(dir) = args.strings.as_deref() {
+        run_strings(dir, &s)
+    } else if args.stdin {
         use std::io::Read;
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
-        vec![detect_text("<stdin>", &buf, &s)]
+        if args.labels {
+            vec![detect_units("<stdin>", &buf, &line_units(&buf), &s)]
+        } else {
+            vec![detect_text("<stdin>", &buf, &s)]
+        }
+    } else if args.labels {
+        let root = workspace::work_root();
+        collect_files(&args.paths)
+            .iter()
+            .filter_map(|p| {
+                let rel = p
+                    .strip_prefix(&root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .to_string();
+                let text = std::fs::read_to_string(p).ok()?;
+                Some(detect_units(&rel, &text, &line_units(&text), &s))
+            })
+            .collect()
     } else {
+        // Explain why an explicitly-named markdown file scanned as zero units
+        // rather than dropping it silently (§5.4).
+        report_skips(&args.paths, &s);
         run_over(&args.paths, &s)
     };
     if args.grammar || s.grammar {
@@ -474,5 +645,62 @@ mod self_test {
             "clean text produced findings: {:?}",
             clean.findings
         );
+    }
+
+    /// §4.5 ignoreSpans: a finding whose line is inside a waived range for that
+    /// path is dropped; the same finding elsewhere in the file survives.
+    #[test]
+    fn ignore_spans_waives_findings_by_line_range() {
+        let text = "# Notes\nWe utilize the tool.\nWe utilize the tool.\n";
+        let mut s = test_settings("microsoft");
+        // Baseline: both "utilize" lines fire complex-word.
+        let base = detect_text("docs/x.md", text, &s);
+        let complex = |r: &FileResult| {
+            r.findings
+                .iter()
+                .filter(|f| f.rule_id == "complex-word")
+                .count()
+        };
+        assert_eq!(
+            complex(&base),
+            2,
+            "expected two complex-word hits, got {:?}",
+            base.findings
+        );
+
+        // Waive line 2 for this path only.
+        s.ignore_spans = serde_json::json!({ "docs/x.md": [[2, 2]] });
+        let waived = detect_text("docs/x.md", text, &s);
+        assert_eq!(
+            complex(&waived),
+            1,
+            "line-2 finding should be waived; got {:?}",
+            waived.findings
+        );
+        assert!(waived.findings.iter().all(|f| f.line != 2));
+
+        // A different path is unaffected by the waiver.
+        let other = detect_text("docs/y.md", text, &s);
+        assert_eq!(complex(&other), 2);
+    }
+
+    /// §5.4 detect_units remaps each finding onto the source line the unit
+    /// started at, so `--strings`/`--labels` report real locations.
+    #[test]
+    fn detect_units_remap_findings_to_source_lines() {
+        let s = test_settings("microsoft");
+        let units = vec![
+            (5, "We utilize the parser.".to_string()),
+            (9, "Please utilize it again.".to_string()),
+        ];
+        let r = detect_units("src/App.tsx", "raw source text", &units, &s);
+        let lines: Vec<usize> = r
+            .findings
+            .iter()
+            .filter(|f| f.rule_id == "complex-word")
+            .map(|f| f.line)
+            .collect();
+        assert_eq!(lines, vec![5, 9], "got {:?}", r.findings);
+        assert_eq!(r.text, "raw source text");
     }
 }

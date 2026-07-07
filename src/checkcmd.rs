@@ -21,6 +21,7 @@ pub fn run(
     json: bool,
     strict: bool,
     deep: bool,
+    anchors: bool,
     limit: Option<usize>,
     _threshold: Option<f64>,
 ) -> Result<i32> {
@@ -28,6 +29,10 @@ pub fn run(
     let cfg = config::resolve(Some(&root));
     let ignored = ignored_rules(&cfg);
     let mut findings = Vec::new();
+
+    if anchors && !ignored.contains("anchor-broken") {
+        findings.extend(anchor_in_code_findings(&root));
+    }
 
     if !ignored.contains("community-missing-file") || !ignored.contains("community-invalid-file") {
         findings.extend(community_findings(
@@ -91,6 +96,68 @@ pub fn run(
         Ok(1)
     } else {
         Ok(0)
+    }
+}
+
+/// §5.6 `mari docsite check`: the focused link validator — internal links and
+/// anchors resolve and nav↔files agree — scoped to the docs tree, without the
+/// community/asset/deep passes the whole-project `mari check` also runs. When
+/// `anchors` is set it also validates in-page `#anchor`→`id` links in HTML/JSX.
+pub fn run_links(json: bool, strict: bool, anchors: bool) -> Result<i32> {
+    let root = workspace::work_root();
+    let cfg = config::resolve(Some(&root));
+    let ignored = ignored_rules(&cfg);
+    let mut findings = Vec::new();
+
+    if !ignored.contains("link-broken") {
+        let docs = markdown_files(&root);
+        findings.extend(link_findings(&root, &docs));
+    }
+    if !ignored.contains("nav-missing-target") || !ignored.contains("nav-orphan-page") {
+        let docs = markdown_files(&root);
+        findings.extend(nav_findings(
+            &root,
+            &docs,
+            !ignored.contains("nav-missing-target"),
+            !ignored.contains("nav-orphan-page"),
+        ));
+    }
+    if anchors && !ignored.contains("anchor-broken") {
+        findings.extend(anchor_in_code_findings(&root));
+    }
+
+    render_findings(json, &findings)?;
+    Ok(exit_code(&findings, strict))
+}
+
+fn render_findings(json: bool, findings: &[Finding]) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(findings)?);
+    } else if findings.is_empty() {
+        println!("check: ok");
+    } else {
+        for finding in findings {
+            let target = finding
+                .target
+                .as_ref()
+                .map(|t| format!(" -> {t}"))
+                .unwrap_or_default();
+            println!(
+                "{} {} {}{}",
+                finding.severity, finding.rule_id, finding.path, target
+            );
+            println!("  {}", finding.message);
+        }
+    }
+    Ok(())
+}
+
+fn exit_code(findings: &[Finding], strict: bool) -> i32 {
+    let has_error = findings.iter().any(|f| f.severity == "error");
+    if has_error || (strict && !findings.is_empty()) {
+        1
+    } else {
+        0
     }
 }
 
@@ -464,6 +531,99 @@ fn unanchored_doc_findings(root: &Path, limit: Option<usize>, threshold: f64) ->
             Err(e) => {
                 eprintln!("✗ check --deep attention pass failed: {e:#}");
                 break;
+            }
+        }
+    }
+    out
+}
+
+/// §5.6 `--anchors`: extend anchor validation beyond markdown to in-page
+/// `#anchor`→`id` links in HTML and JSX (code-based sites). Deterministic
+/// static parse: each `href="#x"` must resolve to an `id="x"` in the same file.
+fn anchor_in_code_findings(root: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for path in code_markup_files(root) {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let ids = code_ids(&text);
+        for (anchor, line) in code_hash_hrefs(&text) {
+            if !ids.contains(&anchor) {
+                out.push(Finding {
+                    rule_id: "anchor-broken",
+                    severity: "error",
+                    path: rel(root, &path),
+                    message: format!(
+                        "in-page anchor `#{anchor}` (line {line}) has no matching id in this file"
+                    ),
+                    target: Some(format!("#{anchor}")),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn code_markup_files(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .filter_entry(|e| {
+            let name = e.file_name().to_string_lossy();
+            !(e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && matches!(
+                    name.as_ref(),
+                    ".git"
+                        | ".mari"
+                        | "target"
+                        | "node_modules"
+                        | "dist"
+                        | "build"
+                        | ".next"
+                        | "coverage"
+                        | "vendor"
+                ))
+        })
+        .build()
+        .flatten()
+    {
+        let path = entry.path();
+        let is_markup = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| {
+                matches!(
+                    e.to_ascii_lowercase().as_str(),
+                    "html" | "htm" | "jsx" | "tsx"
+                )
+            })
+            .unwrap_or(false);
+        if path.is_file() && is_markup {
+            out.push(path.to_path_buf());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Collect `id="x"`, `id='x'`, and JSX `id={"x"}` / `id={'x'}` targets.
+fn code_ids(text: &str) -> BTreeSet<String> {
+    let re = regex::Regex::new(r#"\bid\s*=\s*\{?\s*["']([A-Za-z][\w:.-]*)["']"#).unwrap();
+    re.captures_iter(text)
+        .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+        .collect()
+}
+
+/// Collect in-page `href="#x"` references and their 1-based line numbers,
+/// covering HTML `href="#x"` and JSX `href={"#x"}` / `href={'#x'}`.
+fn code_hash_hrefs(text: &str) -> Vec<(String, usize)> {
+    let re = regex::Regex::new(r##"\bhref\s*=\s*\{?\s*["']#([A-Za-z][\w:.-]*)["']"##).unwrap();
+    let mut out = Vec::new();
+    for (idx, line) in text.lines().enumerate() {
+        for caps in re.captures_iter(line) {
+            if let Some(m) = caps.get(1) {
+                out.push((m.as_str().to_string(), idx + 1));
             }
         }
     }
@@ -852,6 +1012,35 @@ mod tests {
         assert!(!missing_only
             .iter()
             .any(|f| f.rule_id == "community-invalid-file"));
+    }
+
+    #[test]
+    fn anchors_flag_reports_unresolved_in_page_anchor_in_code() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Nav.tsx"),
+            "export function Nav() {\n  return (<nav>\n    <a href=\"#features\">Features</a>\n    <a href=\"#missing\">Gone</a>\n  </nav>);\n}\nexport function Features() { return <section id=\"features\" />; }\n",
+        )
+        .unwrap();
+
+        let findings = anchor_in_code_findings(root);
+        assert_eq!(findings.len(), 1, "got {findings:?}");
+        assert_eq!(findings[0].rule_id, "anchor-broken");
+        assert_eq!(findings[0].target.as_deref(), Some("#missing"));
+    }
+
+    #[test]
+    fn anchors_flag_resolves_html_id_targets() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("index.html"),
+            "<a href=\"#top\">top</a>\n<section id=\"top\">hi</section>\n",
+        )
+        .unwrap();
+
+        assert!(anchor_in_code_findings(root).is_empty());
     }
 
     #[test]
