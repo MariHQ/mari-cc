@@ -270,10 +270,15 @@ pub fn analyze(
     let middle_text = "\n</CONTEXT>\n<QUERY>\n";
     let close_text = "\n</QUERY>";
 
+    let gpu_layers = config::resolve(Some(&workspace::work_root()))["attention"]["gpu_layers"]
+        .as_i64()
+        .unwrap_or(999) as i32;
     unsafe {
         ll::llama_backend_init();
         let mut mparams = ll::llama_model_default_params();
-        mparams.n_gpu_layers = 99;
+        // Configurable GPU offload (§8.3): default 999 offloads all layers,
+        // clamped by llama.cpp; CPU fallback when no GPU is present.
+        mparams.n_gpu_layers = gpu_layers;
         let cpath = CString::new(model_path.to_string_lossy().as_bytes())?;
         let model = ll::llama_model_load_from_file(cpath.as_ptr(), mparams);
         if model.is_null() {

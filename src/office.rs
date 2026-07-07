@@ -42,7 +42,10 @@ pub fn extract(path: &Path) -> Result<String> {
     const MAX_TEXT: usize = 32 * 1024 * 1024;
     if text.len() > MAX_TEXT {
         text.truncate(MAX_TEXT);
-        eprintln!("note: {} extraction truncated at {MAX_TEXT} bytes", path.display());
+        eprintln!(
+            "note: {} extraction truncated at {MAX_TEXT} bytes",
+            path.display()
+        );
     }
     Ok(text)
 }

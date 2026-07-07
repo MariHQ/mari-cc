@@ -50,7 +50,15 @@ fn ocr_home() -> PathBuf {
 }
 
 fn venv_python() -> PathBuf {
-    ocr_home().join("venv").join("bin").join("python")
+    // Windows venvs put the interpreter under Scripts\python.exe (§8.1).
+    #[cfg(windows)]
+    {
+        ocr_home().join("venv").join("Scripts").join("python.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        ocr_home().join("venv").join("bin").join("python")
+    }
 }
 
 /// Whether this backend needs the model stack (torch/transformers), not

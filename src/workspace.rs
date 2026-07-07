@@ -120,7 +120,11 @@ impl SyncLock {
         ensure_dir(workspace_dir)?;
         let path = workspace_dir.join("sync.lock");
         if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Some(pid) = contents.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+            if let Some(pid) = contents
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
+            {
                 if process_alive(pid) {
                     return Ok(Err(pid));
                 }
@@ -160,8 +164,39 @@ fn process_alive(_pid: u32) -> bool {
     true
 }
 
-
 /// Serializes tests that mutate the process-global `HOME` env var (they would
 /// otherwise race `~/.mari` resolution across parallel test threads).
 #[cfg(test)]
 pub static HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn second_acquire_reports_holder_then_releases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let lock = SyncLock::acquire(dir)
+            .unwrap()
+            .expect("first acquire succeeds");
+        // A second acquire while held returns the holder's pid.
+        match SyncLock::acquire(dir).unwrap() {
+            Err(pid) => assert_eq!(pid, std::process::id()),
+            Ok(_) => panic!("second acquire should have been blocked"),
+        }
+        drop(lock);
+        // After release, acquire succeeds again.
+        assert!(SyncLock::acquire(dir).unwrap().is_ok());
+    }
+
+    #[test]
+    fn stale_lock_from_dead_pid_is_reclaimed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        ensure_dir(dir).unwrap();
+        // A lock file naming an impossible pid is treated as stale.
+        std::fs::write(dir.join("sync.lock"), "4294967000 2020-01-01T00:00:00Z").unwrap();
+        assert!(SyncLock::acquire(dir).unwrap().is_ok());
+    }
+}

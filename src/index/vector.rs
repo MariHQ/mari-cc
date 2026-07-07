@@ -57,7 +57,10 @@ pub fn dataset_path(global: bool) -> PathBuf {
 pub fn ensure_model() -> Result<PathBuf> {
     let cfg = config::resolve(Some(&workspace::work_root()));
     // A configured path override wins (air-gapped installs).
-    if let Some(p) = cfg["embedding"]["model"].as_str().filter(|s| !s.trim().is_empty()) {
+    if let Some(p) = cfg["embedding"]["model"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+    {
         let path = PathBuf::from(p);
         if path.exists() {
             return Ok(path);
@@ -94,7 +97,11 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
 
     let path = ensure_model()?;
     let backend = LlamaBackend::init().map_err(|e| anyhow!("llama backend init: {e}"))?;
-    let model_params = LlamaModelParams::default();
+    // Configurable GPU offload (§8.3 portability): low-VRAM machines can lower
+    // `embedding.gpu_layers`; the default 999 offloads everything (llama.cpp
+    // clamps to the model's layer count and falls back to CPU when no GPU).
+    let gpu_layers = cfg["embedding"]["gpu_layers"].as_u64().unwrap_or(999) as u32;
+    let model_params = LlamaModelParams::default().with_n_gpu_layers(gpu_layers);
     let model = LlamaModel::load_from_file(&backend, &path, &model_params)
         .map_err(|e| anyhow!("failed to load {MODEL_FILE}: {e}"))?;
 
@@ -355,10 +362,18 @@ fn check_dataset_identity(global: bool) -> Result<()> {
     }
     let conn = duckdb::Connection::open(&db)?;
     let model: Option<String> = conn
-        .query_row("SELECT value FROM schema_meta WHERE key = 'embedding.model'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'embedding.model'",
+            [],
+            |r| r.get(0),
+        )
         .ok();
     let dims: Option<String> = conn
-        .query_row("SELECT value FROM schema_meta WHERE key = 'embedding.dims'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'embedding.dims'",
+            [],
+            |r| r.get(0),
+        )
         .ok();
     if let Some(m) = model {
         if m != crate::index::EMBEDDING_MODEL {
@@ -370,7 +385,9 @@ fn check_dataset_identity(global: bool) -> Result<()> {
     }
     if let Some(d) = dims {
         if d.parse::<usize>().ok() != Some(DIMS) {
-            return Err(anyhow!("catalog vectors are {d}-dim but this build embeds {DIMS}-dim"));
+            return Err(anyhow!(
+                "catalog vectors are {d}-dim but this build embeds {DIMS}-dim"
+            ));
         }
     }
     Ok(())

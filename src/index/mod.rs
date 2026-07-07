@@ -87,7 +87,11 @@ fn sync_age_days(last_sync: &str) -> Option<i64> {
 /// SCHEMA_VERSION.
 fn migrate_schema(conn: &Connection) -> Result<()> {
     let current: Option<String> = conn
-        .query_row("SELECT value FROM schema_meta WHERE key = 'schema.version'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema.version'",
+            [],
+            |r| r.get(0),
+        )
         .ok();
     // Version 1 is the baseline; no upgrade steps exist yet. Future steps:
     //   if version < 2 { ALTER TABLE …; }

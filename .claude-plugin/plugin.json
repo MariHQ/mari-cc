@@ -1,9 +1,19 @@
 {
   "name": "mari",
   "displayName": "Mari",
-  "description": "Curate, search, and share your team's product knowledge layer — local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, git history, and local files — plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
+  "description": "Curate, search, and share your team's product knowledge layer \u2014 local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, git history, and local files \u2014 plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
   "version": "0.1.0",
-  "author": { "name": "Mari" },
-  "homepage": "https://github.com/henneberger/mari",
-  "keywords": ["knowledge", "search", "editorial", "deslop", "factcheck", "documentation"]
+  "author": {
+    "name": "Mari"
+  },
+  "homepage": "https://github.com/mari-project/mari",
+  "keywords": [
+    "knowledge",
+    "search",
+    "editorial",
+    "deslop",
+    "factcheck",
+    "documentation"
+  ],
+  "repository": "https://github.com/mari-project/mari"
 }

@@ -72,6 +72,9 @@ Complete key registry with defaults. All keys settable via `mari config set <dot
 
 ```
 embedding.batch_size          = 64
+embedding.gpu_layers          = 999       # GPU layers to offload (clamped; CPU fallback)
+embedding.auto_download       = true      # fetch the GGUF on first sync
+embedding.model               = ""        # path override for air-gapped installs
 chunking.lines                = 40        # lines per window
 chunking.overlap              = 8         # shared lines between windows
 chunking.max_chars            = 2000
@@ -1586,7 +1589,8 @@ The v1 implementation is a single Rust crate (`mari`). Where the spec left an im
 - **Humanizer vendoring** shells out to `git` for clone/update of `~/.mari/skills/humanizer`.
 - **Plugin packaging (§16):** the repo doubles as the installable Claude Code plugin: `.claude-plugin/plugin.json`, `skills/mari/SKILL.md` (with its reference flows and templates under `skills/mari/references/`), one `skills/connect-<source>/` per connector, the §16.1 default standalone commands under `commands/` (search, sync, tag, factcheck, audit, deslop, tighten, clarify, sharpen, understate, critique, polish, draft), and `hooks/hooks.json` registering the `PostToolUse` → `mari hook run` hook. Pinning/unpinning is adding or removing a command file.
 - **Lineage curation:** `mari lineage <list|add|confirm|reject>` curates §8.3 edges by hand (`--by human` edges are confirmed on creation; `--by llm` proposals start `proposed`). Machine proposal *generation* remains Tier-2 (`lineage refine`) and is out of this build.
-- **CI:** `.github/workflows/ci.yml` runs build, the full test suite, the §19 deliberate-slop self-test, and an advisory false-positive sweep over the repo's own reference docs.
+- **CI/CD:** `.github/workflows/ci.yml` runs a macOS+Linux matrix of `cargo fmt --check`, build, `cargo clippy -D warnings`, the full test suite, the §19 deliberate-slop self-test, `mari check` (self-dogfood), a `cargo-deny` job (licenses/advisories/bans), and a model-cached real-inference job (embedding sync + semantic-search assertion). `.github/workflows/release.yml` builds prebuilt binaries for macOS (arm64/x86_64) and Linux (x86_64/arm64) with SHA-256 sidecars on a `v*` tag.
+- **Portability:** GPU offload is configurable (`embedding.gpu_layers` / `attention.gpu_layers`, default 999 = offload all, clamped by llama.cpp with CPU fallback). Unix-only paths (venv `bin/` vs Windows `Scripts/`, 0600/0700 credential perms, the `sh` post-commit hook, PID liveness) are `#[cfg]`-guarded so the crate compiles on Windows; full Windows credential-ACL hardening and a Windows CI job are tracked in `docs/08`.
 - **Model provisioning (§7 security):** both GGUFs download through a shared, resumable, checksum-verified provisioner into `~/.mari/models`. `mari model pull [embedding|attention|all]` and `mari model status` make it explicit; `embedding.model`/`attention.model` config paths override for air-gapped installs (`auto_download=false`). Checksums (`MODEL_SHA256`) are wired and enforced once the pinned revision's hash is recorded.
 - **Concurrency & migrations (§8.6):** a per-workspace `sync.lock` (advisory PID file, stale locks reclaimed) makes a second concurrent `mari sync` exit cleanly. `ensure_schema` runs an idempotent, version-gated `migrate_schema` and stamps the embedding identity/dims only on creation; vector search hard-guards on an embedding-identity/dimension mismatch and refuses (pointing at `--rebuild`) rather than mixing incompatible vectors.
 - **Cloud vector replication (§9):** the Lance `vectors.lance` dataset rides alongside the catalog — copied into `.mari/catalog` under Git LFS for the git backend, `aws s3 sync`-ed for S3 — so a consumer's search isn't silently keyword-only.

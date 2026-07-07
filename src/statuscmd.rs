@@ -522,10 +522,19 @@ pub fn doctor() -> Result<i32> {
 
     println!("external tools:");
     for (tool, gates) in [
-        ("git", "git-history connector, commit-association hook, humanizer, curator identity"),
-        ("gcloud", "Google Drive connector (rides your gcloud session)"),
+        (
+            "git",
+            "git-history connector, commit-association hook, humanizer, curator identity",
+        ),
+        (
+            "gcloud",
+            "Google Drive connector (rides your gcloud session)",
+        ),
         ("aws", "S3 cloud-sharing backend"),
-        ("python3", "optional Unlimited-OCR model tiers (ocr.backend=auto|ocr-model)"),
+        (
+            "python3",
+            "optional Unlimited-OCR model tiers (ocr.backend=auto|ocr-model)",
+        ),
     ] {
         let present = which(tool);
         println!(
@@ -537,7 +546,10 @@ pub fn doctor() -> Result<i32> {
     }
 
     println!("\nmodels (~/.mari/models):");
-    for spec in [crate::index::vector::model_spec(), crate::attn::model_spec()] {
+    for spec in [
+        crate::index::vector::model_spec(),
+        crate::attn::model_spec(),
+    ] {
         let path = crate::models::model_path(spec.file);
         let state = if path.exists() {
             format!(

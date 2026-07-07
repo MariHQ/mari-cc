@@ -69,7 +69,7 @@ pub fn defaults() -> Value {
             "slack": { "channels": [], "lookbackDays": 14 }
         },
         "assoc": { "attn": 0.5 },
-        "attention": { "model": "", "auto_download": true, "threshold": 0.3 },
+        "attention": { "model": "", "auto_download": true, "threshold": 0.3, "gpu_layers": 999 },
         "humanizer": { "repo": "" }
     })
 }

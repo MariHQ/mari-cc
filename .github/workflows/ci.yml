@@ -10,13 +10,23 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
       - name: Build
         run: cargo build --locked
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Unit and fixture tests
         run: cargo test --locked
       - name: Deliberate-slop self-test (SPEC §19)
@@ -27,10 +37,50 @@ jobs:
             echo "expected findings in fixtures/sloppy.md" && exit 1
           fi
           # …and clean prose must stay clean.
-          printf '# Notes\n\nWe shipped the fix today. Tests pass.\n' > /tmp/clean.md
-          ./target/debug/mari detect /tmp/clean.md
-      - name: False-positive budget (repo docs)
+          printf '# Notes\n\nWe shipped the fix today. Tests pass.\n' > clean.md
+          ./target/debug/mari detect clean.md
+      - name: Mari passes its own check
+        run: ./target/debug/mari check
+      - name: False-positive budget (repo reference docs)
         run: |
-          # Advisory ceiling over this repo's own markdown: fail only when the
-          # detector errors out; report the count for trend-watching.
+          # Advisory sweep over Mari's own reference docs; report the histogram
+          # for trend-watching. A hard ceiling lives in the large-corpus job.
           ./target/debug/mari detect skills/mari/references --summary || true
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses advisories bans sources
+
+  # Real local-inference assertions (embedding + attention). Runs only where
+  # the model cache is available; forks without the cache still get the
+  # deterministic jobs above.
+  inference:
+    runs-on: macos-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache models
+        id: models
+        uses: actions/cache@v4
+        with:
+          path: ~/.mari/models
+          key: mari-models-v1
+      - name: Build
+        run: cargo build --locked
+      - name: Embedding + semantic search smoke
+        run: |
+          set -e
+          mkdir -p /tmp/mari-ci && cd /tmp/mari-ci && git init -q .
+          mkdir docs
+          printf '# Pricing\n\nThe enterprise plan costs $49 per seat per month.\n' > docs/pricing.md
+          M="$GITHUB_WORKSPACE/target/debug/mari"
+          "$M" track localfiles add "$PWD/docs"
+          "$M" sync localfiles
+          # A no-keyword-overlap query must still surface the pricing doc.
+          "$M" search "how much does the premium tier cost" --k 2 | grep -qi pricing

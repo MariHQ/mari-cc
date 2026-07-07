@@ -22,7 +22,6 @@ pub struct SyncStats {
     pub chunks: usize,
 }
 
-
 pub struct RemoteDoc {
     pub external_id: String,
     pub canonical_ref: String,

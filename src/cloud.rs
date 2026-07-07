@@ -252,7 +252,10 @@ fn replicate_vectors_git(catalog_dir: &Path) -> Result<()> {
 
 /// Restore the Lance vector dataset from the git catalog dir into the replica.
 fn restore_vectors_git() -> Result<()> {
-    let src = workspace::work_root().join(".mari").join("catalog").join("vectors.lance");
+    let src = workspace::work_root()
+        .join(".mari")
+        .join("catalog")
+        .join("vectors.lance");
     if src.exists() {
         let dst = crate::index::vector::dataset_path(false);
         if dst.exists() {
@@ -277,7 +280,13 @@ fn push_s3(replica: &Path, bucket: &str, prefix: &str, region: &str) -> Result<(
     let local = crate::index::vector::dataset_path(false);
     if local.exists() {
         aws(
-            &["s3", "sync", &local.to_string_lossy(), &s3_vectors_url(bucket, prefix), "--delete"],
+            &[
+                "s3",
+                "sync",
+                &local.to_string_lossy(),
+                &s3_vectors_url(bucket, prefix),
+                "--delete",
+            ],
             region,
         )?;
     }
@@ -329,7 +338,13 @@ pub fn pull() -> Result<i32> {
             )?;
             let dst = crate::index::vector::dataset_path(false);
             let _ = aws(
-                &["s3", "sync", &s3_vectors_url(bucket, prefix), &dst.to_string_lossy(), "--delete"],
+                &[
+                    "s3",
+                    "sync",
+                    &s3_vectors_url(bucket, prefix),
+                    &dst.to_string_lossy(),
+                    "--delete",
+                ],
                 region,
             );
         }

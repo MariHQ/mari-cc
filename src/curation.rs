@@ -1522,7 +1522,10 @@ pub fn humanize(action: Option<&str>, json: bool) -> Result<i32> {
                          humanizer skill has no default upstream in this build)"
                     );
                     if json {
-                        println!("{}", json!({ "ok": false, "error": "humanizer.repo not set" }));
+                        println!(
+                            "{}",
+                            json!({ "ok": false, "error": "humanizer.repo not set" })
+                        );
                     }
                     return Ok(1);
                 }

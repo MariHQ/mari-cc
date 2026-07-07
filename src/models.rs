@@ -83,7 +83,9 @@ fn download(spec: &ModelSpec, path: &std::path::Path) -> Result<()> {
     if resume_from > 0 {
         req = req.set("Range", &format!("bytes={resume_from}-"));
     }
-    let resp = req.call().map_err(|e| anyhow!("model download failed: {e}"))?;
+    let resp = req
+        .call()
+        .map_err(|e| anyhow!("model download failed: {e}"))?;
     let appending = resp.status() == 206;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -165,7 +167,10 @@ pub fn run(args: &[String]) -> Result<i32> {
             for spec in [&embedding, &attention] {
                 let p = model_path(spec.file);
                 let state = if p.exists() {
-                    format!("present ({} MB)", std::fs::metadata(&p).map(|m| m.len() >> 20).unwrap_or(0))
+                    format!(
+                        "present ({} MB)",
+                        std::fs::metadata(&p).map(|m| m.len() >> 20).unwrap_or(0)
+                    )
                 } else {
                     "missing".into()
                 };
@@ -180,7 +185,10 @@ pub fn run(args: &[String]) -> Result<i32> {
     };
     for spec in targets {
         // pull() honors auto_download intent; force it on for an explicit pull.
-        let mut spec = ModelSpec { auto_download: true, ..spec_clone(spec) };
+        let mut spec = ModelSpec {
+            auto_download: true,
+            ..spec_clone(spec)
+        };
         spec.auto_download = true;
         pull(&spec)?;
     }

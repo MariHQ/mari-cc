@@ -1,0 +1,46 @@
+name: Release
+
+# Builds prebuilt binaries per platform and attaches them to the GitHub
+# Release when a version tag is pushed (SPEC §22 distribution / docs/05).
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          bin=target/${{ matrix.target }}/release/mari
+          tar -czf mari-${{ matrix.target }}.tar.gz -C "$(dirname "$bin")" mari
+          shasum -a 256 mari-${{ matrix.target }}.tar.gz > mari-${{ matrix.target }}.tar.gz.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            mari-${{ matrix.target }}.tar.gz
+            mari-${{ matrix.target }}.tar.gz.sha256
+          generate_release_notes: true
