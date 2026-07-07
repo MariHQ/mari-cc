@@ -414,6 +414,16 @@ pub fn rank_many(
         if rows.is_empty() {
             return Ok(vec![Vec::new(); phrasings.len()]);
         }
+        // Brute-force cosine is exact and fast below the ANN row floor
+        // (SPEC §7.3, ~4096–100k). Past that, log the cliff so the operator
+        // knows an ANN index (docs/04.1) would help — the results stay correct.
+        const ANN_CLIFF: usize = 100_000;
+        if rows.len() > ANN_CLIFF {
+            eprintln!(
+                "note: {} vectors — brute-force search is O(n); consider an ANN index for lower latency (docs/04)",
+                rows.len()
+            );
+        }
         qvecs
             .iter()
             .map(|q| duckdb_cosine_topk(&rows, q, pool))

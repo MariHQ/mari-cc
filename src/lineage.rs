@@ -20,8 +20,11 @@ pub fn run(args: &[String], json: bool, by: Option<&str>, note: Option<&str>) ->
         }
         Some("confirm") => set_status(args.get(1), "confirmed"),
         Some("reject") => set_status(args.get(1), "rejected"),
+        Some("refine") => refine(args.get(1).map(|s| s.as_str()), by.unwrap_or("llm")),
         Some(other) => {
-            eprintln!("unknown lineage subcommand: {other} (list | add | confirm | reject)");
+            eprintln!(
+                "unknown lineage subcommand: {other} (list | add | confirm | reject | refine)"
+            );
             Ok(2)
         }
     }
@@ -217,6 +220,157 @@ fn list(json: bool) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// `mari lineage refine [doc-ref]` — SPEC §17 Tier-2 `lineage refine`:
+/// propose span↔span coupling edges by attention. For a doc (or all indexed
+/// markdown docs when none given), run the attention model in Focus mode with
+/// the doc as query against the repo's public code surface as context; the
+/// spans where attention concentrates become `proposed` edges (`--by llm`)
+/// for human confirm/reject. Findings are leads, not verdicts.
+fn refine(doc_ref: Option<&str>, by: &str) -> Result<i32> {
+    let root = crate::workspace::work_root();
+    // Public surface as the context corpus (the "what could this doc couple to").
+    let mut symbols = crate::surface::collect_surface(&root, &root);
+    symbols.retain(|s| matches!(s.kind.as_str(), "rust" | "js-ts" | "python" | "go"));
+    if symbols.is_empty() {
+        eprintln!("note: no public code surface found to couple against");
+        return Ok(0);
+    }
+    let mut surface_text = String::new();
+    for s in &symbols {
+        surface_text.push_str(&format!("{} {}  ({}:{})\n", s.kind, s.name, s.file, s.line));
+    }
+    surface_text.truncate(48_000);
+
+    let conn = open()?;
+    // Which docs to refine.
+    let docs: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT doc_id, COALESCE(path, canonical_ref), body FROM documents \
+             WHERE (path LIKE '%.md' OR mime_type = 'text/markdown') AND body IS NOT NULL \
+             AND (?1 IS NULL OR path LIKE '%' || ?1 OR canonical_ref = ?1) \
+             ORDER BY path LIMIT 25",
+        )?;
+        stmt.query_map(duckdb::params![doc_ref], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .flatten()
+        .collect()
+    };
+    if docs.is_empty() {
+        eprintln!("note: no indexed markdown docs to refine (run `mari sync` first)");
+        return Ok(0);
+    }
+
+    let threshold = crate::config::resolve(Some(&root))["attention"]["threshold"]
+        .as_f64()
+        .unwrap_or(0.3);
+    let mut proposed = 0usize;
+    for (doc_id, doc_desc, body) in &docs {
+        if body.trim().len() < 40 {
+            continue;
+        }
+        match crate::attn::analyze(
+            &surface_text,
+            body,
+            crate::attn::Mode::Focus,
+            threshold,
+            None,
+        ) {
+            Ok(flagged) => {
+                for f in flagged.iter().take(3) {
+                    // The focused surface region names a symbol; propose a
+                    // coupling from the doc to that symbol's file.
+                    let symbol_line = f.text.lines().next().unwrap_or("");
+                    if let Some(file) = symbol_line
+                        .split('(')
+                        .nth(1)
+                        .and_then(|s| s.split(':').next())
+                    {
+                        let file = file.trim();
+                        if propose_edge(&conn, doc_id, doc_desc, file, f.score, by)? {
+                            proposed += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("✗ lineage refine attention failed: {e:#}");
+                break;
+            }
+        }
+    }
+    println!(
+        "✓ proposed {proposed} lineage edge(s) — review with `mari lineage list`, then confirm/reject"
+    );
+    Ok(0)
+}
+
+/// Insert a proposed doc→file coupling edge (first span of each side).
+fn propose_edge(
+    conn: &Connection,
+    from_doc: &str,
+    from_desc: &str,
+    to_file: &str,
+    score: f64,
+    by: &str,
+) -> Result<bool> {
+    // Resolve the target file to an indexed doc + its first span.
+    let to = conn
+        .query_row(
+            "SELECT s.span_id, d.doc_id FROM documents d JOIN spans s ON s.doc_id = d.doc_id \
+             WHERE d.path = ?1 OR d.path LIKE '%' || ?1 ORDER BY s.start_line ASC LIMIT 1",
+            [to_file],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok();
+    let Some((to_span, _to_doc)) = to else {
+        return Ok(false);
+    };
+    let from_span: Option<String> = conn
+        .query_row(
+            "SELECT span_id FROM spans WHERE doc_id = ?1 ORDER BY start_line ASC LIMIT 1",
+            [from_doc],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(from_span) = from_span else {
+        return Ok(false);
+    };
+    let lineage_id = hash_hex(&format!("lineage:{from_span}:{to_span}"));
+    // Don't clobber an existing human decision.
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT status FROM lineage_edges WHERE lineage_id = ?1",
+            [&lineage_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if matches!(existing.as_deref(), Some("confirmed") | Some("rejected")) {
+        return Ok(false);
+    }
+    conn.execute(
+        "DELETE FROM lineage_edges WHERE lineage_id = ?1",
+        [&lineage_id],
+    )?;
+    conn.execute(
+        "INSERT INTO lineage_edges (lineage_id, from_span_id, to_span_id, rel, status, confidence, confirmed_by, confirmed_at, last_checked_at, metadata_json)
+         VALUES (?1, ?2, ?3, 'coupled', 'proposed', ?4, NULL, ?5, ?5, ?6)",
+        duckdb::params![
+            lineage_id,
+            from_span,
+            to_span,
+            score,
+            now(),
+            serde_json::json!({"by": by, "note": format!("attention-proposed from {from_desc} → {to_file}")}).to_string(),
+        ],
+    )?;
+    Ok(true)
 }
 
 #[cfg(test)]

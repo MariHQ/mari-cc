@@ -13,6 +13,7 @@ numbered area docs in whatever order matches your priorities.
 
 | Doc | Scope |
 |---|---|
+| [`STATUS.md`](STATUS.md) | **What has been completed** vs deferred vs owner-blocked |
 | [`00-current-state.md`](00-current-state.md) | What is built, metrics, what works today, what the code actually is |
 | [`01-known-issues.md`](01-known-issues.md) | Regressions and bugs in the current working tree — fix these first |
 | [`02-production-blockers.md`](02-production-blockers.md) | Must-clear items before any external release |
