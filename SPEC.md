@@ -75,9 +75,8 @@ embedding.batch_size          = 16
 embedding.gpu_layers          = 999       # GPU layers to offload (clamped; CPU fallback)
 embedding.auto_download       = true      # fetch the GGUF on first sync
 embedding.model               = ""        # path override for air-gapped installs
-chunking.lines                = 40        # lines per window
+chunking.lines                = 40        # lines per window (the only size bound)
 chunking.overlap              = 8         # shared lines between windows
-chunking.max_chars            = 2000
 chunking.min_chars            = 40        # windows shorter than this are dropped
 chunking.title_prefix         = true      # prepend doc title to EMBEDDED text only
 chunking.large_chunks         = false     # coarse vector-only chunks
@@ -87,8 +86,8 @@ chunking.large_chunk_ratio    = 4         # base chunks joined per large chunk
 Per-source chunking overrides (defaults ship for chat-like sources):
 
 ```
-slack.chunking    = {lines:5, overlap:3, max_chars:1000, min_chars:20}
-git.chunking      = {lines:15, overlap:3, max_chars:1000, min_chars:10}
+slack.chunking    = {lines:5, overlap:3, min_chars:20}
+git.chunking      = {lines:15, overlap:3, min_chars:10}
 ```
 
 Changing any `embedding.*` or `*.chunking.*` key prints a reminder to run `mari sync --rebuild`.
@@ -490,7 +489,7 @@ Shared sync semantics:
 The only permitted embedding model identity is `qwen3-embedding-0.6b`. Encoded vectors are task-aware (distinct document vs query encoding) and normalized. `status` warns on mismatch with the index and recommends `mari sync --rebuild`. No silent fallback is allowed: if that model is unavailable, vector embedding fails loudly and keyword-only search may still run without writing `embeddings` rows.
 
 ### 7.2 Chunking
-Fixed line windows: `lines` per window, `overlap` shared, step `max(1, lines−overlap)`; windows `< min_chars` dropped; each capped at `max_chars`. **Stable chunk ids** `<source>/<doc_id>#L<start>` (1-based) so unchanged docs re-embed nothing. `title_prefix` prepends the doc title to embedded text only (stored text stays raw). `large_chunks` joins every `large_chunk_ratio` base chunks into a coarse vector-only chunk (excluded from keyword and neighbor queries).
+Fixed line windows: `lines` per window, `overlap` shared, step `max(1, lines−overlap)`; windows `< min_chars` dropped. Windows cover whole lines and are **never truncated** — there is no character cap, so no content is ever dropped or skipped (the line window is the only size bound). **Stable chunk ids** `<source>/<doc_id>#L<start>` (1-based) so unchanged docs re-embed nothing. `title_prefix` prepends the doc title to embedded text only (stored text stays raw). `large_chunks` joins every `large_chunk_ratio` base chunks into a coarse vector-only chunk (excluded from keyword and neighbor queries).
 
 ### 7.3 Hybrid retrieval
 - **Vector:** cosine similarity over the chunk store; score `round(1 − distance, 3)`. ANN index built only past a row floor (~4096; partitions ≈ √rows capped 1024); brute-force below it. Scalar indexes on `source`/`doc_id`.

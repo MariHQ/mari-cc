@@ -254,9 +254,16 @@ fn lance_schema() -> std::sync::Arc<arrow_schema::Schema> {
 
 fn to_batch(rows: &[(String, String, Vec<f32>)]) -> Result<arrow_array::RecordBatch> {
     use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
-    let ids = StringArray::from(rows.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>());
+    let ids = StringArray::from(
+        rows.iter()
+            .map(|(id, _, _)| id.as_str())
+            .collect::<Vec<_>>(),
+    );
     let hashes = StringArray::from(rows.iter().map(|(_, h, _)| h.as_str()).collect::<Vec<_>>());
-    let flat: Vec<f32> = rows.iter().flat_map(|(_, _, v)| v.iter().copied()).collect();
+    let flat: Vec<f32> = rows
+        .iter()
+        .flat_map(|(_, _, v)| v.iter().copied())
+        .collect();
     let values = Float32Array::from(flat);
     let field = std::sync::Arc::new(arrow_schema::Field::new(
         "item",
@@ -337,7 +344,10 @@ pub fn read_dataset(global: bool) -> Result<Vec<(String, String, Vec<f32>)>> {
             .clone();
         for i in 0..batch.num_rows() {
             let id = ids.value(i).to_string();
-            let hash = hashes.as_ref().map(|h| h.value(i).to_string()).unwrap_or_default();
+            let hash = hashes
+                .as_ref()
+                .map(|h| h.value(i).to_string())
+                .unwrap_or_default();
             let cell = vectors.value(i);
             let floats = cell.as_primitive::<Float32Type>();
             out.push((id, hash, floats.values().to_vec()));
@@ -394,8 +404,7 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
     let kept: Vec<(String, String, Vec<f32>)> = existing
         .into_iter()
         .filter(|(id, hash, v)| {
-            v.len() == DIMS
-                && current_hash.get(id).map(|h| h == hash).unwrap_or(false)
+            v.len() == DIMS && current_hash.get(id).map(|h| h == hash).unwrap_or(false)
         })
         .collect();
     let have: std::collections::HashSet<&str> = kept.iter().map(|(id, _, _)| id.as_str()).collect();
@@ -737,8 +746,10 @@ mod tests {
         assert_eq!(back[0].1, "h1"); // content hash round-trips
         assert_eq!(back[0].2.len(), DIMS);
 
-        let vecs: Vec<(String, Vec<f32>)> =
-            back.iter().map(|(id, _, v)| (id.clone(), v.clone())).collect();
+        let vecs: Vec<(String, Vec<f32>)> = back
+            .iter()
+            .map(|(id, _, v)| (id.clone(), v.clone()))
+            .collect();
         let ranked = duckdb_cosine_topk(&vecs, &a, 2).unwrap();
         assert_eq!(ranked[0].0, "chunk-a");
         assert!((ranked[0].1 - 1.0).abs() < 1e-3);

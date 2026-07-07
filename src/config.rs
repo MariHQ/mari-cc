@@ -16,7 +16,7 @@ pub fn defaults() -> Value {
             "gpu_layers": 999
         },
         "chunking": {
-            "lines": 40, "overlap": 8, "max_chars": 2000, "min_chars": 40,
+            "lines": 40, "overlap": 8, "min_chars": 40,
             "title_prefix": true, "large_chunks": false, "large_chunk_ratio": 4
         },
         "search": {
@@ -30,7 +30,7 @@ pub fn defaults() -> Value {
         "sync": { "stale_days": 7 },
         "slack": {
             "lookback_days": 14, "channels": [],
-            "chunking": { "lines": 5, "overlap": 3, "max_chars": 1000, "min_chars": 20 }
+            "chunking": { "lines": 5, "overlap": 3, "min_chars": 20 }
         },
         "discord": { "lookback_days": 14, "channels": [], "guilds": [] },
         "gdocs": { "lookback_days": 30, "comments": true },
@@ -38,7 +38,7 @@ pub fn defaults() -> Value {
         "github": { "include": ["issues", "pulls"], "repos": [] },
         "git": {
             "repos": [],
-            "chunking": { "lines": 15, "overlap": 3, "max_chars": 1000, "min_chars": 10 }
+            "chunking": { "lines": 15, "overlap": 3, "min_chars": 10 }
         },
         "confluence": { "spaces": [], "pages": [] },
         "jira": { "projects": [] },

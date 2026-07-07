@@ -845,7 +845,6 @@ fn ingest_chunks_with_config(
     let overlap =
         (chunk_cfg["overlap"].as_u64().unwrap_or(8) as usize).min(lines_per.saturating_sub(1));
     let min_chars = chunk_cfg["min_chars"].as_u64().unwrap_or(40) as usize;
-    let max_chars = chunk_cfg["max_chars"].as_u64().unwrap_or(2000).max(1) as usize;
     let write_large = chunk_cfg["large_chunks"].as_bool().unwrap_or(false);
     let large_ratio = chunk_cfg["large_chunk_ratio"].as_u64().unwrap_or(4).max(1) as usize;
     let starts = line_offsets(body);
@@ -857,8 +856,11 @@ fn ingest_chunks_with_config(
     while line < line_count {
         let end_line_excl = (line + lines_per).min(line_count);
         let start_byte = starts[line];
-        let window_end_byte = starts.get(end_line_excl).copied().unwrap_or(body.len());
-        let end_byte = cap_utf8_boundary(body, start_byte, window_end_byte, max_chars);
+        // Chunks are bounded by the line window only — no character cap. The
+        // window always covers whole lines, so content is never truncated or
+        // skipped (a `max_chars` cap used to drop everything past the cap and
+        // then advance past the un-captured lines, silently losing content).
+        let end_byte = starts.get(end_line_excl).copied().unwrap_or(body.len());
         let text = body[start_byte..end_byte].to_string();
         if text.trim().len() < min_chars {
             if end_line_excl == line_count {
@@ -1422,18 +1424,6 @@ fn stable_chunk_id(source_id: &str, doc_id: &str, start_line: usize) -> String {
     format!("{source_id}/{doc_id}#L{start_line}")
 }
 
-fn cap_utf8_boundary(body: &str, start: usize, window_end: usize, max_chars: usize) -> usize {
-    let capped = start.saturating_add(max_chars).min(window_end);
-    if capped == window_end || body.is_char_boundary(capped) {
-        return capped;
-    }
-    let mut end = capped;
-    while end > start && !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    end
-}
-
 fn byte_to_line(starts: &[usize], byte: usize) -> usize {
     match starts.binary_search(&byte) {
         Ok(idx) => idx.max(1),
@@ -1827,13 +1817,6 @@ mod tests {
     }
 
     #[test]
-    fn max_char_cap_preserves_utf8_boundaries() {
-        let text = "abcéfg\nnext";
-        let capped = cap_utf8_boundary(text, 0, text.len(), 4);
-        assert_eq!(&text[..capped], "abc");
-    }
-
-    #[test]
     fn ingest_chunks_writes_stable_line_chunk_id() {
         let conn = Connection::open_in_memory().unwrap();
         super::super::ensure_schema(&conn).unwrap();
@@ -1867,7 +1850,6 @@ mod tests {
                 "lines": 2,
                 "overlap": 0,
                 "min_chars": 1,
-                "max_chars": 4000,
                 "large_chunks": true,
                 "large_chunk_ratio": 2
             }
@@ -1895,6 +1877,43 @@ mod tests {
     }
 
     #[test]
+    fn ingest_chunks_covers_dense_windows_without_dropping_lines() {
+        // A window denser than the old max_chars cap must not silently skip the
+        // lines past the cap: every line's content stays reachable in a chunk.
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO documents (doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind, author_id, author_name, created_at, updated_at, observed_at, version, content_sha256, body, metadata_json)
+             VALUES ('doc1', 'localfiles', 'docs/a.md', 'localfiles:docs/a.md', 'A', NULL, 'docs/a.md', 'text/markdown', 'file', NULL, NULL, NULL, NULL, 'now', 'v', 'sha', '# A', '{}')",
+            [],
+        )
+        .unwrap();
+        // 20 lines, each ~300 bytes → a single 5-line window is ~1.5 KB, well
+        // past the old 2000-char cap once a couple of windows overlap.
+        let mut body = String::new();
+        for i in 0..20 {
+            body.push_str(&format!("marker{i:02} {}\n", "x".repeat(300)));
+        }
+        let cfg = json!({"chunking": {"lines": 5, "overlap": 1, "min_chars": 1}});
+        ingest_chunks_with_config(&conn, "localfiles", "doc1", &body, &cfg).unwrap();
+        let joined: String = {
+            let mut stmt = conn.prepare("SELECT text FROM chunks").unwrap();
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            rows.join("\n")
+        };
+        for i in 0..20 {
+            assert!(
+                joined.contains(&format!("marker{i:02}")),
+                "line marker{i:02} was dropped from all chunks"
+            );
+        }
+    }
+
+    #[test]
     fn ingest_chunks_merges_source_specific_chunking() {
         let conn = Connection::open_in_memory().unwrap();
         super::super::ensure_schema(&conn).unwrap();
@@ -1909,7 +1928,6 @@ mod tests {
                 "lines": 10,
                 "overlap": 0,
                 "min_chars": 1,
-                "max_chars": 4000,
                 "large_chunks": false
             },
             "git": {
