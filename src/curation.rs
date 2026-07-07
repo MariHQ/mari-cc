@@ -993,19 +993,25 @@ fn audit_kb_in(root: &Path, paths: &[String], json_out: bool, strict: bool) -> R
         .filter_map(|f| std::fs::read_to_string(f).ok().map(|t| (f.clone(), t)))
         .collect();
 
-    // 1. Stale pages (mtime older than STALE_DAYS).
-    let now = std::time::SystemTime::now();
-    for (f, _) in &texts {
-        if let Ok(modified) = std::fs::metadata(f).and_then(|m| m.modified()) {
-            if let Ok(age) = now.duration_since(modified) {
-                let days = age.as_secs() / 86_400;
-                if days > STALE_DAYS {
-                    findings.push(KbFinding {
-                        severity: "warn",
-                        rule: "stale-page",
-                        file: rel_of(f),
-                        message: format!("not updated in {days} days (threshold {STALE_DAYS})"),
-                    });
+    // 1. Stale pages (mtime older than the threshold). OPT-IN: filesystem
+    // mtime is the checkout/clone time on a fresh git working tree, not the
+    // real last-edit time, so this fires on every file and is off by default.
+    // Enable with `audit.stale_pages = true`; tune with `audit.stale_days`.
+    if cfg["audit"]["stale_pages"].as_bool().unwrap_or(false) {
+        let stale_days = cfg["audit"]["stale_days"].as_u64().unwrap_or(STALE_DAYS);
+        let now = std::time::SystemTime::now();
+        for (f, _) in &texts {
+            if let Ok(modified) = std::fs::metadata(f).and_then(|m| m.modified()) {
+                if let Ok(age) = now.duration_since(modified) {
+                    let days = age.as_secs() / 86_400;
+                    if days > stale_days {
+                        findings.push(KbFinding {
+                            severity: "warn",
+                            rule: "stale-page",
+                            file: rel_of(f),
+                            message: format!("not updated in {days} days (threshold {stale_days})"),
+                        });
+                    }
                 }
             }
         }

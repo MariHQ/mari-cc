@@ -28,6 +28,7 @@ pub fn defaults() -> Value {
             "tag_boosts": { "canonical": 1.15, "draft": 0.9, "stale": 0.7, "deprecated": 0.5 }
         },
         "sync": { "stale_days": 7 },
+        "audit": { "stale_pages": false, "stale_days": 90 },
         "slack": {
             "lookback_days": 14, "channels": [],
             "chunking": { "lines": 5, "overlap": 3, "min_chars": 20 }
