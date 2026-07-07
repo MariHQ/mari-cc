@@ -1437,8 +1437,23 @@ fn conflicting_span_pair(a: &BTreeSet<String>, b: &BTreeSet<String>) -> Option<(
     None
 }
 
+/// A claim can only take part in a contradiction if it carries a span of a
+/// high-precision kind (money or percent) — `conflicting_span_pair` ignores
+/// every other kind. Filtering to these before the pairwise scan is what keeps
+/// `audit kb` from being O(claims²) over the whole catalog: doc corpora are
+/// dominated by bare numbers, version identifiers, and dates, none of which can
+/// ever conflict.
+fn claim_has_precision_kind(spans: &BTreeSet<String>) -> bool {
+    spans
+        .iter()
+        .any(|v| matches!(span_kind(v), "money" | "percent"))
+}
+
 fn catalog_contradiction_findings_from_paths(paths: &[PathBuf]) -> Result<Vec<KbFinding>> {
-    let claims = catalog_claims_from_paths(paths)?;
+    let claims: Vec<CatalogClaim> = catalog_claims_from_paths(paths)?
+        .into_iter()
+        .filter(|c| claim_has_precision_kind(&c.spans))
+        .collect();
     let mut findings = Vec::new();
     let mut seen = HashSet::new();
     for i in 0..claims.len() {
