@@ -301,12 +301,21 @@ where
 fn git_paths() -> Vec<PathBuf> {
     let root = workspace::work_root();
     let cfg = config::resolve(Some(&root));
-    let mut out = vec![root];
+    let mut out = vec![root.clone()];
     if let Some(repos) = cfg["git"]["repos"].as_array() {
         for r in repos.iter().filter_map(|v| v.as_str()) {
-            out.push(PathBuf::from(r));
+            // Resolve relative repo refs against the work root so a tracked
+            // "." is the same path as the implicit cwd repo, not a duplicate.
+            let p = PathBuf::from(r);
+            out.push(if p.is_absolute() { p } else { root.join(p) });
         }
     }
+    // Dedup by canonical path so the cwd repo isn't scanned twice.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| {
+        let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        seen.insert(key)
+    });
     out
 }
 

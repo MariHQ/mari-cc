@@ -156,7 +156,15 @@ fn verify_sha256(path: &std::path::Path, expected: &str) -> Result<()> {
 /// `mari model pull [embedding|attention|all]` — explicit, resumable,
 /// checksum-verified provisioning.
 pub fn run(args: &[String]) -> Result<i32> {
-    let which = args.first().map(|s| s.as_str()).unwrap_or("all");
+    // Surface: `mari model pull [target]` | `mari model status`. Strip a
+    // leading `pull` verb so `mari model pull attention` names the target.
+    let rest: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let which = match rest.as_slice() {
+        ["pull", target, ..] => *target,
+        ["pull"] => "all",
+        [first, ..] => *first,
+        [] => "all",
+    };
     let embedding = crate::index::vector::model_spec();
     let attention = crate::attn::model_spec();
     let targets: Vec<&ModelSpec> = match which {
@@ -209,6 +217,24 @@ fn spec_clone(s: &ModelSpec) -> ModelSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn which_target<'a>(args: &[&'a str]) -> &'a str {
+        match args {
+            ["pull", target, ..] => target,
+            ["pull"] => "all",
+            [first, ..] => first,
+            [] => "all",
+        }
+    }
+
+    #[test]
+    fn pull_verb_names_the_target() {
+        assert_eq!(which_target(&["pull", "attention"]), "attention");
+        assert_eq!(which_target(&["pull", "all"]), "all");
+        assert_eq!(which_target(&["pull"]), "all");
+        assert_eq!(which_target(&["status"]), "status");
+        assert_eq!(which_target(&[]), "all");
+    }
 
     #[test]
     fn checksum_rejects_mismatch() {
