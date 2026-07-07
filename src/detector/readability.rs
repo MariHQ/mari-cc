@@ -85,7 +85,9 @@ pub fn syllables(word: &str) -> usize {
 pub struct GradeStats {
     pub words: usize,
     pub sentences: usize,
+    #[allow(dead_code)] // §11.12 score-breakdown contract
     pub syllables: usize,
+    #[allow(dead_code)] // §11.12 score-breakdown contract
     pub letters: usize,
     pub grade: f64,
 }

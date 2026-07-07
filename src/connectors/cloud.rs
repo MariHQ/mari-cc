@@ -468,10 +468,23 @@ pub fn snowflake_days_ago(days: i64) -> u64 {
 
 pub fn lookback_days(cfg: &Value, key: &str, default: i64, since: Option<i64>) -> i64 {
     since.unwrap_or_else(|| {
-        config::get_path(cfg, key)
-            .and_then(|v| v.as_i64())
+        source_lookback_blocks(key)
+            .into_iter()
+            .filter_map(|source| cfg[source]["lookback_days"].as_i64())
+            .next()
+            .or_else(|| config::get_path(cfg, key).and_then(|v| v.as_i64()))
             .unwrap_or(default)
     })
+}
+
+fn source_lookback_blocks(key: &str) -> Vec<&str> {
+    let source = key.split('.').next().unwrap_or(key);
+    match source {
+        // Google Drive's source key is `gdocs`, while its tracked-ref config
+        // block is `google` (§6.2). Accept both for compatibility.
+        "gdocs" => vec!["google", "gdocs"],
+        other => vec![other],
+    }
 }
 
 pub fn tracked_list(cfg: &Value, key: &str) -> Vec<String> {
@@ -538,6 +551,49 @@ mod tests {
         assert!(text.contains("- one"));
         assert!(!text.contains("bad()"));
         assert!(!text.contains("<p>"));
+    }
+
+    #[test]
+    fn lookback_prefers_since_then_source_block_then_default() {
+        let cfg = serde_json::json!({
+            "slack": {
+                "lookback_days": 21,
+                "channels": [],
+            }
+        });
+
+        assert_eq!(lookback_days(&cfg, "slack.lookback_days", 14, None), 21);
+
+        let cfg = serde_json::json!({
+            "slack": {
+                "lookback_days": 9
+            }
+        });
+        assert_eq!(lookback_days(&cfg, "slack.lookback_days", 14, Some(2)), 2);
+
+        let cfg = serde_json::json!({});
+        assert_eq!(lookback_days(&cfg, "slack.lookback_days", 14, None), 14);
+    }
+
+    #[test]
+    fn lookback_accepts_google_block_for_gdocs() {
+        let cfg = serde_json::json!({
+            "google": {
+                "lookback_days": 45
+            },
+            "gdocs": {
+                "lookback_days": 30
+            }
+        });
+
+        assert_eq!(lookback_days(&cfg, "gdocs.lookback_days", 30, None), 45);
+
+        let cfg = serde_json::json!({
+            "gdocs": {
+                "lookback_days": 30
+            }
+        });
+        assert_eq!(lookback_days(&cfg, "gdocs.lookback_days", 14, None), 30);
     }
 
     fn doc(body: &str, rev: &str) -> RemoteDoc {

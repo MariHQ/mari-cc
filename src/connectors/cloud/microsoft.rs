@@ -1,8 +1,8 @@
 //! Microsoft 365 connector (SPEC §6.10): OneDrive/SharePoint files, Outlook
 //! mail (one doc per conversation), Teams channel messages. Device-code
 //! credential with rotating refresh token. Files prune via delta deletions;
-//! mail and Teams never prune. PDFs extract through the Unlimited-OCR
-//! toolchain (§8.6, no fallbacks); Office formats are not in this build.
+//! mail and Teams never prune. PDFs extract per §8.6 (native text default,
+//! Unlimited-OCR opt-in); Office formats extract natively (§8.5).
 
 use super::{
     credential_or_nudge, get_meta, ingest_remote_doc, tracked_list, Http, RemoteDoc, SyncStats,
@@ -131,7 +131,8 @@ fn sync_drive(
             let name = item["name"].as_str().unwrap_or("").to_string();
             let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
             let is_pdf = ext == "pdf";
-            if !TEXT_EXTS.contains(&ext.as_str()) && !is_pdf {
+            let is_office = crate::office::OFFICE_EXTS.contains(&ext.as_str());
+            if !TEXT_EXTS.contains(&ext.as_str()) && !is_pdf && !is_office {
                 eprintln!(
                     "note: microsoft skipping {name} — extraction not available in this build"
                 );
@@ -147,12 +148,16 @@ fn sync_drive(
                 }
             }
             let content_url = format!("{root}/items/{id}/content");
-            let body = if is_pdf {
+            let body = if is_pdf || is_office {
                 // PDFs go through the Unlimited-OCR toolchain (§8.6) — no fallbacks.
                 match http.get_bytes(&content_url).and_then(|bytes| {
-                    let tmp = std::env::temp_dir().join(format!("mari-ms-{id}.pdf"));
+                    let tmp = std::env::temp_dir().join(format!("mari-ms-{id}.{ext}"));
                     std::fs::write(&tmp, &bytes)?;
-                    let out = crate::ocr::extract_pdf(&tmp);
+                    let out = if is_pdf {
+                        crate::ocr::extract_pdf(&tmp)
+                    } else {
+                        crate::office::extract(&tmp)
+                    };
                     let _ = std::fs::remove_file(&tmp);
                     out
                 }) {

@@ -11,12 +11,15 @@ pub struct Heading {
     pub text: String,
     pub line: usize,
     pub start: usize,
+    #[allow(dead_code)] // §11.0.4 contract
     pub raw: String,
 }
 
 #[derive(Debug, Clone)]
 pub struct ListItem {
+    #[allow(dead_code)] // §11.0.4 contract
     pub indent: usize,
+    #[allow(dead_code)] // §11.0.4 contract
     pub marker: String,
     pub text: String,
     pub line: usize,
@@ -37,6 +40,7 @@ pub struct Link {
 #[derive(Debug, Clone)]
 pub struct Image {
     pub alt: String,
+    #[allow(dead_code)] // §11.0.4 contract
     pub target: String,
     pub start: usize,
     pub length: usize,
@@ -44,6 +48,7 @@ pub struct Image {
 
 #[derive(Debug, Clone)]
 pub struct BoldSpan {
+    #[allow(dead_code)] // §11.0.4 contract
     pub text: String,
     pub start: usize,
     pub length: usize,
@@ -75,14 +80,17 @@ pub struct RefDef {
     pub id: String,
     pub line: usize,
     pub start: usize,
+    #[allow(dead_code)] // §11.0.4 contract
     pub url: String,
 }
 
 pub struct Ctx {
     pub text: String,
     pub masked: String,
+    #[allow(dead_code)] // §11.0.1 contract
     pub path: String,
     line_starts: Vec<usize>,
+    #[allow(dead_code)] // §11.0.3 contract
     pub blocks: Vec<Block>,
     pub sentences: Vec<Sentence>,
     pub word_count: usize,

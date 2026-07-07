@@ -510,20 +510,31 @@ fn validate_nudge(root: &Path, nudge: &Value) -> Vec<String> {
 }
 
 fn validate_endpoint(root: &Path, endpoint: &Value, label: &str, errors: &mut Vec<String>) {
-    let file = endpoint["file"].as_str().unwrap_or("");
-    if file.contains('*') || file.contains('?') {
+    let Some(path_value) = endpoint_path(endpoint) else {
+        errors.push(format!("{label} target is missing path"));
+        return;
+    };
+    if path_value.contains('*') || path_value.contains('?') {
         return;
     }
-    let path = root.join(file);
+    let path = root.join(path_value);
     if !path.exists() {
-        errors.push(format!("{label} target does not exist: {file}"));
+        errors.push(format!("{label} target does not exist: {path_value}"));
         return;
     }
     if let Some(symbol) = endpoint["symbol"].as_str() {
         if !symbol_exists(&path, symbol) {
-            errors.push(format!("{label} symbol does not resolve: {file}#{symbol}"));
+            errors.push(format!(
+                "{label} symbol does not resolve: {path_value}#{symbol}"
+            ));
         }
     }
+}
+
+fn endpoint_path(endpoint: &Value) -> Option<&str> {
+    endpoint["path"]
+        .as_str()
+        .or_else(|| endpoint["file"].as_str())
 }
 
 fn symbol_exists(path: &Path, symbol: &str) -> bool {
@@ -667,9 +678,9 @@ fn normalize_symbol(s: &str) -> String {
 }
 
 fn endpoint_json(raw: &str) -> Value {
-    let (file, symbol) = raw.split_once('#').unwrap_or((raw, ""));
+    let (path, symbol) = raw.split_once('#').unwrap_or((raw, ""));
     let mut obj = Map::new();
-    obj.insert("file".into(), Value::String(file.to_string()));
+    obj.insert("path".into(), Value::String(path.to_string()));
     if !symbol.is_empty() {
         obj.insert("symbol".into(), Value::String(symbol.to_string()));
     }
@@ -705,7 +716,8 @@ mod tests {
     #[test]
     fn endpoint_parses_symbol() {
         let e = endpoint_json("docs/api.md#Rate limits");
-        assert_eq!(e["file"], "docs/api.md");
+        assert_eq!(e["path"], "docs/api.md");
+        assert!(e.get("file").is_none());
         assert_eq!(e["symbol"], "Rate limits");
     }
 
@@ -721,6 +733,20 @@ mod tests {
         let errors = validate_nudge(dir.path(), &nudge);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("Missing"));
+    }
+
+    #[test]
+    fn validate_endpoint_accepts_spec_path_key() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("api.md");
+        std::fs::write(&file, "# API\n\n## Rate limits\n").unwrap();
+        let nudge = json!({
+            "when": { "path": "api.md", "symbol": "Rate limits" },
+            "edit": [{ "path": "api.md", "symbol": "Rate limits" }]
+        });
+        let errors = validate_nudge(dir.path(), &nudge);
+
+        assert!(errors.is_empty());
     }
 
     #[test]

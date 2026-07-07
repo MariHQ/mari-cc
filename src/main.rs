@@ -1,4 +1,5 @@
 mod assets;
+mod attn;
 mod authcmd;
 mod checkcmd;
 mod cloud;
@@ -14,9 +15,10 @@ mod hook;
 mod i18n;
 mod index;
 mod initcmd;
-mod narrative;
 mod lineage;
+mod narrative;
 mod ocr;
+mod office;
 mod platform;
 mod rulescmd;
 mod statuscmd;
@@ -432,9 +434,12 @@ enum Cmd {
     /// Lineage curation: list | add <src>[#sym] <dst>[#sym] | confirm <id> | reject <id>
     Lineage {
         args: Vec<String>,
-        #[arg(long)] json: bool,
-        #[arg(long)] by: Option<String>,
-        #[arg(long)] note: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        by: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Post-edit hook entry point (called by the agent harness, never breaks the turn)
     Hook { args: Vec<String> },
@@ -736,7 +741,12 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             limit,
             strict,
         } => i18n::run(&args, deep, limit, strict),
-        Cmd::Lineage { args, json, by, note } => lineage::run(&args, json, by.as_deref(), note.as_deref()),
+        Cmd::Lineage {
+            args,
+            json,
+            by,
+            note,
+        } => lineage::run(&args, json, by.as_deref(), note.as_deref()),
         Cmd::Hook { args } => Ok(hook::run(&args)),
     }
 }

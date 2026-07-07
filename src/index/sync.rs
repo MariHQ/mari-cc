@@ -12,6 +12,12 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i32> {
+    if let Some(s) = source {
+        if !known_source(s) {
+            eprintln!("✗ unknown source: {s}");
+            return Ok(2);
+        }
+    }
     // One-writer rule (§9): consumers read the replica; only the writer syncs.
     if cloud::enabled() && cloud::role() == "consumer" {
         eprintln!(
@@ -33,6 +39,7 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
     let sources = sync_sources(source);
     for s in sources {
         let conn = open_catalog(source_catalog_global(s))?;
+        ensure_source(&conn, s)?;
         match s {
             "git" => {
                 let repos = git_paths();
@@ -114,10 +121,37 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
         mirror_tags(&conn)?;
         set_meta(&conn, "last_sync", &now())?;
     }
+    // Vector embedding pass (§7.1): the local embedding model over every
+    // chunk missing a vector; loud on failure, never silent.
+    let mut catalogs_touched: Vec<bool> = Vec::new();
+    for s in sync_sources(source) {
+        let g = source_catalog_global(s);
+        if !catalogs_touched.contains(&g) {
+            catalogs_touched.push(g);
+        }
+    }
+    let mut embedded_vectors = 0usize;
+    for g in catalogs_touched {
+        match open_catalog(g).and_then(|conn| super::vector::sync_vectors(&conn, g, rebuild)) {
+            Ok(n) => embedded_vectors += n,
+            Err(e) => {
+                eprintln!("✗ vector embedding failed: {e:#}");
+                had_errors = true;
+            }
+        }
+    }
     println!(
-        "✓ {} document(s) updated, {} removed — {} chunk(s) embedded.",
-        summary.updated, summary.removed, summary.chunks_embedded
+        "✓ {} document(s) updated, {} removed — {} chunk(s) embedded ({} vector(s)).",
+        summary.updated, summary.removed, summary.chunks_embedded, embedded_vectors
     );
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    if should_print_git_cloud_commit_nudge(
+        cfg["cloud"]["enabled"].as_bool().unwrap_or(false),
+        &cloud::role(),
+        cfg["cloud"]["backend"].as_str().unwrap_or("s3"),
+    ) {
+        println!("note: commit .mari so teammates can pull the updated git-backed catalog.");
+    }
     Ok(sync_exit_code(had_errors))
 }
 
@@ -136,6 +170,10 @@ fn sync_exit_code(had_errors: bool) -> i32 {
     }
 }
 
+fn should_print_git_cloud_commit_nudge(enabled: bool, role: &str, backend: &str) -> bool {
+    enabled && role == "writer" && backend == "git"
+}
+
 fn sync_sources(source: Option<&str>) -> Vec<&str> {
     match source {
         Some(s) => vec![s],
@@ -144,6 +182,10 @@ fn sync_sources(source: Option<&str>) -> Vec<&str> {
             |provider| authcmd::credential(provider).is_some(),
         ),
     }
+}
+
+fn known_source(source: &str) -> bool {
+    source == "git" || source == "localfiles" || CLOUD_SOURCE_ORDER.contains(&source)
 }
 
 fn sync_sources_for_config<F>(cfg: &serde_json::Value, connected: F) -> Vec<&'static str>
@@ -277,7 +319,6 @@ fn sync_paths(
     rebuild: bool,
     cutoff: Option<SystemTime>,
 ) -> Result<(usize, usize, usize, usize)> {
-    ensure_source(conn, source_id)?;
     if rebuild && cutoff.is_none() {
         conn.execute("DELETE FROM embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE doc_id IN (SELECT doc_id FROM documents WHERE source_id = ?1))", [source_id])?;
         conn.execute(
@@ -343,19 +384,42 @@ fn eligible_files(files: &[PathBuf], cutoff: Option<SystemTime>) -> Vec<PathBuf>
 
 fn ensure_source(conn: &Connection, source_id: &str) -> Result<()> {
     let scope = workspace::source_scope(source_id);
-    let list_keys = match source_id {
-        "git" => json!(["git.repos"]),
-        "localfiles" => json!(["localfiles.paths"]),
-        _ => json!([]),
-    };
+    let list_keys = json!(list_keys_for_source(source_id));
+    let auth_provider = source_auth_provider(source_id);
     let cfg_hash = hash_hex(&config::resolve(Some(&workspace::work_root())).to_string());
     conn.execute("DELETE FROM sources WHERE source_id = ?1", [source_id])?;
     conn.execute(
         "INSERT INTO sources (source_id, provider, scope, connector_version, auth_provider, list_keys_json, config_hash, last_sync_at, last_success_at, last_error)
-         VALUES (?1, ?2, ?3, 'v1', NULL, ?4, ?5, ?6, ?6, NULL)",
-        params![source_id, source_id, scope, list_keys.to_string(), cfg_hash, now()],
+         VALUES (?1, ?2, ?3, 'v1', ?4, ?5, ?6, ?7, ?7, NULL)",
+        params![
+            source_id,
+            source_id,
+            scope,
+            auth_provider,
+            list_keys.to_string(),
+            cfg_hash,
+            now()
+        ],
     )?;
     Ok(())
+}
+
+fn source_auth_provider(source_id: &str) -> Option<&'static str> {
+    match source_id {
+        "git" | "localfiles" => None,
+        "gdocs" => Some("google"),
+        "github" => Some("github"),
+        "slack" => Some("slack"),
+        "confluence" => Some("confluence"),
+        "jira" => Some("jira"),
+        "zendesk" => Some("zendesk"),
+        "salesforce" => Some("salesforce"),
+        "hubspot" => Some("hubspot"),
+        "microsoft" => Some("microsoft"),
+        "discord" => Some("discord"),
+        "linear" => Some("linear"),
+        _ => None,
+    }
 }
 
 fn is_pdf(path: &Path) -> bool {
@@ -366,7 +430,10 @@ fn is_pdf(path: &Path) -> bool {
 }
 
 fn collect_files(roots: Vec<PathBuf>, include_pdf: bool) -> Vec<PathBuf> {
-    let keep = |p: &Path| is_text_path(p) || (include_pdf && is_pdf(p));
+    // localfiles also carries PDFs and Office formats (§6.12/§8.5).
+    let keep = |p: &Path| {
+        is_text_path(p) || (include_pdf && (is_pdf(p) || crate::office::is_office_path(p)))
+    };
     let mut out = Vec::new();
     for root in roots {
         if root.is_file() {
@@ -409,6 +476,9 @@ fn collect_files(roots: Vec<PathBuf>, include_pdf: bool) -> Vec<PathBuf> {
 fn ingest_file(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<usize>> {
     if is_pdf(path) {
         return ingest_pdf(conn, source_id, path);
+    }
+    if crate::office::is_office_path(path) {
+        return ingest_binary_doc(conn, source_id, path);
     }
     let Ok(body) = std::fs::read_to_string(path) else {
         return Ok(None);
@@ -482,10 +552,30 @@ fn ingest_file(conn: &Connection, source_id: &str, path: &Path) -> Result<Option
     Ok(Some(chunks))
 }
 
+/// Office ingestion (SPEC §8.5): docx/odt/rtf/pptx/xlsx extracted natively;
+/// raw-byte hash is the re-extract authority.
+fn ingest_binary_doc(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<usize>> {
+    ingest_extracted(conn, source_id, path, "application/vnd.office", |p| {
+        crate::office::extract(p)
+    })
+}
+
 /// PDF ingestion (SPEC §8.6): extraction runs through the configured
 /// Unlimited-OCR toolchain — no fallback engines. The raw-byte hash is the
 /// re-extract authority, so unchanged PDFs never re-run OCR.
 fn ingest_pdf(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<usize>> {
+    ingest_extracted(conn, source_id, path, "application/pdf", |p| {
+        crate::ocr::extract_pdf(p)
+    })
+}
+
+fn ingest_extracted(
+    conn: &Connection,
+    source_id: &str,
+    path: &Path,
+    mime: &str,
+    extractor: impl Fn(&Path) -> Result<String>,
+) -> Result<Option<usize>> {
     let Ok(bytes) = std::fs::read(path) else {
         return Ok(None);
     };
@@ -508,7 +598,7 @@ fn ingest_pdf(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<
     if old_sha.as_deref() == Some(raw_sha.as_str()) {
         return Ok(None);
     }
-    let body = match crate::ocr::extract_pdf(path) {
+    let body = match extractor(path) {
         Ok(text) => text,
         Err(e) => {
             // Loud, and the file is skipped — never a different engine (§6.0).
@@ -540,7 +630,7 @@ fn ingest_pdf(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<
     conn.execute("DELETE FROM documents WHERE doc_id = ?1", [&doc_id])?;
     conn.execute(
         "INSERT INTO documents (doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind, author_id, author_name, created_at, updated_at, observed_at, version, content_sha256, body, metadata_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 'application/pdf', 'file', NULL, NULL, NULL, ?7, ?8, ?9, ?10, ?11, ?12)",
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?13, 'file', NULL, NULL, NULL, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             doc_id,
             source_id,
@@ -554,6 +644,7 @@ fn ingest_pdf(conn: &Connection, source_id: &str, path: &Path) -> Result<Option<
             hash_hex(&body),
             body,
             json!({"extractor": "unlimited-ocr"}).to_string(),
+            mime,
         ],
     )?;
     let chunks = ingest_chunks(conn, source_id, &doc_id, &body)?;
@@ -1639,9 +1730,55 @@ mod tests {
     }
 
     #[test]
+    fn known_source_rejects_unknown_sync_source_keys() {
+        assert!(known_source("gdocs"));
+        assert!(known_source("git"));
+        assert!(known_source("localfiles"));
+        assert!(!known_source("sqlite"));
+    }
+
+    #[test]
+    fn ensure_source_records_cloud_list_keys_and_auth_provider() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+
+        ensure_source(&conn, "gdocs").unwrap();
+
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT COALESCE(auth_provider, ''), list_keys_json FROM sources WHERE source_id = 'gdocs'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "google");
+        assert_eq!(row.1, json!(["google.docs", "google.folders"]).to_string());
+    }
+
+    #[test]
+    fn source_metadata_covers_multi_list_sources() {
+        assert_eq!(
+            list_keys_for_source("microsoft"),
+            &["microsoft.drives", "microsoft.mail", "microsoft.teams"]
+        );
+        assert_eq!(source_auth_provider("localfiles"), None);
+        assert_eq!(source_auth_provider("microsoft"), Some("microsoft"));
+    }
+
+    #[test]
     fn sync_exit_code_reflects_source_errors() {
         assert_eq!(sync_exit_code(false), 0);
         assert_eq!(sync_exit_code(true), 1);
+    }
+
+    #[test]
+    fn git_cloud_writer_gets_commit_nudge() {
+        assert!(should_print_git_cloud_commit_nudge(true, "writer", "git"));
+        assert!(!should_print_git_cloud_commit_nudge(
+            true, "consumer", "git"
+        ));
+        assert!(!should_print_git_cloud_commit_nudge(true, "writer", "s3"));
+        assert!(!should_print_git_cloud_commit_nudge(false, "writer", "git"));
     }
 
     #[test]

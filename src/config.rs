@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub fn defaults() -> Value {
     json!({
-        "embedding": { "batch_size": 64 },
+        "embedding": { "batch_size": 64, "auto_download": true },
         "chunking": {
             "lines": 40, "overlap": 8, "max_chars": 2000, "min_chars": 40,
             "title_prefix": true, "large_chunks": false, "large_chunk_ratio": 4
@@ -43,7 +43,7 @@ pub fn defaults() -> Value {
         "microsoft": { "drives": [], "mail": [], "teams": [] },
         "linear": { "teams": [], "projects": [] },
         "localfiles": { "paths": [] },
-        "ocr": { "backend": "auto", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true },
+        "ocr": { "backend": "text", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true },
         "cloud": { "enabled": false, "backend": "s3", "bucket": "", "prefix": "", "region": "" },
         "detector": {
             "styleGuide": "microsoft",
@@ -63,7 +63,8 @@ pub fn defaults() -> Value {
             "google": { "docs": [], "folders": [] },
             "slack": { "channels": [], "lookbackDays": 14 }
         },
-        "assoc": { "attn": 0.5 }
+        "assoc": { "attn": 0.5 },
+        "attention": { "model": "", "auto_download": true, "threshold": 0.3 }
     })
 }
 

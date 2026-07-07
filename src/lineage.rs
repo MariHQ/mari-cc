@@ -103,9 +103,16 @@ fn add(src: &str, dst: &str, by: &str, note: Option<&str>) -> Result<i32> {
         }
     };
     // Hand-declared edges are confirmed; machine proposals start proposed (§8.3).
-    let (status, confidence) = if by == "human" { ("confirmed", 1.0) } else { ("proposed", 0.6) };
+    let (status, confidence) = if by == "human" {
+        ("confirmed", 1.0)
+    } else {
+        ("proposed", 0.6)
+    };
     let lineage_id = hash_hex(&format!("lineage:{from_span}:{to_span}"));
-    conn.execute("DELETE FROM lineage_edges WHERE lineage_id = ?1", [&lineage_id])?;
+    conn.execute(
+        "DELETE FROM lineage_edges WHERE lineage_id = ?1",
+        [&lineage_id],
+    )?;
     conn.execute(
         "INSERT INTO lineage_edges (lineage_id, from_span_id, to_span_id, rel, status, confidence, confirmed_by, confirmed_at, last_checked_at, metadata_json)
          VALUES (?1, ?2, ?3, 'coupled', ?4, ?5, ?6, ?7, ?7, ?8)",
@@ -120,7 +127,10 @@ fn add(src: &str, dst: &str, by: &str, note: Option<&str>) -> Result<i32> {
             serde_json::json!({"by": by, "note": note}).to_string(),
         ],
     )?;
-    println!("✓ lineage {} [{status}] {from_desc} ↔ {to_desc}", &lineage_id[..8]);
+    println!(
+        "✓ lineage {} [{status}] {from_desc} ↔ {to_desc}",
+        &lineage_id[..8]
+    );
     Ok(0)
 }
 
@@ -174,7 +184,9 @@ fn list(json: bool) -> Result<i32> {
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
     } else if rows.is_empty() {
-        println!("no lineage edges — add one with `mari lineage add <file>[#symbol] <file>[#symbol]`");
+        println!(
+            "no lineage edges — add one with `mari lineage add <file>[#symbol] <file>[#symbol]`"
+        );
     } else {
         for r in &rows {
             println!(

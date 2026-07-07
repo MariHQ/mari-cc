@@ -446,21 +446,11 @@ fn glossary_harvest(root: &Path, cfg: &Value) -> Result<i32> {
     println!();
     // Deterministic assist: scan repo markdown for known variant families with
     // two or more spellings present, so the agent has concrete candidates.
-    let files = crate::detector::runner::collect_files(&[root.to_string_lossy().to_string()]);
-    let mut seen: HashMap<&str, HashSet<&str>> = HashMap::new();
-    for f in &files {
-        let Ok(text) = std::fs::read_to_string(f) else {
-            continue;
-        };
-        let lower = text.to_lowercase();
-        for group in HARVEST_PAIRS {
-            for term in *group {
-                if word_present(&lower, term) {
-                    seen.entry(group[0]).or_default().insert(term);
-                }
-            }
-        }
-    }
+    let mut seen = repo_glossary_harvest_seen(root);
+    merge_harvest_seen(
+        &mut seen,
+        catalog_glossary_harvest_seen(&catalog_paths(root))?,
+    );
     let existing: HashSet<String> = glossary_groups(root, cfg)
         .into_iter()
         .flatten()
@@ -487,6 +477,56 @@ fn glossary_harvest(root: &Path, cfg: &Value) -> Result<i32> {
         println!("{proposed} candidate(s) — review and add the ones your team approves.");
     }
     Ok(0)
+}
+
+fn repo_glossary_harvest_seen(root: &Path) -> HashMap<&'static str, HashSet<&'static str>> {
+    let files = crate::detector::runner::collect_files(&[root.to_string_lossy().to_string()]);
+    let mut seen = HashMap::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        collect_glossary_harvest_terms(&text, &mut seen);
+    }
+    seen
+}
+
+fn catalog_glossary_harvest_seen(
+    paths: &[PathBuf],
+) -> Result<HashMap<&'static str, HashSet<&'static str>>> {
+    let mut seen = HashMap::new();
+    for path in paths {
+        let conn = duckdb::Connection::open(path)?;
+        let mut stmt = conn.prepare("SELECT COALESCE(body, '') FROM documents")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        for text in rows.flatten() {
+            collect_glossary_harvest_terms(&text, &mut seen);
+        }
+    }
+    Ok(seen)
+}
+
+fn collect_glossary_harvest_terms(
+    text: &str,
+    seen: &mut HashMap<&'static str, HashSet<&'static str>>,
+) {
+    let lower = text.to_lowercase();
+    for group in HARVEST_PAIRS {
+        for term in *group {
+            if word_present(&lower, term) {
+                seen.entry(group[0]).or_default().insert(term);
+            }
+        }
+    }
+}
+
+fn merge_harvest_seen(
+    left: &mut HashMap<&'static str, HashSet<&'static str>>,
+    right: HashMap<&'static str, HashSet<&'static str>>,
+) {
+    for (key, values) in right {
+        left.entry(key).or_default().extend(values);
+    }
 }
 
 /// Case-insensitive whole-word presence (haystack must already be lowercase).
@@ -944,12 +984,14 @@ fn audit_kb_in(root: &Path, paths: &[String], json_out: bool, strict: bool) -> R
         }
     }
 
-    // 2. needs-review backlog from tags.entries.
+    // 2. needs-review backlog from tags.entries and mirrored catalog tags.
+    let mut needs_review_seen = HashSet::new();
     if let Some(entries) = cfg["tags"]["entries"].as_object() {
         for (r, v) in entries {
             if v["status"].as_str() == Some("needs-review") {
                 let by = v["by"].as_str().unwrap_or("?");
                 let at = v["at"].as_str().unwrap_or("?");
+                needs_review_seen.insert(norm_ref(r));
                 findings.push(KbFinding {
                     severity: "warn",
                     rule: "needs-review",
@@ -959,6 +1001,7 @@ fn audit_kb_in(root: &Path, paths: &[String], json_out: bool, strict: bool) -> R
             }
         }
     }
+    findings.extend(catalog_needs_review_findings(root, &mut needs_review_seen)?);
 
     // 3. Inconsistent terminology: >=2 spellings of a glossary group in one file.
     let groups = glossary_groups(root, &cfg);
@@ -1217,6 +1260,81 @@ fn catalog_paths(root: &Path) -> Vec<PathBuf> {
 
 fn catalog_contradiction_findings(root: &Path) -> Result<Vec<KbFinding>> {
     catalog_contradiction_findings_from_paths(&catalog_paths(root))
+}
+
+fn catalog_needs_review_findings(
+    root: &Path,
+    seen: &mut HashSet<String>,
+) -> Result<Vec<KbFinding>> {
+    catalog_needs_review_findings_from_paths(&catalog_paths(root), seen)
+}
+
+fn catalog_needs_review_findings_from_paths(
+    paths: &[PathBuf],
+    seen: &mut HashSet<String>,
+) -> Result<Vec<KbFinding>> {
+    let mut findings = Vec::new();
+    for path in paths {
+        let conn = duckdb::Connection::open(path)?;
+        let mut stmt = conn.prepare(
+            "SELECT t.target_id,
+                    COALESCE(d.path, d.canonical_ref, t.target_id),
+                    COALESCE(t.\"by\", ''),
+                    COALESCE(t.\"at\", ''),
+                    COALESCE(t.note, ''),
+                    t.metadata_json
+               FROM tags t
+               LEFT JOIN documents d ON t.target_type = 'doc' AND d.doc_id = t.target_id
+              WHERE t.status = 'needs-review'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        })?;
+        for row in rows.flatten() {
+            let (target_id, display, by, at, note, metadata_json) = row;
+            let target = mirrored_tag_target(&metadata_json).unwrap_or(display);
+            let key = norm_ref(&target);
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            let mut message = format!(
+                "flagged needs-review by {} on {}",
+                empty_as_unknown(&by),
+                empty_as_unknown(&at)
+            );
+            if !note.trim().is_empty() {
+                message.push_str(&format!(" — {}", note.trim()));
+            }
+            findings.push(KbFinding {
+                severity: "warn",
+                rule: "needs-review",
+                file: if key.is_empty() { target_id } else { key },
+                message,
+            });
+        }
+    }
+    Ok(findings)
+}
+
+fn mirrored_tag_target(metadata_json: &str) -> Option<String> {
+    serde_json::from_str::<Value>(metadata_json)
+        .ok()
+        .and_then(|v| v["target"].as_str().map(norm_ref))
+}
+
+fn empty_as_unknown(s: &str) -> &str {
+    if s.trim().is_empty() {
+        "?"
+    } else {
+        s
+    }
 }
 
 fn catalog_contradiction_findings_from_paths(paths: &[PathBuf]) -> Result<Vec<KbFinding>> {
@@ -1613,6 +1731,68 @@ mod tests {
     }
 
     #[test]
+    fn audit_kb_reads_needs_review_from_catalog_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.duckdb");
+        let conn = duckdb::Connection::open(&catalog).unwrap();
+        index::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO documents (
+                doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind,
+                author_id, author_name, created_at, updated_at, observed_at, version,
+                content_sha256, body, metadata_json
+            ) VALUES ('doc1', 'git', 'docs/review.md', 'git:docs/review.md', 'Review', '', 'docs/review.md',
+                'text/markdown', 'doc', '', '', NULL, NULL, 'now', '1', 'sha', 'body', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tags (target_type, target_id, status, note, \"by\", \"at\", metadata_json)
+             VALUES ('doc', 'doc1', 'needs-review', 'check claims', 'tester', '2026-07-06', ?1)",
+            duckdb::params![
+                json!({"source": "tags.entries", "target": "./docs/review.md"}).to_string()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut seen = HashSet::new();
+        let findings =
+            catalog_needs_review_findings_from_paths(std::slice::from_ref(&catalog), &mut seen)
+                .unwrap();
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule, "needs-review");
+        assert_eq!(findings[0].file, "docs/review.md");
+        assert!(findings[0].message.contains("check claims"));
+    }
+
+    #[test]
+    fn audit_kb_dedupes_catalog_needs_review_against_config_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.duckdb");
+        let conn = duckdb::Connection::open(&catalog).unwrap();
+        index::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO tags (target_type, target_id, status, note, \"by\", \"at\", metadata_json)
+             VALUES ('doc', 'doc1', 'needs-review', '', 'tester', '2026-07-06', ?1)",
+            duckdb::params![
+                json!({"source": "tags.entries", "target": "docs/review.md"}).to_string()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let mut seen = HashSet::new();
+        seen.insert("docs/review.md".to_string());
+        let findings =
+            catalog_needs_review_findings_from_paths(std::slice::from_ref(&catalog), &mut seen)
+                .unwrap();
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
     fn glossary_add_list_and_groups() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1678,6 +1858,46 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = resolved(dir.path());
         assert!(glossary_groups(dir.path(), &cfg).is_empty());
+    }
+
+    #[test]
+    fn glossary_harvest_seen_merges_repo_and_catalog_terms() {
+        let mut repo = HashMap::new();
+        collect_glossary_harvest_terms("Users can login from the app.", &mut repo);
+
+        let mut catalog = HashMap::new();
+        collect_glossary_harvest_terms("The docs say to log in before setup.", &mut catalog);
+
+        merge_harvest_seen(&mut repo, catalog);
+
+        let login = repo.get("login").unwrap();
+        assert!(login.contains("login"));
+        assert!(login.contains("log in"));
+    }
+
+    #[test]
+    fn glossary_harvest_reads_catalog_document_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.duckdb");
+        let conn = duckdb::Connection::open(&path).unwrap();
+        crate::index::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO documents (
+                doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind,
+                author_id, author_name, created_at, updated_at, observed_at, version,
+                content_sha256, body, metadata_json
+            ) VALUES ('doc1', 'slack', 'C123', 'slack:C123', 'Thread', '', '',
+                'text/markdown', 'doc', '', '', NULL, NULL, 'now', '1', 'hash',
+                'Some teams write email and others write e-mail.', '{}')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let seen = catalog_glossary_harvest_seen(&[path]).unwrap();
+        let email = seen.get("email").unwrap();
+        assert!(email.contains("email"));
+        assert!(email.contains("e-mail"));
     }
 
     #[test]

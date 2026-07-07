@@ -1,6 +1,7 @@
 //! DuckDB catalog, SQL surface, search, and sync (SPEC §7/§8).
 pub mod search;
 pub mod sync;
+pub mod vector;
 
 use crate::{cloud, config, workspace};
 use anyhow::Result;
@@ -679,6 +680,21 @@ mod tests {
     fn empty_sql_results_exit_nonzero() {
         assert_eq!(super::read_result_exit_code(0), 1);
         assert_eq!(super::read_result_exit_code(1), 0);
+    }
+
+    #[test]
+    fn schema_records_zero_embedding_dims_until_vectors_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        let dims: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'embedding.dims'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(dims, "0");
     }
 
     #[test]

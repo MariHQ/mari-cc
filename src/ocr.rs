@@ -1,12 +1,15 @@
-//! PDF text extraction and OCR (SPEC §4.3 / §8.6), backed exclusively by
-//! `baidu/Unlimited-OCR` — no fallback engines. Backends:
-//!   `text`      — embedded text only (PyMuPDF)
-//!   `auto`      — embedded text; OCR only pages with <16 extractable chars
-//!   `ocr-model` — every page through the model
-//! The toolchain (a Python venv with PyMuPDF, plus torch/transformers for
-//! the model tiers) is auto-provisioned into `~/.mari/ocr` on first use
-//! unless `ocr.auto_install=false`. Any failure is loud: the file errors,
-//! nothing is silently substituted.
+//! PDF text extraction and OCR (SPEC §4.3 / §8.6).
+//!
+//! The DEFAULT is pure Rust/C: `text` extracts embedded text natively via
+//! `pdf-extract` — no Python, no toolchain. The `baidu/Unlimited-OCR`
+//! pipeline is the optional backup for scanned content, selected by config:
+//!   `text`      — embedded text only (Rust-native; the default)
+//!   `auto`      — Rust-native embedded text; pages with <16 extractable
+//!                 chars go through the Unlimited-OCR Python toolchain
+//!   `ocr-model` — every page through the Unlimited-OCR Python toolchain
+//! The Python toolchain is provisioned into `~/.mari/ocr` on first use of a
+//! model tier (unless `ocr.auto_install=false`); the default backend never
+//! touches it. Within the model tiers there are no fallback engines.
 
 use crate::{config, workspace};
 use anyhow::{anyhow, Result};
@@ -49,7 +52,9 @@ fn venv_python() -> PathBuf {
 /// Whether this backend needs the model stack (torch/transformers), not
 /// just PyMuPDF.
 pub fn needs_model(backend: &str) -> bool {
-    backend != "text"
+    // `text` is Rust-native; `auto` provisions lazily only when it meets a
+    // sparse page; `ocr-model` needs the stack up front.
+    backend == "ocr-model"
 }
 
 const BASE_PKGS: &[&str] = &["pymupdf==1.27.2.2"];
@@ -71,7 +76,10 @@ pub fn ensure_toolchain(cfg: &OcrConfig) -> Result<PathBuf> {
     let python = venv_python();
     let base_ok = home.join(".base-ok");
     let model_ok = home.join(".model-ok");
-    let need_model = needs_model(&cfg.backend);
+    // run_python_ocr is only called for model tiers, so the model stack is
+    // always required here.
+    let need_model = true;
+    let _ = needs_model(&cfg.backend);
 
     let provisioned = python.exists() && base_ok.exists() && (!need_model || model_ok.exists());
     if !provisioned {
@@ -139,20 +147,88 @@ pub fn extract_pdf(path: &Path) -> Result<String> {
 }
 
 pub fn extract_pdf_with(path: &Path, cfg: &OcrConfig) -> Result<String> {
-    if !matches!(cfg.backend.as_str(), "text" | "auto" | "ocr-model") {
+    match cfg.backend.as_str() {
+        // Rust-native default: no Python, no toolchain.
+        "text" => native_text(path),
+        "auto" => {
+            let pages = native_pages(path)?;
+            let sparse: Vec<usize> = pages
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.trim().chars().count() < 16)
+                .map(|(i, _)| i)
+                .collect();
+            if sparse.is_empty() {
+                return join_pages(&pages, path);
+            }
+            // Sparse pages exist: the optional Unlimited-OCR backup kicks in.
+            let ocred = run_python_ocr(path, cfg, Some(&sparse))?;
+            let mut merged = pages;
+            for (slot, text) in sparse.iter().zip(ocred.split('\u{c}')) {
+                merged[*slot] = text.to_string();
+            }
+            join_pages(&merged, path)
+        }
+        "ocr-model" => run_python_ocr(path, cfg, None),
+        other => Err(anyhow!(
+            "unknown ocr.backend `{other}` — use text | auto | ocr-model"
+        )),
+    }
+}
+
+/// Whole-document embedded text, natively (pdf-extract; Rust/C only).
+fn native_text(path: &Path) -> Result<String> {
+    let text = pdf_extract::extract_text(path)
+        .map_err(|e| anyhow!("PDF text extraction failed for {}: {e}", path.display()))?;
+    if text.trim().is_empty() {
         return Err(anyhow!(
-            "unknown ocr.backend `{}` — use text | auto | ocr-model",
-            cfg.backend
+            "no embedded text in {} — for scanned PDFs set `ocr.backend` to `auto` or `ocr-model` (Unlimited-OCR)",
+            path.display()
         ));
     }
+    Ok(text)
+}
+
+/// Per-page embedded text, natively.
+fn native_pages(path: &Path) -> Result<Vec<String>> {
+    pdf_extract::extract_text_by_pages(path)
+        .map_err(|e| anyhow!("PDF text extraction failed for {}: {e}", path.display()))
+}
+
+fn join_pages(pages: &[String], path: &Path) -> Result<String> {
+    let joined = pages
+        .iter()
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if joined.is_empty() {
+        return Err(anyhow!("OCR produced no text for {}", path.display()));
+    }
+    Ok(joined)
+}
+
+/// The optional Python backup: baidu/Unlimited-OCR, provisioned on demand.
+/// `pages` = OCR only these 0-based pages (output separated by form feeds);
+/// None = whole document.
+fn run_python_ocr(path: &Path, cfg: &OcrConfig, pages: Option<&[usize]>) -> Result<String> {
     let python = ensure_toolchain(cfg)?;
-    let out = Command::new(&python)
-        .arg(ocr_home().join("run_ocr.py"))
+    let mut cmd = Command::new(&python);
+    cmd.arg(ocr_home().join("run_ocr.py"))
         .arg("--pdf")
         .arg(path)
-        .args(["--backend", &cfg.backend])
         .args(["--dpi", &cfg.dpi.to_string()])
-        .args(["--model", &cfg.model])
+        .args(["--model", &cfg.model]);
+    match pages {
+        Some(idx) => {
+            let list: Vec<String> = idx.iter().map(|i| i.to_string()).collect();
+            cmd.args(["--backend", "ocr-pages", "--pages", &list.join(",")]);
+        }
+        None => {
+            cmd.args(["--backend", "ocr-model"]);
+        }
+    }
+    let out = cmd
         .output()
         .map_err(|e| anyhow!("failed to run the OCR toolchain: {e}"))?;
     if !out.status.success() {
@@ -272,7 +348,8 @@ def ocr_pages(model_id, image_files):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pdf", required=True)
-    ap.add_argument("--backend", choices=["text", "auto", "ocr-model"], required=True)
+    ap.add_argument("--backend", choices=["text", "auto", "ocr-model", "ocr-pages"], required=True)
+    ap.add_argument("--pages", default="")  # 0-based, comma-separated (ocr-pages)
     ap.add_argument("--dpi", type=int, default=200)
     ap.add_argument("--model", default="baidu/Unlimited-OCR")
     args = ap.parse_args()
@@ -284,6 +361,21 @@ def main():
         tmp = tempfile.mkdtemp(prefix="mari_ocr_")
         images = [render_page(doc, i, args.dpi, tmp) for i in range(n)]
         sys.stdout.write(ocr_pages(args.model, images))
+        return
+
+    if args.backend == "ocr-pages":
+        # OCR only the requested pages; results joined by form feeds so the
+        # caller can splice them back into natively extracted text.
+        wanted = [int(i) for i in args.pages.split(",") if i != ""]
+        tmp = tempfile.mkdtemp(prefix="mari_ocr_")
+        results = []
+        for i in wanted:
+            if i < 0 or i >= n:
+                results.append("")
+                continue
+            image = render_page(doc, i, args.dpi, tmp)
+            results.append(ocr_pages(args.model, [image]))
+        sys.stdout.write("\x0c".join(results))
         return
 
     page_text = [doc[i].get_text() for i in range(n)]
@@ -310,54 +402,51 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn config_defaults_to_unlimited_ocr() {
-        let cfg = ocr_config(
-            &json!({"ocr": {"backend": "auto", "model": "", "dpi": 200, "auto_install": true}}),
-        );
-        assert_eq!(cfg.model, "baidu/Unlimited-OCR");
-        assert_eq!(cfg.backend, "auto");
-        assert_eq!(cfg.dpi, 200);
-        assert!(needs_model("auto"));
-        assert!(needs_model("ocr-model"));
-        assert!(!needs_model("text"));
+    fn cfg(backend: &str, auto_install: bool) -> OcrConfig {
+        OcrConfig {
+            backend: backend.into(),
+            model: DEFAULT_MODEL.into(),
+            dpi: 200,
+            auto_install,
+        }
     }
 
     #[test]
-    fn unknown_backend_and_disabled_install_fail_loudly() {
-        let bad = OcrConfig {
-            backend: "tesseract".into(),
-            model: DEFAULT_MODEL.into(),
-            dpi: 200,
-            auto_install: true,
-        };
-        let err = extract_pdf_with(Path::new("/nonexistent.pdf"), &bad).unwrap_err();
-        assert!(err.to_string().contains("unknown ocr.backend"));
-
-        let off = OcrConfig {
-            backend: "text".into(),
-            model: DEFAULT_MODEL.into(),
-            dpi: 200,
-            auto_install: false,
-        };
-        // With auto_install off and (presumably) no provisioned toolchain,
-        // this must error rather than fall back. If a toolchain exists on
-        // this machine the extract still errors on the missing file.
-        let err = extract_pdf_with(Path::new("/nonexistent-mari-test.pdf"), &off).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("auto_install") || msg.contains("OCR failed") || msg.contains("no text"),
-            "unexpected error: {msg}"
+    fn config_defaults_to_native_text_with_unlimited_ocr_backup() {
+        let c = ocr_config(
+            &json!({"ocr": {"backend": "text", "model": "", "dpi": 200, "auto_install": true}}),
         );
+        assert_eq!(c.backend, "text");
+        assert_eq!(c.model, "baidu/Unlimited-OCR");
+        assert!(!needs_model("text"));
+        assert!(!needs_model("auto")); // lazy — only when sparse pages appear
+        assert!(needs_model("ocr-model"));
+    }
+
+    #[test]
+    fn native_text_extracts_the_fixture_without_python() {
+        let path = Path::new("fixtures/sample.pdf");
+        let text = extract_pdf_with(path, &cfg("text", false)).unwrap();
+        assert!(text.contains("$49 per seat"), "got: {text}");
+        // auto on a text-dense PDF also stays Rust-native (no toolchain,
+        // auto_install=false would otherwise error).
+        let text = extract_pdf_with(path, &cfg("auto", false)).unwrap();
+        assert!(text.contains("Mari sample document"));
+    }
+
+    #[test]
+    fn unknown_backend_fails_loudly() {
+        let err = extract_pdf_with(Path::new("fixtures/sample.pdf"), &cfg("tesseract", true))
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown ocr.backend"));
     }
 
     #[test]
     fn runner_embeds_spec_constants() {
         assert!(RUNNER_PY.contains("SPARSE_CHARS = 16"));
         assert!(RUNNER_PY.contains("baidu/Unlimited-OCR"));
-        assert!(RUNNER_PY.contains("Multi page parsing."));
+        assert!(RUNNER_PY.contains("ocr-pages"));
         assert!(RUNNER_PY.contains("trust_remote_code=True"));
-        // No fallback engines anywhere in the runner.
         assert!(!RUNNER_PY.to_lowercase().contains("tesseract"));
     }
 }

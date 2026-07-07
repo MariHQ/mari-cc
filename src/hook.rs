@@ -32,9 +32,7 @@ fn run_inner(args: &[String]) -> anyhow::Result<()> {
         return Ok(());
     }
     let detector_settings = detector_settings_for_hook(&cfg);
-    if detector_settings.grammar {
-        eprintln!("note: grammar pass not available in this build");
-    }
+
     let max = cfg["hook"]["maxFindings"].as_u64().unwrap_or(20) as usize;
     for file in files {
         if !file.exists() {
@@ -149,7 +147,7 @@ fn prose_lint(root: &Path, file: &Path, settings: &detector::runner::DetectorSet
 }
 
 fn i18n_notice(root: &Path, file: &Path) {
-    let siblings = i18n::siblings(file);
+    let siblings = i18n::source_language_siblings(file);
     if siblings.is_empty() {
         return;
     }
@@ -183,7 +181,7 @@ fn nudge_notices(root: &Path, cfg: &Value, file: &Path) -> bool {
     let mut fired = false;
     for nudge in cfg["nudges"].as_array().into_iter().flatten() {
         let when = &nudge["when"];
-        let Some(when_file) = when["file"].as_str() else {
+        let Some(when_file) = endpoint_path(when) else {
             continue;
         };
         if !glob_match(when_file, &rel) {
@@ -206,7 +204,7 @@ fn nudge_notices(root: &Path, cfg: &Value, file: &Path) -> bool {
             .into_iter()
             .flatten()
             .filter_map(|e| {
-                let file = e["file"].as_str()?;
+                let file = endpoint_path(e)?;
                 Some(match e["symbol"].as_str() {
                     Some(sym) => format!("{file}#{sym}"),
                     None => file.to_string(),
@@ -227,6 +225,12 @@ fn nudge_notices(root: &Path, cfg: &Value, file: &Path) -> bool {
         fired = true;
     }
     fired
+}
+
+fn endpoint_path(endpoint: &Value) -> Option<&str> {
+    endpoint["path"]
+        .as_str()
+        .or_else(|| endpoint["file"].as_str())
 }
 
 fn lineage_notices(root: &Path, file: &Path) -> bool {
@@ -619,6 +623,15 @@ mod tests {
     }
 
     #[test]
+    fn nudge_endpoint_path_prefers_spec_key_and_accepts_legacy_file() {
+        let spec = json!({"path": "docs/api.md", "file": "legacy.md"});
+        let legacy = json!({"file": "docs/legacy.md"});
+
+        assert_eq!(endpoint_path(&spec), Some("docs/api.md"));
+        assert_eq!(endpoint_path(&legacy), Some("docs/legacy.md"));
+    }
+
+    #[test]
     fn hook_grammar_config_enables_detector_grammar() {
         let cfg = json!({
             "hook": { "grammar": true },
@@ -816,7 +829,7 @@ fn commit_association(root: &Path, cfg: &Value) -> anyhow::Result<()> {
     }
     for nudge in cfg["nudges"].as_array().cloned().unwrap_or_default() {
         let name = nudge["name"].as_str().unwrap_or("nudge");
-        let when = nudge["when"]["path"].as_str().unwrap_or("");
+        let when = endpoint_path(&nudge["when"]).unwrap_or("");
         let when_glob = glob_set(Some(&vec![Value::String(strip_symbol(when).to_string())]));
         let excludes = glob_set(nudge["exclude"].as_array());
         let trigger = touched
@@ -829,7 +842,7 @@ fn commit_association(root: &Path, cfg: &Value) -> anyhow::Result<()> {
             .as_array()
             .map(|a| {
                 a.iter()
-                    .filter_map(|t| t["path"].as_str())
+                    .filter_map(endpoint_path)
                     .map(|p| strip_symbol(p).to_string())
                     .collect()
             })
@@ -995,7 +1008,6 @@ mod commit_tests {
     }
 }
 
-
 /// §15.1 job 7 — knowledge pending-impact: note when scanned knowledge
 /// (scan.* config, §4.9) affecting this file changed recently.
 fn pending_impact_notice(root: &Path, cfg: &Value, file: &Path) {
@@ -1037,7 +1049,9 @@ fn pending_impact_notice(root: &Path, cfg: &Value, file: &Path) {
         if !db.exists() {
             continue;
         }
-        let Ok(conn) = duckdb::Connection::open(&db) else { continue };
+        let Ok(conn) = duckdb::Connection::open(&db) else {
+            continue;
+        };
         let Ok(mut stmt) = conn.prepare(
             "SELECT source_id, canonical_ref, title, updated_at FROM documents              WHERE source_id IN ('gdocs', 'slack') AND updated_at > ?1              ORDER BY updated_at DESC LIMIT 200",
         ) else {
@@ -1056,8 +1070,12 @@ fn pending_impact_notice(root: &Path, cfg: &Value, file: &Path) {
         for (source, cref, title, updated) in rows.flatten() {
             // Scoped to the scanned refs (§4.9).
             let scanned = match source.as_str() {
-                "gdocs" => gdoc_refs.iter().any(|r| cref.contains(r.as_str()) || r.contains("docs.google.com")),
-                "slack" => channels.iter().any(|c| cref.contains(c.as_str()) || title.contains(&format!("#{c}"))),
+                "gdocs" => gdoc_refs
+                    .iter()
+                    .any(|r| cref.contains(r.as_str()) || r.contains("docs.google.com")),
+                "slack" => channels
+                    .iter()
+                    .any(|c| cref.contains(c.as_str()) || title.contains(&format!("#{c}"))),
                 _ => false,
             };
             if !scanned {

@@ -45,15 +45,6 @@ const SOURCES: &[SourceInfo] = &[
         cred_fields: "token (github_pat_/ghp_)",
     },
     SourceInfo {
-        key: "git",
-        label: "Git history",
-        auth: None,
-        list_keys: &["git.repos"],
-        auto_index: "the cwd repo",
-        lookback_key: None,
-        cred_fields: "none",
-    },
-    SourceInfo {
         key: "confluence",
         label: "Confluence",
         auth: Some("confluence"),
@@ -124,6 +115,15 @@ const SOURCES: &[SourceInfo] = &[
         auto_index: "none — track ≥1 team",
         lookback_key: None,
         cred_fields: "personal API key",
+    },
+    SourceInfo {
+        key: "git",
+        label: "Git history",
+        auth: None,
+        list_keys: &["git.repos"],
+        auto_index: "the cwd repo",
+        lookback_key: None,
+        cred_fields: "none",
     },
     SourceInfo {
         key: "localfiles",
@@ -264,7 +264,7 @@ fn init_style() -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::auth_command_template;
+    use super::{auth_command_template, SOURCES};
 
     #[test]
     fn auth_command_templates_are_concrete() {
@@ -278,5 +278,29 @@ mod tests {
         );
         assert_eq!(auth_command_template("google"), "mari auth google");
         assert_eq!(auth_command_template("microsoft"), "mari auth microsoft");
+    }
+
+    #[test]
+    fn source_display_order_puts_git_after_cloud_sources_and_localfiles_last() {
+        let keys = SOURCES.iter().map(|s| s.key).collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "slack",
+                "gdocs",
+                "github",
+                "confluence",
+                "jira",
+                "zendesk",
+                "salesforce",
+                "hubspot",
+                "microsoft",
+                "discord",
+                "linear",
+                "git",
+                "localfiles"
+            ]
+        );
     }
 }

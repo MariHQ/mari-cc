@@ -24,10 +24,6 @@ pub fn run(
     limit: Option<usize>,
     _threshold: Option<f64>,
 ) -> Result<i32> {
-    if deep {
-        eprintln!("note: check --deep attention grounding is not available in this build; running deterministic API-surface checks only");
-    }
-
     let root = workspace::work_root();
     let cfg = config::resolve(Some(&root));
     let ignored = ignored_rules(&cfg);
@@ -58,6 +54,13 @@ pub fn run(
     }
     if deep && !ignored.contains("undocumented-symbol") {
         findings.extend(undocumented_symbol_findings(&root, limit));
+    }
+    if deep && !ignored.contains("doc-unanchored") {
+        findings.extend(unanchored_doc_findings(
+            &root,
+            limit,
+            _threshold.unwrap_or(0.3),
+        ));
     }
 
     if json {
@@ -110,6 +113,8 @@ fn community_findings(root: &Path) -> Vec<Finding> {
                 message: format!("required community-health file is missing: {file}"),
                 target: None,
             });
+        } else {
+            out.extend(community_validity_findings(root, file, "error"));
         }
     }
     for file in recommended {
@@ -121,9 +126,57 @@ fn community_findings(root: &Path) -> Vec<Finding> {
                 message: format!("recommended community-health file is missing: {file}"),
                 target: None,
             });
+        } else {
+            out.extend(community_validity_findings(root, file, "warn"));
         }
     }
     out
+}
+
+fn community_validity_findings(
+    root: &Path,
+    rel_path: &str,
+    severity: &'static str,
+) -> Vec<Finding> {
+    let path = root.join(rel_path);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return vec![Finding {
+            rule_id: "community-invalid-file",
+            severity,
+            path: rel_path.into(),
+            message: format!("community-health file is unreadable: {rel_path}"),
+            target: None,
+        }];
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == "<TODO>" || trimmed == "TODO" {
+        return vec![Finding {
+            rule_id: "community-invalid-file",
+            severity,
+            path: rel_path.into(),
+            message: format!("community-health file has no usable content: {rel_path}"),
+            target: None,
+        }];
+    }
+    if is_markdown(&path) && !has_top_level_heading(&text) {
+        return vec![Finding {
+            rule_id: "community-invalid-file",
+            severity,
+            path: rel_path.into(),
+            message: format!(
+                "community-health markdown file needs a top-level heading: {rel_path}"
+            ),
+            target: None,
+        }];
+    }
+    Vec::new()
+}
+
+fn has_top_level_heading(text: &str) -> bool {
+    text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with("# ") || trimmed.starts_with("#\t")
+    })
 }
 
 fn markdown_files(root: &Path) -> Vec<PathBuf> {
@@ -338,6 +391,70 @@ fn undocumented_symbol_findings(root: &Path, limit: Option<usize>) -> Vec<Findin
         .collect()
 }
 
+/// §5.6 --deep, attention half: doc sentences anchored to nothing in the
+/// public surface (Grounding — surface as context, each doc page as query).
+/// Conceptual prose legitimately floats above the surface: leads, not verdicts.
+fn unanchored_doc_findings(root: &Path, limit: Option<usize>, threshold: f64) -> Vec<Finding> {
+    let mut symbols = surface::collect_surface(root, root)
+        .into_iter()
+        .filter(|item| is_code_surface_kind(&item.kind))
+        .filter(|item| !is_test_or_fixture_path(&item.file))
+        .collect::<Vec<_>>();
+    symbols.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
+    if symbols.is_empty() {
+        return Vec::new();
+    }
+    let mut surface_text = String::new();
+    for item in &symbols {
+        surface_text.push_str(&format!(
+            "{} {}  ({}:{})\n",
+            item.kind, item.name, item.file, item.line
+        ));
+    }
+    surface_text.truncate(48_000); // keep the attention window tractable
+
+    let mut docs = markdown_files(root);
+    docs.truncate(limit.unwrap_or(8).max(1));
+    let mut out = Vec::new();
+    for doc in docs {
+        let Ok(text) = std::fs::read_to_string(&doc) else {
+            continue;
+        };
+        if text.trim().len() < 40 {
+            continue;
+        }
+        match crate::attn::analyze(
+            &surface_text,
+            &text,
+            crate::attn::Mode::Grounding,
+            threshold,
+            None,
+        ) {
+            Ok(flagged) => {
+                for f in flagged {
+                    let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    out.push(Finding {
+                        rule_id: "doc-unanchored",
+                        severity: "advisory",
+                        path: rel(root, &doc),
+                        message: format!(
+                            "passage barely attends to the public surface ({:.0}% of peak) — re-verify against the code: {}",
+                            f.score * 100.0,
+                            snippet.chars().take(90).collect::<String>()
+                        ),
+                        target: Some(format!("≈L{}", crate::attn::line_of_offset(&text, f.offset))),
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("✗ check --deep attention pass failed: {e:#}");
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn is_code_surface_kind(kind: &str) -> bool {
     matches!(kind, "rust" | "js-ts" | "python" | "go")
 }
@@ -393,7 +510,7 @@ fn links(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let parser = Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES);
     for event in parser {
-        if let Event::Start(Tag::Link { dest_url, .. }) = event {
+        if let Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) = event {
             let dest = dest_url.trim();
             if !dest.is_empty() {
                 out.push(dest.to_string());
@@ -552,6 +669,20 @@ mod tests {
     }
 
     #[test]
+    fn link_check_reports_missing_local_images() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let doc = root.join("README.md");
+        std::fs::write(&doc, "# Home\n\n![diagram](assets/missing.png)\n").unwrap();
+
+        let findings = link_findings(root, &[doc]);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "link-broken");
+        assert_eq!(findings[0].target.as_deref(), Some("assets/missing.png"));
+    }
+
+    #[test]
     fn link_check_resolves_reference_style_links() {
         let dir = tempdir().unwrap();
         let root = dir.path();
@@ -644,6 +775,44 @@ mod tests {
             .iter()
             .any(|f| f.rule_id == "asset-missing-section"));
         assert!(!findings.iter().any(|f| f.rule_id == "postmortem-blame"));
+    }
+
+    #[test]
+    fn community_check_reports_empty_required_file_as_invalid() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("README.md"), "# Project\n").unwrap();
+        std::fs::write(root.join("LICENSE"), "").unwrap();
+        std::fs::write(root.join("CONTRIBUTING.md"), "# Contributing\n").unwrap();
+
+        let findings = community_findings(root);
+
+        assert!(findings.iter().any(|f| {
+            f.rule_id == "community-invalid-file" && f.path == "LICENSE" && f.severity == "error"
+        }));
+    }
+
+    #[test]
+    fn community_check_reports_markdown_health_file_without_h1() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("README.md"), "Project overview\n").unwrap();
+        std::fs::write(root.join("LICENSE"), "MIT\n").unwrap();
+        std::fs::write(root.join("CONTRIBUTING.md"), "# Contributing\n").unwrap();
+        std::fs::write(
+            root.join("SECURITY.md"),
+            "Report vulnerabilities by email.\n",
+        )
+        .unwrap();
+
+        let findings = community_findings(root);
+
+        assert!(findings.iter().any(|f| {
+            f.rule_id == "community-invalid-file" && f.path == "README.md" && f.severity == "error"
+        }));
+        assert!(findings.iter().any(|f| {
+            f.rule_id == "community-invalid-file" && f.path == "SECURITY.md" && f.severity == "warn"
+        }));
     }
 
     #[test]

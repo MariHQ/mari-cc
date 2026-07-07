@@ -138,8 +138,7 @@ pub fn run(args: SearchArgs) -> Result<i32> {
                     .map(|a| format!("  author={a}"))
                     .unwrap_or_default()
             );
-            let full = args.full.unwrap_or(280);
-            println!("  {}", snippet(&h.text, full));
+            print_body_preview(&h.text, args.full);
             if let Some(note) = &h.tag_note {
                 println!("  tag note: {note}");
             }
@@ -148,11 +147,59 @@ pub fn run(args: SearchArgs) -> Result<i32> {
             }
             for ctx in &h.context {
                 println!("  + {}:{}-{}", ctx.chunk_id, ctx.start_line, ctx.end_line);
-                println!("    {}", snippet(&ctx.text, full));
+                print_context_preview(&ctx.text, args.full);
             }
         }
     }
     Ok(search_exit_code(&hits))
+}
+
+/// Top-k distinct documents for a query — (canonical_ref, body) pairs for
+/// downstream attention passes (`mari explore --focus`).
+pub fn top_docs(query: &str, k: usize) -> Result<Vec<(String, String)>> {
+    let args = SearchArgs {
+        query: query.to_string(),
+        full: None,
+        variants: Vec::new(),
+        k: Some(k * 3),
+        source: None,
+        doc: None,
+        author: None,
+        since: None,
+        before: None,
+        tag: None,
+        no_tag: None,
+        expand: None,
+        json: false,
+    };
+    let query_terms = weighted_terms(query, &[]);
+    if query_terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let catalogs = read_catalogs()?;
+    let catalog_refs: Vec<&Connection> = catalogs.iter().collect();
+    let hits = ranked_hits_across_catalogs(&args, &query_terms, k * 3, &catalog_refs)?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut seen = HashSet::new();
+    for h in hits {
+        if !seen.insert(h.doc_id.clone()) {
+            continue;
+        }
+        for conn in &catalog_refs {
+            if let Ok(body) = conn.query_row(
+                "SELECT body FROM documents WHERE doc_id = ?1",
+                [&h.doc_id],
+                |r| r.get::<_, String>(0),
+            ) {
+                out.push((h.canonical_ref.clone(), body));
+                break;
+            }
+        }
+        if out.len() >= k {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 fn search_limit(args: &SearchArgs) -> usize {
@@ -191,7 +238,18 @@ fn ranked_hits_across_catalogs(
 ) -> Result<Vec<Hit>> {
     let mut all_hits = Vec::new();
     let per_catalog_limit = limit.saturating_mul(5).max(limit);
-    for conn in catalogs {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    let hybrid = cfg["search"]["hybrid"].as_bool().unwrap_or(true);
+    let rrf_k = cfg["search"]["rrf_k"].as_f64().unwrap_or(60.0);
+    let pool = (limit * 4).max(cfg["search"]["keyword_pool"].as_u64().unwrap_or(200) as usize);
+    // §7.3 fusion inputs: one vector list per phrasing (main 1.0, variants 0.7),
+    // merged by weighted RRF into a single vector ranking per catalog.
+    let mut phrasings = vec![args.query.clone()];
+    phrasings.extend(args.variants.iter().cloned());
+    for (i, conn) in catalogs.iter().enumerate() {
+        let is_global = i > 0;
+        let vector_ranking = super::vector::rank_many(is_global, &phrasings, pool)
+            .map(|lists| merge_vector_lists(&lists, rrf_k));
         let mut hits = search_hits(
             conn,
             &args.query,
@@ -203,6 +261,9 @@ fn ranked_hits_across_catalogs(
             args.since.as_deref(),
             args.before.as_deref(),
             per_catalog_limit,
+            vector_ranking.as_deref(),
+            hybrid,
+            rrf_k,
         )?;
         if let Some(tag) = args.tag.as_deref() {
             hits.retain(|h| has_tag(conn, &h.doc_id, tag));
@@ -236,6 +297,7 @@ fn dedupe_hits(hits: &mut Vec<Hit>) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_hits(
     conn: &Connection,
     query: &str,
@@ -247,7 +309,16 @@ fn search_hits(
     since: Option<&str>,
     before: Option<&str>,
     limit: usize,
+    vector_ranking: Option<&[(String, f64)]>,
+    hybrid: bool,
+    rrf_k: f64,
 ) -> Result<Vec<Hit>> {
+    let vector_ranks: Option<std::collections::HashMap<&str, usize>> = vector_ranking.map(|v| {
+        v.iter()
+            .enumerate()
+            .map(|(rank, (id, _))| (id.as_str(), rank))
+            .collect()
+    });
     let mut stmt = conn.prepare(
         "SELECT d.doc_id, c.chunk_id, d.source_id, d.canonical_ref, COALESCE(d.title, ''), d.path, d.url,
                 c.heading_path, c.start_byte, c.end_byte, c.start_line, c.end_line, c.text,
@@ -310,19 +381,28 @@ fn search_hits(
             continue;
         }
         let text: String = r.get(12)?;
+        let chunk_id: String = r.get(1)?;
         let lower = text.to_lowercase();
         let matched: Vec<String> = terms
             .iter()
             .filter(|t| lower.contains(t.term.as_str()))
             .map(|t| t.term.clone())
             .collect();
-        if matched.is_empty() {
+        let in_vector_pool = vector_ranks
+            .as_ref()
+            .map(|m| m.contains_key(chunk_id.as_str()))
+            .unwrap_or(false);
+        if matched.is_empty() && !in_vector_pool {
             continue;
         }
-        let score = weighted_keyword_score_float(
-            keyword_score_weighted(&lower, query, variants, terms),
-            query,
-        );
+        let score = if matched.is_empty() {
+            0
+        } else {
+            weighted_keyword_score_float(
+                keyword_score_weighted(&lower, query, variants, terms),
+                query,
+            )
+        };
         let (tag, tag_note) = doc_tag(conn, &doc_id)?;
         let replacement = if tag.as_deref() == Some("deprecated") {
             replacement_pointer(conn, &doc_id)?
@@ -331,7 +411,7 @@ fn search_hits(
         };
         hits.push(Hit {
             doc_id,
-            chunk_id: r.get(1)?,
+            chunk_id,
             chunk_index: r.get(17)?,
             source: source_id,
             canonical_ref,
@@ -359,8 +439,88 @@ fn search_hits(
             .cmp(&a.score)
             .then(a.canonical_ref.cmp(&b.canonical_ref))
     });
+    if let Some(ranking) = vector_ranking {
+        fuse_with_vectors(&mut hits, ranking, query, hybrid, rrf_k);
+    }
     hits.truncate(limit);
     Ok(hits)
+}
+
+/// Weighted reciprocal-rank fusion (§7.3/§7.4): the keyword ranking (hits
+/// are already keyword-sorted) fuses with the vector ranking; `hybrid=false`
+/// means vector-only. Auto-routing scales the modality weights by query type.
+fn fuse_with_vectors(
+    hits: &mut Vec<Hit>,
+    ranking: &[(String, f64)],
+    query: &str,
+    hybrid: bool,
+    rrf_k: f64,
+) {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    let auto = cfg["search"]["auto_weight"].as_bool().unwrap_or(true);
+    let mut kw_w = cfg["search"]["keyword_weight"].as_f64().unwrap_or(1.0);
+    let mut vec_w = cfg["search"]["vector_weight"].as_f64().unwrap_or(1.0);
+    if auto {
+        kw_w *= keyword_route_weight(query);
+        vec_w *= vector_route_weight(query);
+    }
+    if !hybrid {
+        kw_w = 0.0; // §4.2: search.hybrid=false → vector only
+    }
+    let vec_rank: std::collections::HashMap<&str, usize> = ranking
+        .iter()
+        .enumerate()
+        .map(|(rank, (id, _))| (id.as_str(), rank))
+        .collect();
+    for (kw_rank, hit) in hits.iter_mut().enumerate() {
+        let kw_term = if hit.matched_terms.is_empty() {
+            0.0
+        } else {
+            kw_w / (rrf_k + kw_rank as f64 + 1.0)
+        };
+        let vec_term = vec_rank
+            .get(hit.chunk_id.as_str())
+            .map(|r| vec_w / (rrf_k + *r as f64 + 1.0))
+            .unwrap_or(0.0);
+        hit.score = ((kw_term + vec_term) * 1_000_000.0).round() as i64;
+    }
+    hits.retain(|h| h.score > 0);
+    hits.sort_by(|a, b| {
+        b.score
+            .cmp(&a.score)
+            .then(a.canonical_ref.cmp(&b.canonical_ref))
+    });
+}
+
+/// Merge per-phrasing vector lists into one ranking via weighted RRF
+/// (main query 1.0, each variant 0.7 — §7.3).
+fn merge_vector_lists(lists: &[Vec<(String, f64)>], rrf_k: f64) -> Vec<(String, f64)> {
+    let mut fused: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+    for (i, list) in lists.iter().enumerate() {
+        let weight = if i == 0 { 1.0 } else { 0.7 };
+        for (rank, (id, _)) in list.iter().enumerate() {
+            *fused.entry(id.clone()).or_default() += weight / (rrf_k + rank as f64 + 1.0);
+        }
+    }
+    let mut out: Vec<(String, f64)> = fused.into_iter().collect();
+    out.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    out
+}
+
+/// §7.4 vector-side routing: identifier-like queries lean keyword,
+/// natural-language questions lean vector.
+fn vector_route_weight(query: &str) -> f64 {
+    if is_identifier_like_query(query) {
+        0.6
+    } else if is_natural_language_question(query) {
+        1.3
+    } else {
+        1.0
+    }
 }
 
 fn apply_tag_boosts(hits: &mut [Hit]) {
@@ -804,6 +964,9 @@ fn replacement_from_edges(conn: &Connection, doc_id: &str) -> Result<Option<Stri
 }
 
 fn snippet(s: &str, max: usize) -> String {
+    if max == 0 {
+        return s.to_string();
+    }
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         flat
@@ -811,6 +974,50 @@ fn snippet(s: &str, max: usize) -> String {
         let mut out: String = flat.chars().take(max).collect();
         out.push_str("...");
         out
+    }
+}
+
+fn preview_lines(s: &str, max_lines: usize, max_chars_per_line: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for raw in s.lines() {
+        let line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        if line.is_empty() {
+            continue;
+        }
+        let mut chars = line.chars();
+        let rendered: String = chars.by_ref().take(max_chars_per_line).collect();
+        if chars.next().is_some() {
+            out.push(format!("{rendered}..."));
+        } else {
+            out.push(rendered);
+        }
+        if out.len() >= max_lines {
+            break;
+        }
+    }
+    if out.is_empty() && !s.trim().is_empty() {
+        out.push(snippet(s, max_chars_per_line));
+    }
+    out
+}
+
+fn print_body_preview(text: &str, full: Option<usize>) {
+    if let Some(n) = full {
+        println!("  {}", snippet(text, n));
+        return;
+    }
+    for line in preview_lines(text, 5, 110) {
+        println!("  {line}");
+    }
+}
+
+fn print_context_preview(text: &str, full: Option<usize>) {
+    if let Some(n) = full {
+        println!("    {}", snippet(text, n));
+        return;
+    }
+    for line in preview_lines(text, 5, 110) {
+        println!("    {line}");
     }
 }
 
@@ -1252,6 +1459,63 @@ fn related_rows_for_catalog(
     doc_id: &str,
     limit: usize,
 ) -> Result<Vec<RelatedRow>> {
+    let mut out = direct_related_rows_for_catalog(conn, doc_id, limit)?;
+    if out.len() < limit {
+        out.extend(shared_related_rows_for_catalog(
+            conn,
+            doc_id,
+            limit.saturating_sub(out.len()),
+        )?);
+    }
+    dedupe_related_rows(&mut out);
+    out.truncate(limit);
+    Ok(out)
+}
+
+fn direct_related_rows_for_catalog(
+    conn: &Connection,
+    doc_id: &str,
+    limit: usize,
+) -> Result<Vec<RelatedRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT d.canonical_ref, COALESCE(d.title, ''), d.path, d.updated_at, e.rel, e.to_type, e.to_id, d.body
+           FROM edges e
+           JOIN documents d ON d.doc_id = e.to_id
+          WHERE e.from_type = 'doc'
+            AND e.from_id = ?1
+            AND e.to_type = 'doc'
+            AND e.to_id <> ?1
+        UNION ALL
+         SELECT DISTINCT d.canonical_ref, COALESCE(d.title, ''), d.path, d.updated_at, e.rel, e.from_type, e.from_id, d.body
+           FROM edges e
+           JOIN documents d ON d.doc_id = e.from_id
+          WHERE e.to_type = 'doc'
+            AND e.to_id = ?1
+            AND e.from_type = 'doc'
+            AND e.from_id <> ?1
+          ORDER BY rel, updated_at DESC
+          LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![doc_id, limit as i64], |row| {
+        Ok(RelatedRow {
+            canonical_ref: row.get(0)?,
+            title: row.get(1)?,
+            path: row.get(2)?,
+            updated_at: row.get(3)?,
+            rel: row.get(4)?,
+            to_type: row.get(5)?,
+            to_id: row.get(6)?,
+            body: row.get(7)?,
+        })
+    })?;
+    Ok(rows.flatten().collect())
+}
+
+fn shared_related_rows_for_catalog(
+    conn: &Connection,
+    doc_id: &str,
+    limit: usize,
+) -> Result<Vec<RelatedRow>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT d.canonical_ref, COALESCE(d.title, ''), d.path, d.updated_at, e.rel, e.to_type, e.to_id, d.body
            FROM edges seed
@@ -1277,6 +1541,16 @@ fn related_rows_for_catalog(
         })
     })?;
     Ok(rows.flatten().collect())
+}
+
+fn dedupe_related_rows(rows: &mut Vec<RelatedRow>) {
+    let mut seen = HashSet::new();
+    rows.retain(|row| {
+        seen.insert(format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            row.canonical_ref, row.rel, row.to_type, row.to_id
+        ))
+    });
 }
 
 fn find_doc(
@@ -1325,8 +1599,8 @@ mod tests {
         age_years, apply_recency_decay_with, apply_tag_boosts, collect_recent_docs, date_in_range,
         find_docs_across_catalogs, keyword_score, keyword_score_weighted,
         neighbor_rows_across_catalogs, normalize_date, ranked_hits_across_catalogs, related_reason,
-        related_rows_across_catalogs, replacement_pointer, terms, weighted_keyword_score_with,
-        weighted_terms, Hit, SearchArgs,
+        related_rows_across_catalogs, replacement_pointer, snippet, terms,
+        weighted_keyword_score_with, weighted_terms, Hit, SearchArgs,
     };
     use chrono::TimeZone;
     use duckdb::{params, Connection};
@@ -1451,6 +1725,34 @@ mod tests {
 
         assert!(rows.is_empty());
         assert_eq!(super::results_exit_code(rows.len()), 1);
+    }
+
+    #[test]
+    fn default_search_preview_is_five_lines_capped_at_110_chars() {
+        let text = [
+            "line one",
+            "line two",
+            "line three",
+            "line four",
+            "line five",
+            "line six",
+        ]
+        .join("\n");
+        let lines = super::preview_lines(&text, 5, 110);
+
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "line one");
+        assert_eq!(lines[4], "line five");
+
+        let long = "x".repeat(130);
+        let lines = super::preview_lines(&long, 5, 110);
+        assert_eq!(lines, vec![format!("{}...", "x".repeat(110))]);
+    }
+
+    #[test]
+    fn full_snippet_zero_is_uncapped() {
+        let text = "alpha\nbeta";
+        assert_eq!(snippet(text, 0), text);
     }
 
     #[test]
@@ -1591,6 +1893,9 @@ mod tests {
             None,
             None,
             10,
+            None,
+            true,
+            60.0,
         )
         .unwrap();
 
@@ -1667,6 +1972,9 @@ mod tests {
             None,
             None,
             10,
+            None,
+            true,
+            60.0,
         )
         .unwrap();
         assert!(hits.is_empty());
@@ -1831,6 +2139,42 @@ mod tests {
     }
 
     #[test]
+    fn related_includes_direct_outgoing_doc_edges() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        insert_doc(&conn, "seed", "docs/seed.md", "Seed");
+        insert_doc(&conn, "target", "docs/target.md", "Target");
+        conn_insert_edge(&conn, "e1", "seed", "doc", "target", "links_to");
+
+        let rows = super::related_rows_for_catalog(&conn, "seed", 10).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].canonical_ref, "git:docs/target.md");
+        assert_eq!(
+            related_reason(&rows[0].rel, &rows[0].to_type, &rows[0].to_id),
+            "shared link target"
+        );
+    }
+
+    #[test]
+    fn related_includes_direct_incoming_doc_edges() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        insert_doc(&conn, "seed", "docs/seed.md", "Seed");
+        insert_doc(&conn, "source", "docs/source.md", "Source");
+        conn_insert_edge(&conn, "e1", "source", "doc", "seed", "links_to");
+
+        let rows = super::related_rows_for_catalog(&conn, "seed", 10).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].canonical_ref, "git:docs/source.md");
+        assert_eq!(
+            related_reason(&rows[0].rel, &rows[0].to_type, &rows[0].to_id),
+            "shared link source"
+        );
+    }
+
+    #[test]
     fn section_merge_coalesces_adjacent_same_doc_hits() {
         let conn = Connection::open_in_memory().unwrap();
         super::super::ensure_schema(&conn).unwrap();
@@ -1864,6 +2208,9 @@ mod tests {
             None,
             None,
             10,
+            None,
+            true,
+            60.0,
         )
         .unwrap();
         super::merge_sections(&conn, &mut hits).unwrap();

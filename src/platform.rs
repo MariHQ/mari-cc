@@ -90,9 +90,10 @@ pub fn run(args: &[String], json: bool, name: Option<&str>, force: bool) -> Resu
         None | Some("detect") => detect(json),
         Some("list") => list(json),
         Some("scaffold") => {
-            let id = args.get(1).ok_or_else(|| {
-                anyhow!("usage: mari platform scaffold <id> [--name \"Title\"] [--force]")
-            })?;
+            let Some(id) = args.get(1) else {
+                eprintln!("usage: mari platform scaffold <id> [--name \"Title\"] [--force]");
+                return Ok(2);
+            };
             scaffold(id, name, force)
         }
         Some(other) => {
@@ -151,15 +152,20 @@ fn scaffold(id: &str, name: Option<&str>, force: bool) -> Result<i32> {
     }
     let root = workspace::work_root();
     let existing = detections(&root);
-    if !existing.is_empty() && !force {
-        let names = existing.iter().map(|d| d.id).collect::<Vec<_>>().join(", ");
-        return Err(anyhow!(
-            "refusing to scaffold a second docs platform; detected {names}. Use --force to override"
-        ));
-    }
+    ensure_scaffold_allowed(platform, &existing, force)?;
     write_scaffold(&root, platform, name.unwrap_or("Mari Docs"), force)?;
     println!("✓ scaffolded {}", platform.id);
     Ok(0)
+}
+
+fn ensure_scaffold_allowed(platform: &Platform, existing: &[Detection], force: bool) -> Result<()> {
+    if force || existing.is_empty() || existing.iter().all(|d| d.id == platform.id) {
+        return Ok(());
+    }
+    let names = existing.iter().map(|d| d.id).collect::<Vec<_>>().join(", ");
+    Err(anyhow!(
+        "refusing to scaffold a second docs platform; detected {names}. Use --force to override"
+    ))
 }
 
 fn detections(root: &Path) -> Vec<Detection> {
@@ -257,9 +263,12 @@ fn write_scaffold(root: &Path, platform: &Platform, title: &str, force: bool) ->
 }
 
 fn write_many(root: &Path, force: bool, files: &[(&str, String)]) -> Result<()> {
-    for (rel, _) in files {
+    for (rel, content) in files {
         let path = root.join(rel);
-        if path.exists() && !force {
+        if path.exists()
+            && !force
+            && std::fs::read_to_string(&path).ok().as_deref() != Some(content.as_str())
+        {
             return Err(anyhow!("refusing to overwrite {}", path.display()));
         }
     }
@@ -312,5 +321,46 @@ mod tests {
         std::fs::write(dir.path().join("book.toml"), "old").unwrap();
         let err = write_many(dir.path(), false, &[("book.toml", "new".into())]).unwrap_err();
         assert!(err.to_string().contains("refusing to overwrite"));
+    }
+
+    #[test]
+    fn platform_scaffold_missing_id_is_usage_error() {
+        assert_eq!(run(&[String::from("scaffold")], false, None, false).unwrap(), 2);
+    }
+
+    #[test]
+    fn write_many_allows_identical_existing_file_without_force() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("book.toml"), "[book]\ntitle = \"Docs\"\n").unwrap();
+
+        write_many(
+            dir.path(),
+            false,
+            &[("book.toml", "[book]\ntitle = \"Docs\"\n".into())],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scaffold_allows_existing_same_platform() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mkdocs.yml"), "site_name: Test\n").unwrap();
+        let existing = detections(dir.path());
+        let platform = PLATFORMS.iter().find(|p| p.id == "mkdocs").unwrap();
+
+        ensure_scaffold_allowed(platform, &existing, false).unwrap();
+    }
+
+    #[test]
+    fn scaffold_refuses_existing_different_platform_without_force() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("mkdocs.yml"), "site_name: Test\n").unwrap();
+        let existing = detections(dir.path());
+        let platform = PLATFORMS.iter().find(|p| p.id == "mdbook").unwrap();
+
+        let err = ensure_scaffold_allowed(platform, &existing, false).unwrap_err();
+
+        assert!(err.to_string().contains("second docs platform"));
+        ensure_scaffold_allowed(platform, &existing, true).unwrap();
     }
 }

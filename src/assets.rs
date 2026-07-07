@@ -120,11 +120,13 @@ const ARCHETYPES: &[Archetype] = &[
 pub fn run(args: &[String], strict: bool, force: bool) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
         Some("detect") => {
-            let file = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari asset detect <file>"))?;
+            let Some(file) = args.get(1) else {
+                eprintln!("usage: mari asset detect <file>");
+                return Ok(2);
+            };
             let text = std::fs::read_to_string(file)?;
-            match detect_type(Path::new(file), &text) {
+            let root = workspace::work_root();
+            match detect_type_at(&root, Path::new(file), &text) {
                 Some(a) => {
                     println!("{}", a.id);
                     Ok(0)
@@ -136,15 +138,17 @@ pub fn run(args: &[String], strict: bool, force: bool) -> Result<i32> {
             }
         }
         Some("check") => {
-            let file = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari asset check <file> [--strict]"))?;
+            let Some(file) = args.get(1) else {
+                eprintln!("usage: mari asset check <file> [--strict]");
+                return Ok(2);
+            };
             check(Path::new(file), strict)
         }
         Some("scaffold") => {
-            let typ = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari asset scaffold <type> [title] [--force]"))?;
+            let Some(typ) = args.get(1) else {
+                eprintln!("usage: mari asset scaffold <type> [title] [--force]");
+                return Ok(2);
+            };
             let title = args.get(2).map(String::as_str);
             scaffold(typ, title, force)
         }
@@ -160,7 +164,8 @@ fn check(path: &Path, strict: bool) -> Result<i32> {
         eprintln!("unknown asset type: {}", path.display());
         return Ok(2);
     };
-    let findings = findings_for_archetype(path, archetype)?;
+    let root = workspace::work_root();
+    let findings = findings_for_archetype_at(&root, path, archetype)?;
 
     if findings.is_empty() {
         println!("asset: ok ({})", archetype.id);
@@ -181,17 +186,24 @@ pub(crate) fn findings_for_path(path: &Path) -> Result<Vec<Finding>> {
     let Some(archetype) = detect_file_type(path)? else {
         return Ok(Vec::new());
     };
-    findings_for_archetype(path, archetype)
+    let root = workspace::work_root();
+    findings_for_archetype_at(&root, path, archetype)
 }
 
 fn detect_file_type(path: &Path) -> Result<Option<&'static Archetype>> {
     let text = std::fs::read_to_string(path)?;
-    Ok(detect_type(path, &text))
+    let root = workspace::work_root();
+    Ok(detect_type_at(&root, path, &text))
 }
 
-fn findings_for_archetype(path: &Path, archetype: &Archetype) -> Result<Vec<Finding>> {
+fn findings_for_archetype_at(
+    root: &Path,
+    path: &Path,
+    archetype: &Archetype,
+) -> Result<Vec<Finding>> {
     let text = std::fs::read_to_string(path)?;
-    let expected = override_sections(archetype).unwrap_or_else(|| archetype.sections.to_vec());
+    let expected =
+        override_sections(root, archetype).unwrap_or_else(|| archetype.sections.to_vec());
     let headings = headings(&text);
     let mut findings = Vec::new();
     for section in expected {
@@ -227,7 +239,7 @@ fn scaffold_at(
     if path.exists() && !force {
         return Err(anyhow!("refusing to overwrite {}", path.display()));
     }
-    let text = if let Some(template) = override_template(archetype) {
+    let text = if let Some(template) = override_template(root, archetype) {
         template.replace("{{title}}", title.unwrap_or(archetype.title))
     } else {
         built_in_template(archetype, title.unwrap_or(archetype.title))
@@ -237,7 +249,7 @@ fn scaffold_at(
     Ok(0)
 }
 
-fn detect_type<'a>(path: &Path, text: &str) -> Option<&'a Archetype> {
+fn detect_type_at<'a>(root: &Path, path: &Path, text: &str) -> Option<&'a Archetype> {
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -276,13 +288,28 @@ fn detect_type<'a>(path: &Path, text: &str) -> Option<&'a Archetype> {
     if name.contains("security") {
         return archetype("security");
     }
-    ARCHETYPES.iter().find(|a| {
-        a.sections
-            .iter()
-            .filter(|s| headings(text).iter().any(|h| heading_eq(h, s)))
-            .count()
-            >= 3
-    })
+    ARCHETYPES
+        .iter()
+        .find(|a| {
+            a.sections
+                .iter()
+                .filter(|s| headings(text).iter().any(|h| heading_eq(h, s)))
+                .count()
+                >= 3
+        })
+        .or_else(|| {
+            ARCHETYPES.iter().find(|a| {
+                override_sections(root, a)
+                    .map(|sections| {
+                        sections
+                            .iter()
+                            .filter(|s| headings(text).iter().any(|h| heading_eq(h, s)))
+                            .count()
+                            >= 2
+                    })
+                    .unwrap_or(false)
+            })
+        })
 }
 
 fn archetype(id: &str) -> Option<&'static Archetype> {
@@ -337,13 +364,13 @@ fn postmortem_blame(path: &Path, text: &str) -> Vec<Finding> {
     out
 }
 
-fn override_template(archetype: &Archetype) -> Option<String> {
-    std::fs::read_to_string(template_path(archetype)).ok()
+fn override_template(root: &Path, archetype: &Archetype) -> Option<String> {
+    std::fs::read_to_string(template_path(root, archetype)).ok()
 }
 
-fn override_sections(archetype: &Archetype) -> Option<Vec<&'static str>> {
-    let text = override_template(archetype)?;
-    let sections = headings(&text);
+fn override_sections(root: &Path, archetype: &Archetype) -> Option<Vec<&'static str>> {
+    let text = override_template(root, archetype)?;
+    let sections = section_headings(&text);
     if sections.is_empty() {
         return None;
     }
@@ -358,9 +385,18 @@ fn override_sections(archetype: &Archetype) -> Option<Vec<&'static str>> {
     )
 }
 
-fn template_path(archetype: &Archetype) -> PathBuf {
-    workspace::work_root()
-        .join(".mari")
+fn section_headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            let n = t.chars().take_while(|c| *c == '#').count();
+            ((2..=6).contains(&n) && t[n..].starts_with(' ')).then(|| t[n..].trim().to_string())
+        })
+        .collect()
+}
+
+fn template_path(root: &Path, archetype: &Archetype) -> PathBuf {
+    root.join(".mari")
         .join("templates")
         .join(format!("{}.md", archetype.id))
 }
@@ -391,7 +427,7 @@ mod tests {
         let path = dir.path().join("POSTMORTEM.md");
         std::fs::write(&path, "# Incident Postmortem\n\n## Summary\n\n## Impact\n").unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        let a = detect_type(&path, &text).unwrap();
+        let a = detect_type_at(dir.path(), &path, &text).unwrap();
         assert_eq!(a.id, "postmortem");
         let expected = a.sections;
         let got = headings(&text);
@@ -404,6 +440,13 @@ mod tests {
     fn postmortem_blame_fires() {
         let findings = postmortem_blame(Path::new("POSTMORTEM.md"), "Root cause was human error.");
         assert_eq!(findings[0].rule_id, "postmortem-blame");
+    }
+
+    #[test]
+    fn missing_asset_operands_return_usage_exit_2() {
+        assert_eq!(run(&[String::from("detect")], false, false).unwrap(), 2);
+        assert_eq!(run(&[String::from("check")], false, false).unwrap(), 2);
+        assert_eq!(run(&[String::from("scaffold")], false, false).unwrap(), 2);
     }
 
     #[test]
@@ -432,5 +475,68 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("RUNBOOK.md")).unwrap();
         assert!(text.contains("# New Runbook"));
         assert_ne!(text, "existing");
+    }
+
+    #[test]
+    fn scaffold_uses_workspace_template_override() {
+        let dir = tempdir().unwrap();
+        let template_dir = dir.path().join(".mari").join("templates");
+        std::fs::create_dir_all(&template_dir).unwrap();
+        std::fs::write(
+            template_dir.join("runbook.md"),
+            "# {{title}}\n\n## Custom Step\n\nTemplate body.\n",
+        )
+        .unwrap();
+        let archetype = archetype("runbook").unwrap();
+
+        scaffold_at(dir.path(), archetype, Some("Custom Runbook"), false).unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join("RUNBOOK.md")).unwrap();
+        assert_eq!(
+            text,
+            "# Custom Runbook\n\n## Custom Step\n\nTemplate body.\n"
+        );
+    }
+
+    #[test]
+    fn check_uses_workspace_template_sections() {
+        let dir = tempdir().unwrap();
+        let template_dir = dir.path().join(".mari").join("templates");
+        std::fs::create_dir_all(&template_dir).unwrap();
+        std::fs::write(
+            template_dir.join("runbook.md"),
+            "# {{title}}\n\n## Custom Step\n\n## Verification\n",
+        )
+        .unwrap();
+        let path = dir.path().join("RUNBOOK.md");
+        std::fs::write(&path, "# Runbook\n\n## Custom Step\n").unwrap();
+        let archetype = archetype("runbook").unwrap();
+
+        let findings = findings_for_archetype_at(dir.path(), &path, archetype).unwrap();
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].message,
+            "missing required section: Verification"
+        );
+    }
+
+    #[test]
+    fn detect_uses_workspace_template_sections() {
+        let dir = tempdir().unwrap();
+        let template_dir = dir.path().join(".mari").join("templates");
+        std::fs::create_dir_all(&template_dir).unwrap();
+        std::fs::write(
+            template_dir.join("runbook.md"),
+            "# {{title}}\n\n## Custom Step\n\n## Verification\n",
+        )
+        .unwrap();
+        let path = dir.path().join("OPERATIONS.md");
+        let text = "# Operations\n\n## Custom Step\n\n## Verification\n";
+        std::fs::write(&path, text).unwrap();
+
+        let archetype = detect_type_at(dir.path(), &path, text).unwrap();
+
+        assert_eq!(archetype.id, "runbook");
     }
 }

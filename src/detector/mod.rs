@@ -1,4 +1,5 @@
 pub mod ctx;
+pub mod grammar;
 pub mod helpers;
 pub mod pack_ap;
 pub mod pack_chicago;
@@ -47,6 +48,7 @@ pub enum Family {
     #[serde(rename = "inclusive")]
     Inclusive,
     #[serde(rename = "grounding")]
+    #[allow(dead_code)] // §11.10 family; factcheck currently renders its own findings
     Grounding,
     #[serde(rename = "grammar")]
     Grammar,
@@ -87,6 +89,7 @@ pub struct Finding {
 
 pub struct Rule {
     pub id: &'static str,
+    #[allow(dead_code)] // registry metadata; findings carry their own family
     pub family: Family,
     /// Runs only when this pack is selected (None = always on).
     pub pack: Option<&'static str>,

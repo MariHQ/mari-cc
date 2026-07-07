@@ -117,7 +117,11 @@ fn catalog() -> Vec<Group> {
                     "mari factcheck <file>",
                     "deterministic surface",
                 ),
-                cap("lineage curation", "mari lineage <list|add|confirm|reject>", "implemented"),
+                cap(
+                    "lineage curation",
+                    "mari lineage <list|add|confirm|reject>",
+                    "implemented",
+                ),
             ],
         },
         Group {
@@ -132,13 +136,31 @@ fn catalog() -> Vec<Group> {
                 ),
                 cap("style waivers", "mari ignores", "implemented"),
                 cap("zero-tolerance rules", "mari zero", "implemented"),
-                cap("grammar pass", "mari detect --grammar", "feature-gated"),
-                cap("ML/deep tiers", "mari detect --models", "not in this build"),
+                cap(
+                    "grammar pass (Harper)",
+                    "mari detect --grammar",
+                    "implemented",
+                ),
+                cap(
+                    "ML tier 1 (NLI/slop-spans)",
+                    "mari detect --models",
+                    "not in this build",
+                ),
+                cap(
+                    "attention tier (coverage/grounding/focus)",
+                    "mari factcheck --deep | check --deep | explore --focus",
+                    "implemented",
+                ),
             ],
         },
         Group {
             intent: "maintenance",
             capabilities: vec![
+                cap(
+                    "deep i18n coverage (attention)",
+                    "mari i18n coverage <source> [translation]",
+                    "implemented",
+                ),
                 cap("hooks", "mari hooks", "implemented"),
                 cap("post-edit hook entry", "mari hook run", "implemented"),
                 cap("edit-notify rules", "mari rules", "implemented"),

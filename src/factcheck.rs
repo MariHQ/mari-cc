@@ -84,17 +84,33 @@ impl Serialize for TypedSpan {
     }
 }
 
+fn attention_finding(source_path: &str, sentence: &str, score: f64) -> Finding {
+    Finding {
+        rule_id: "ungrounded-span",
+        severity: "advisory",
+        sentence: sentence.chars().take(160).collect(),
+        span: sentence.chars().take(80).collect(),
+        message: format!(
+            "reads as ungrounded against {source_path} ({:.0}% of peak attention) — a lead, not an assertion of falsehood",
+            score * 100.0
+        ),
+        fact: None,
+    }
+}
+
 pub fn run(args: FactcheckArgs) -> Result<i32> {
     if args.models {
         eprintln!("note: local NLI model tier is not available in this build; running deterministic factcheck only");
     }
-    if args.deep || args.ground.as_deref() == Some("attention") {
-        eprintln!("note: attention grounding is not available in this build; running deterministic factcheck only");
+    let attention_grounding = args.deep || args.ground.as_deref() == Some("attention");
+    if attention_grounding && args.source.is_none() {
+        eprintln!("✗ --deep/--ground=attention requires --source <file> (§5.5)");
+        return Ok(2);
     }
     if args.decompose {
         eprintln!("note: --decompose is agent-side; use --emit-claim-targets, decompose externally, then pass --claims <file>");
     }
-    let _ = (args.threshold, args.lookback);
+    let _ = args.lookback;
 
     let target_text = std::fs::read_to_string(&args.file)
         .with_context(|| format!("reading target file {}", args.file))?;
@@ -122,7 +138,38 @@ pub fn run(args: FactcheckArgs) -> Result<i32> {
     } else {
         (load_facts(None)?, GroundingMode::Facts)
     };
-    let findings = check_sentences(&target_sentences, &facts, mode);
+    let mut findings = check_sentences(&target_sentences, &facts, mode);
+    if attention_grounding {
+        // Attention tier (§11.10): sentences that barely attend to the
+        // source read as ungrounded — advisory, never an assertion of
+        // falsehood. Threshold default 0.10.
+        let source_path = args.source.as_deref().unwrap();
+        let source_text = std::fs::read_to_string(source_path)
+            .with_context(|| format!("reading grounding source {source_path}"))?;
+        // The spec's 0.10 was calibrated against the prototype's row-normalized
+        // scores; this port preserves absolute attention mass (flatter peaks),
+        // so the shared attention.threshold (default 0.3) applies here too.
+        let threshold = args.threshold.unwrap_or_else(|| {
+            crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]["threshold"]
+                .as_f64()
+                .unwrap_or(0.3)
+        });
+        match crate::attn::analyze(
+            &source_text,
+            &target_text,
+            crate::attn::Mode::Grounding,
+            threshold,
+            None,
+        ) {
+            Ok(flagged) => {
+                for f in flagged {
+                    let sentence: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    findings.push(attention_finding(source_path, &sentence, f.score));
+                }
+            }
+            Err(e) => eprintln!("✗ attention grounding failed: {e:#}"),
+        }
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&findings)?);

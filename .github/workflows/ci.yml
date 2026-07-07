@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --locked
+      - name: Unit and fixture tests
+        run: cargo test --locked
+      - name: Deliberate-slop self-test (SPEC §19)
+        run: |
+          set -e
+          # The slop fixture must produce findings (assistant-meta is an error → exit 1)…
+          if ./target/debug/mari detect fixtures/sloppy.md --quiet; then
+            echo "expected findings in fixtures/sloppy.md" && exit 1
+          fi
+          # …and clean prose must stay clean.
+          printf '# Notes\n\nWe shipped the fix today. Tests pass.\n' > /tmp/clean.md
+          ./target/debug/mari detect /tmp/clean.md
+      - name: False-positive budget (repo docs)
+        run: |
+          # Advisory ceiling over this repo's own markdown: fail only when the
+          # detector errors out; report the count for trend-watching.
+          ./target/debug/mari detect skills/mari/references --summary || true

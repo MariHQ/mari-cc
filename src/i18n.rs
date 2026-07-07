@@ -1,6 +1,6 @@
 //! Localization layout detection and structural conformance (SPEC §5.7).
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use ignore::WalkBuilder;
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
@@ -44,25 +44,23 @@ struct Structure {
 }
 
 pub fn run(args: &[String], deep: bool, limit: Option<usize>, strict: bool) -> Result<i32> {
-    if deep {
-        eprintln!("note: i18n attention coverage is not available in this build; running structural checks only");
-    }
-
     match args.first().map(|s| s.as_str()) {
         None => {
             eprintln!("usage: mari i18n <file> | mari i18n conform <file|dir> | mari i18n coverage <source> [translation]");
             Ok(2)
         }
         Some("conform") => {
-            let target = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari i18n conform <file|dir>"))?;
-            conform(Path::new(target), limit, strict)
+            let Some(target) = args.get(1) else {
+                eprintln!("usage: mari i18n conform <file|dir>");
+                return Ok(2);
+            };
+            conform(Path::new(target), limit, strict, deep)
         }
         Some("coverage") => {
-            let source = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari i18n coverage <source> [translation]"))?;
+            let Some(source) = args.get(1) else {
+                eprintln!("usage: mari i18n coverage <source> [translation]");
+                return Ok(2);
+            };
             coverage(Path::new(source), args.get(2).map(Path::new), strict)
         }
         Some(file) => list(Path::new(file)),
@@ -84,6 +82,15 @@ pub fn siblings(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Translation siblings only when the edited file is source-language content.
+pub fn source_language_siblings(path: &Path) -> Vec<PathBuf> {
+    if is_translation_file(path) {
+        Vec::new()
+    } else {
+        siblings(path)
+    }
+}
+
 fn list(path: &Path) -> Result<i32> {
     let source = source_for(path);
     println!("source: {}", source.display());
@@ -99,7 +106,50 @@ fn list(path: &Path) -> Result<i32> {
     Ok(0)
 }
 
-fn conform(target: &Path, limit: Option<usize>, strict: bool) -> Result<i32> {
+/// Run attention coverage for one source→translation pair and print the
+/// barely-covered source passages, indented under the current line.
+/// Findings are leads, not verdicts; failures are loud but non-fatal.
+fn attention_coverage_under(source: &Path, translation: &Path) {
+    let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
+        ["threshold"]
+        .as_f64()
+        .unwrap_or(0.3);
+    let (Ok(src_text), Ok(trans_text)) = (
+        std::fs::read_to_string(source),
+        std::fs::read_to_string(translation),
+    ) else {
+        println!("    · attention skipped: unreadable file pair");
+        return;
+    };
+    match crate::attn::analyze(
+        &src_text,
+        &trans_text,
+        crate::attn::Mode::Coverage,
+        threshold,
+        None,
+    ) {
+        Ok(flagged) if flagged.is_empty() => {
+            println!("    ✓ prose coverage complete (attention)");
+        }
+        Ok(flagged) => {
+            for f in flagged {
+                let line = crate::attn::line_of_offset(&src_text, f.offset);
+                let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                println!(
+                    "    ↘ {:.0}% covered  (≈L{line})  {}",
+                    f.score * 100.0,
+                    snippet.chars().take(70).collect::<String>()
+                );
+            }
+            println!(
+                "    Treat these as leads, not verdicts — style and idiom legitimately drift."
+            );
+        }
+        Err(e) => println!("    · attention skipped: {e:#}"),
+    }
+}
+
+fn conform(target: &Path, limit: Option<usize>, strict: bool, deep: bool) -> Result<i32> {
     let mut sources = source_files(target);
     sources.sort();
     sources.dedup();
@@ -149,6 +199,9 @@ fn conform(target: &Path, limit: Option<usize>, strict: bool) -> Result<i32> {
                     println!("    - {issue}");
                 }
             }
+            if deep {
+                attention_coverage_under(Path::new(&report.source), Path::new(&t.path));
+            }
         }
     }
 
@@ -192,6 +245,9 @@ fn coverage(source: &Path, translation: Option<&Path>, strict: bool) -> Result<i
                 println!("  - {issue}");
             }
         }
+        // Attention pass (§5.7): flag source passages the translation barely
+        // covers. Coverage mode — SOURCE as context, TRANSLATION as query.
+        attention_coverage_under(&source, &t.path);
     }
 
     if strict && issue_count > 0 {
@@ -612,6 +668,18 @@ mod tests {
     }
 
     #[test]
+    fn missing_i18n_operands_return_usage_exit_2() {
+        assert_eq!(
+            run(&[String::from("conform")], false, None, false).unwrap(),
+            2
+        );
+        assert_eq!(
+            run(&[String::from("coverage")], false, None, false).unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn lang_dir_layout_finds_siblings() {
         let dir = tempdir().unwrap();
         let source = dir.path().join("docs/en/guide.md");
@@ -623,6 +691,23 @@ mod tests {
 
         assert!(is_translation_file(&fr));
         assert_eq!(siblings(&source), vec![fr]);
+    }
+
+    #[test]
+    fn hook_siblings_only_fire_for_source_language_files() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("docs/en/pricing.md");
+        let es = dir.path().join("docs/es/pricing.md");
+        let fr = dir.path().join("docs/fr/pricing.md");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(es.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(fr.parent().unwrap()).unwrap();
+        std::fs::write(&source, "# Pricing\n").unwrap();
+        std::fs::write(&es, "# Precios\n").unwrap();
+        std::fs::write(&fr, "# Tarifs\n").unwrap();
+
+        assert_eq!(source_language_siblings(&source), vec![es.clone(), fr]);
+        assert!(source_language_siblings(&es).is_empty());
     }
 
     #[test]

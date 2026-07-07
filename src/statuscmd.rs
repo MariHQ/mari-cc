@@ -268,7 +268,6 @@ fn source_table() -> Vec<(
             vec!["google.docs", "google.folders"],
         ),
         ("github", "GitHub", Some("github"), vec!["github.repos"]),
-        ("git", "Git history", None, vec!["git.repos"]),
         (
             "confluence",
             "Confluence",
@@ -312,6 +311,7 @@ fn source_table() -> Vec<(
             Some("linear"),
             vec!["linear.teams", "linear.projects"],
         ),
+        ("git", "Git history", None, vec!["git.repos"]),
         ("localfiles", "Local files", None, vec!["localfiles.paths"]),
     ]
 }
@@ -435,6 +435,33 @@ mod tests {
 
         assert_eq!(counts.get("canonical"), Some(&1));
         assert_eq!(counts.get("needs-review"), Some(&1));
+    }
+
+    #[test]
+    fn source_table_order_matches_registry_order() {
+        let keys = super::source_table()
+            .into_iter()
+            .map(|row| row.0)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "slack",
+                "gdocs",
+                "github",
+                "confluence",
+                "jira",
+                "zendesk",
+                "salesforce",
+                "hubspot",
+                "microsoft",
+                "discord",
+                "linear",
+                "git",
+                "localfiles"
+            ]
+        );
     }
 
     fn write_catalog(

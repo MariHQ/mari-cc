@@ -1,6 +1,6 @@
 //! Whole-document narrative questionnaire (SPEC §13.3).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,13 +34,17 @@ pub fn run(action: Option<&str>, file: Option<&str>, json: bool) -> Result<i32> 
         "questions" => print_questions(json),
         "score" => {
             let Some(file) = file else {
-                bail!("usage: mari narrative score <file> [--json]");
+                eprintln!("usage: mari narrative score <file> [--json]");
+                return Ok(2);
             };
             let text = std::fs::read_to_string(file)
                 .with_context(|| format!("failed to read narrative target {file}"))?;
             print_score(file, &text, json)
         }
-        other => bail!("unknown narrative action `{other}`; expected questions or score"),
+        other => {
+            eprintln!("unknown narrative action `{other}`; expected questions | score");
+            Ok(2)
+        }
     }
 }
 
@@ -366,6 +370,12 @@ mod tests {
     #[test]
     fn questions_cover_seven_dimensions() {
         assert_eq!(questions().len(), 7);
+    }
+
+    #[test]
+    fn narrative_usage_errors_return_exit_2() {
+        assert_eq!(run(Some("score"), None, false).unwrap(), 2);
+        assert_eq!(run(Some("publish"), None, false).unwrap(), 2);
     }
 
     #[test]

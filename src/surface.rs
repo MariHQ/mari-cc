@@ -62,16 +62,13 @@ pub fn explore(
     deep: bool,
     focus: bool,
 ) -> Result<i32> {
-    if deep || focus {
-        eprintln!("note: explore attention --deep/--focus is not available in this build; running deterministic search only");
-    }
     let query = if Path::new(query_or_file).exists() {
         file_query(Path::new(query_or_file))
     } else {
         query_or_file.to_string()
     };
-    index::search::run(index::search::SearchArgs {
-        query,
+    let rc = index::search::run(index::search::SearchArgs {
+        query: query.clone(),
         full: Some(500),
         variants: Vec::new(),
         k,
@@ -84,7 +81,44 @@ pub fn explore(
         no_tag: None,
         expand: None,
         json,
-    })
+    })?;
+    if deep || focus {
+        // §17 Tier 2 focus: for the top hits, show where in each document
+        // the attention mass concentrates for this query.
+        let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
+            ["threshold"]
+            .as_f64()
+            .unwrap_or(0.3);
+        let top = index::search::top_docs(&query, k.unwrap_or(3).min(5))?;
+        if top.is_empty() {
+            eprintln!("(--focus: no indexed documents to attend over)");
+        }
+        for (cref, body) in top {
+            println!("\n⌖ focus: {cref}");
+            match crate::attn::analyze(&body, &query, crate::attn::Mode::Focus, threshold, None) {
+                Ok(flagged) if flagged.is_empty() => {
+                    println!("  (attention is diffuse — no concentrated region)")
+                }
+                Ok(flagged) => {
+                    for f in flagged.iter().take(3) {
+                        let snippet: String =
+                            f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        println!(
+                            "  {:.0}%  ≈L{}  {}",
+                            f.score * 100.0,
+                            crate::attn::line_of_offset(&body, f.offset),
+                            snippet.chars().take(110).collect::<String>()
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("✗ focus attention failed: {e:#}");
+                    break;
+                }
+            }
+        }
+    }
+    Ok(rc)
 }
 
 fn files(root: &Path) -> Vec<PathBuf> {

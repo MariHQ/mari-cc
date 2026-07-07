@@ -1,7 +1,7 @@
 //! Deterministic docsite entry point for the agent flow (SPEC §5.6).
 
 use crate::workspace;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
@@ -25,6 +25,9 @@ struct DocsiteStatus {
     readme: bool,
     license: bool,
     contributing: bool,
+    code_of_conduct: bool,
+    security: bool,
+    changelog: bool,
     hook_configured: bool,
     rules_configured: bool,
     next_commands: Vec<&'static str>,
@@ -34,7 +37,10 @@ pub fn run(args: &[String], json: bool) -> Result<i32> {
     match args.first().map(|s| s.as_str()).unwrap_or("plan") {
         "plan" => print_plan(json),
         "status" => print_status(json),
-        other => bail!("unknown docsite action `{other}`; expected plan or status"),
+        other => {
+            eprintln!("unknown docsite action `{other}`; expected plan | status");
+            Ok(2)
+        }
     }
 }
 
@@ -106,6 +112,9 @@ fn print_status(json: bool) -> Result<i32> {
         println!("README: {}", yes_no(status.readme));
         println!("LICENSE: {}", yes_no(status.license));
         println!("CONTRIBUTING: {}", yes_no(status.contributing));
+        println!("CODE_OF_CONDUCT: {}", yes_no(status.code_of_conduct));
+        println!("SECURITY: {}", yes_no(status.security));
+        println!("CHANGELOG: {}", yes_no(status.changelog));
         println!("hook configured: {}", yes_no(status.hook_configured));
         println!("rules configured: {}", yes_no(status.rules_configured));
         println!("next: {}", status.next_commands.join(" | "));
@@ -121,6 +130,9 @@ fn status_for_root(root: &Path) -> DocsiteStatus {
         readme: exists_any(&root, &["README.md", "README.mdx", "readme.md"]),
         license: exists_any(&root, &["LICENSE", "LICENSE.md", "COPYING"]),
         contributing: exists_any(&root, &["CONTRIBUTING.md", ".github/CONTRIBUTING.md"]),
+        code_of_conduct: exists_any(root, &["CODE_OF_CONDUCT.md", ".github/CODE_OF_CONDUCT.md"]),
+        security: exists_any(root, &["SECURITY.md", ".github/SECURITY.md"]),
+        changelog: exists_any(root, &["CHANGELOG.md", "CHANGES.md", "HISTORY.md"]),
         hook_configured: file_contains(&root.join(".claude/settings.json"), "mari hook run"),
         rules_configured: has_edit_notify_rules(root),
         next_commands: vec![
@@ -241,6 +253,11 @@ mod tests {
     }
 
     #[test]
+    fn unknown_docsite_action_is_usage_error() {
+        assert_eq!(run(&["publish".into()], false).unwrap(), 2);
+    }
+
+    #[test]
     fn status_detects_documented_platform_markers() {
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("docs")).unwrap();
@@ -267,5 +284,30 @@ mod tests {
         )
         .unwrap();
         assert!(status_for_root(dir.path()).rules_configured);
+    }
+
+    #[test]
+    fn status_reports_required_and_recommended_community_health_files() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".github")).unwrap();
+        std::fs::write(dir.path().join("README.md"), "# Project\n").unwrap();
+        std::fs::write(dir.path().join("LICENSE"), "MIT\n").unwrap();
+        std::fs::write(
+            dir.path().join(".github/CONTRIBUTING.md"),
+            "# Contributing\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".github/CODE_OF_CONDUCT.md"), "# Conduct\n").unwrap();
+        std::fs::write(dir.path().join("SECURITY.md"), "# Security\n").unwrap();
+        std::fs::write(dir.path().join("CHANGELOG.md"), "# Changelog\n").unwrap();
+
+        let status = status_for_root(dir.path());
+
+        assert!(status.readme);
+        assert!(status.license);
+        assert!(status.contributing);
+        assert!(status.code_of_conduct);
+        assert!(status.security);
+        assert!(status.changelog);
     }
 }

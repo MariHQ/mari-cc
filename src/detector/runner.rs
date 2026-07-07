@@ -119,6 +119,7 @@ pub struct DetectorSettings {
     pub style_guide: String,
     pub ignore_rules: HashSet<String>,
     pub ignore_files: GlobSet,
+    #[allow(dead_code)] // raw globs kept for status/reporting surfaces
     pub ignore_file_globs: Vec<String>,
     pub ignore_values: serde_json::Value,
     pub zero_tolerance: HashSet<String>,
@@ -184,6 +185,7 @@ pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettin
 }
 
 /// Plain settings for unit tests (no config, no waivers).
+#[cfg(test)]
 pub fn test_settings(style: &str) -> DetectorSettings {
     DetectorSettings {
         style_guide: style.to_string(),
@@ -331,8 +333,18 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
         run_over(&args.paths, &s)
     };
     if args.grammar || s.grammar {
-        // Grammar pass is opt-in and feature-gated; absent in this build.
-        eprintln!("note: grammar pass not available in this build");
+        // Opt-in Harper pass (§11.11); locates findings and merges them in.
+        for r in &mut results {
+            let mut extra = super::grammar::grammar_findings(&r.text);
+            for f in &mut extra {
+                let ctx = super::ctx::Ctx::build(&r.path, &r.text, &s.style_guide);
+                let (line, col) = ctx.locate(f.offset);
+                f.line = line;
+                f.col = col;
+            }
+            r.findings.extend(extra);
+            r.findings.sort_by_key(|f| (f.offset, f.rule_id.clone()));
+        }
     }
     results.sort_by(|a, b| a.path.cmp(&b.path));
 
