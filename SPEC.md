@@ -121,7 +121,7 @@ gdocs.comments         = true    # index Drive comments as separate docs
 github.include         = ["issues","pulls"]
 zendesk.brands         = []      # optional brand filter
 ocr.backend            = "auto"  # auto | text | ocr-model  (§8.6)
-ocr.model              = <implementation-chosen OCR/VLM id>
+ocr.model              = "baidu/Unlimited-OCR"   # the only supported engine; no fallbacks
 ocr.dpi                = 200
 ocr.auto_install       = true    # provision OCR toolchain on first use
 ```
@@ -220,10 +220,10 @@ Interactive, assistant-guided setup.
 - Exit 0.
 
 #### `mari status`
-Prints: workspace dir; cloud role/remote/last-pull (if cloud); embedding identity (warns on model mismatch → suggest `mari sync --rebuild`); last-sync age + staleness warning; per-source line `label scope connected|local tracked=N indexed=M`; detector style guide + hook state; tag counts by status.
+Prints: workspace dir; cloud role/remote/last-pull (if cloud); embedding identity (warns on model mismatch → suggest `mari sync --rebuild`); last-sync age + staleness warning; per-source line `label scope connected|local tracked=N indexed=M`; detector style guide + hook state; tag counts by status. Tag counts are logical counts: a committed `tags.entries` item that has already been mirrored into the DuckDB `tags` table is counted once, not once from config plus once from the mirror.
 
 #### `mari auth <provider> [--token T] [--url U] [--email E] [--subdomain S] [--key K] [--secret S] [--method M]`
-Providers: `confluence discord github google hubspot jira microsoft salesforce slack zendesk`. (Auth provider `google` maps to source key `gdocs`.) Interactive providers (`google`, `microsoft`) with no flags run a browser/device-code flow; others validate the supplied credential against the service and save it to the source's scope location. Exit `0`/`1` (connect error)/`2` (unknown provider or missing required field).
+Providers: `confluence discord github google hubspot jira linear microsoft salesforce slack zendesk`. (Auth provider `google` maps to source key `gdocs`.) Interactive providers (`google`, `microsoft`) with no flags run a browser/device-code flow; others validate the supplied credential against the service and save it to the source's scope location. Exit `0`/`1` (connect error)/`2` (unknown provider or missing required field).
 
 #### `mari scope [source] [global|local]`
 No args → list all sources and scopes. One arg → print that source's scope. Two args → change scope per §3.2.
@@ -251,9 +251,13 @@ Nudges (§4.7): directed edit obligations — when a file matching `--when` is e
 
 ### 5.2 Knowledge: sync & retrieval
 
+#### `mari track <source> <add|remove|list> [ref] [--list-key <key>]`
+Writes tracked refs to committed `.mari/config.json`. `list` prints every list key for the source. `add`/`remove` mutate one source list; when a source has multiple list keys, `--list-key` selects the exact key (`google.folders`, `microsoft.teams`) or a unique suffix (`folders`, `teams`). Without `--list-key`, the source's first list key is used for backward-compatible shorthand. Unknown source or list key exits 2.
+
 #### `mari sync [source] [--rebuild] [--since N]`
 Sync tracked sources into the index. The last sync time should be injected to remind the user to resync if too much time has gone by.
 - `source` — restrict to one source key.
+- `--since N` — limit fetch/re-embed work to items modified in the last N days; deletions are still reconciled from the full local file set where the connector can enumerate it.
 - `--rebuild` — full resweep: ignore cursors, re-fetch back `--since` days, re-embed every stored doc. Unsupported on a cloud consumer/cloud index (rebuild locally, then re-`cloud init`).
 Runs local-scoped sources into the repo workspace, global-scoped into `_global`. Per-doc progress to stderr. Summary: `✓ N document(s) updated, M removed — C chunk(s) embedded.` Git-backed cloud writer prints a "commit .mari" nudge. Exit 1 if any source errored (other sources still complete).
 
@@ -270,7 +274,13 @@ Hybrid search (§7). Flags:
 - `--json`.
 Empty result → nudge + exit 1. Hits show curation tag badges when tagged.
 
-#### `mari recent [--source] [--doc] [--author] [--since] [--before] [--limit N] [--full [N]]`
+#### `mari explore "<question-or-file>" [--k N] [--json] [--deep] [--focus]`
+Skill-facing repository/knowledge explorer. A question delegates to the deterministic search surface with stable JSON/human output. A file path uses the file path, title, and local symbols as the query. `--deep`/`--focus` are accepted and degrade loudly when the attention tier is unavailable.
+
+#### `mari surface [dir] [--json]`
+Prints the extracted public API/documentation surface for the repo or directory: Rust `pub` items, JS/TS/Python/Go exported symbols, Markdown headings, config keys, and command-like code spans with file and line. Used by `docsite`, `check --deep`, and the agent to ground documentation work.
+
+#### `mari recent [--source] [--doc] [--author] [--since] [--before] [--tag S] [--no-tag S] [--limit N] [--full [N]]`
 Most recently changed docs/messages, sorted by `COALESCE(modified_at, fetched_at) DESC`. `--limit` default 20.
 
 #### `mari doc <ref> [--source S] [--full N]`
@@ -286,15 +296,15 @@ Chunks surrounding a chunk id in document order. `--radius` default 3.
 Docs one hop away in the edge graph (§8.4) from the best id/title match; each hit carries a `reason` (shared author / repo / project / channel / link). `--limit` default 20.
 
 #### `mari sql "SELECT …" [--global]`
-Read-only SQL over the catalog (`SELECT`/`WITH` only, else exit 2). No query → prints the schema doc. Tables: `documents`, `revisions`, `edges`, `tags`, `state`, `_chunks`. ASCII table output, cells truncated to 80 chars, `N row(s)` footer.
+Read-only SQL over the DuckDB catalog (`SELECT`/`WITH`/`SHOW`/`DESCRIBE` only, else exit 2). No query → prints the catalog path. Tables and views are the §8.7 schema: `schema_meta`, `sources`, `documents`, `chunks`, `embeddings`, `spans`, `symbols`, `edges`, `lineage_edges`, `facts`, `tags`, `sync_events`, `navigation_targets`, and `graph_edges`. Output is tabular text for humans and stable enough for agent inspection.
 
-#### `mari cloud <init|connect|role> …`
+#### `mari cloud <init|connect|role> … [--force]`
 See §9.
 
 ### 5.3 Curation
 
 #### `mari tag <path-or-ref> <status> [--note "…"] | mari tag list [--status S] [--json] | mari tag remove <path-or-ref>`
-Tag a repo file or an indexed doc ref with one status from `tags.statuses` (`canonical stale deprecated draft internal customer-facing needs-review`). Tags are stored in committed `.mari/config.json` (`tags.entries`) so they are team-shared and versioned, and mirrored into the catalog `tags` table at sync/search time. Effects:
+Tag a repo file or an indexed doc ref with one status from `tags.statuses` (`canonical stale deprecated draft internal customer-facing needs-review`). Tags are stored in committed `.mari/config.json` (`tags.entries`) so they are team-shared and versioned, and mirrored into the catalog `tags` table immediately when the indexed doc is present, and again at sync/search time. Effects:
 - **Search ranking:** fused scores multiply by `search.tag_boosts` (canonical up-ranked; stale/deprecated down-ranked). `--tag`/`--no-tag` filters available on `search`/`recent`.
 - **Result display:** tag badge shown on every hit; `deprecated` hits print their replacement pointer if a lineage edge exists.
 - **Factcheck trust:** claims supported only by `stale`/`deprecated` sources are reported as `unsupported-claim` with a "source is stale" note; `canonical` sources are preferred evidence.
@@ -335,6 +345,9 @@ Tree-walk skips: `node_modules .git dist build .next coverage .mari testdata tes
 #### `mari audit [path]`
 Human-facing detector report grouped by family, each finding paired with a bad→good example fix. Report only; no edits.
 
+#### `mari narrative <questions|score <file>> [--json]`
+Whole-document narrative questionnaire for `deslop --narrative` (§13.3). `questions` prints the seven dimensions and register gates. `score` reads one file and returns a deterministic 0–35 report with per-dimension evidence. The score is a review aid, not an authorship claim: it identifies document-level risks such as stated morals, repeated frames, vague allusion, absent concessions, and flat time. Docs and microcopy apply only dimensions 1, 3, and 5 during agent editing, even though the CLI can print the full report for inspection.
+
 #### Agent editorial verbs (run through the skill, backed by `mari detect` before/after)
 Each verb has an authoritative reference flow the skill loads (§13). All preserve author meaning and voice; "rewrite, not delete"; each finishes by re-running the detector to verify no regression.
 
@@ -347,7 +360,7 @@ Vendored external humanizer skill management: `ensure` clones on first use into 
 
 #### `mari factcheck <file> [flags]`
 Checks the file's claims against ground truth. Depths:
-1. **Deterministic (default):** typed-span extraction (number, money, percent, year, date, entity) matched against `FACTS.md` (or `--source <file>` e.g. `--source PRODUCT.md`, or `--kb` to ground against canonical-tagged knowledge-base docs).
+1. **Deterministic (default):** typed-span extraction (number, money, percent, year, date, entity) matched against `FACTS.md` (or `--source <file>` e.g. `--source PRODUCT.md`, or `--kb` to ground against canonical-tagged knowledge-base docs from the repo workspace plus `_global`).
 2. **`--models`:** adds local NLI entailment/contradiction.
 3. **`--decompose` / `--claims <file>`:** atomic-claim grounding. `--emit-claim-targets` prints candidate sentences as JSON; the **agent** decomposes them into atomic claims in-session (the CLI never calls an LLM) and feeds them back via `--claims`.
 4. **`--deep` / `--ground=attention` [--threshold t]:** on-device attention grounding of each sentence against the source (requires `--source` and a configured local model).
@@ -355,8 +368,8 @@ Other flags: `--json --strict --quiet --lookback`. Finding rules: `number-date-m
 
 ### 5.6 Documentation systems
 
-#### `mari asset <detect <file> | check <file> [--strict] | scaffold <type> [title]>`
-Document archetypes: `runbook adr postmortem rfc contributing code-of-conduct governance security` (canonical sections and rubrics in §14). `detect` infers the type; `check` validates required sections (`asset-missing-section`, plus `postmortem-blame` for blame language in postmortems); `scaffold` writes a template (never overwrites).
+#### `mari asset <detect <file> | check <file> [--strict] | scaffold <type> [title] [--force]>`
+Document archetypes: `runbook adr postmortem rfc contributing code-of-conduct governance security` (canonical sections and rubrics in §14). `detect` infers the type; `check` validates required sections (`asset-missing-section`, plus `postmortem-blame` for blame language in postmortems); `scaffold` writes a template and refuses to overwrite unless `--force` is passed.
 
 #### `mari platform <detect | list [--json] | scaffold <id> [--name "<title>"] [--force]>`
 Doc-platform detection and scaffolding. Scaffoldable: `mkdocs docusaurus sphinx hugo jekyll mdbook antora docsify`. Detect-only: `vitepress starlight gitbook readthedocs`. Refuses to scaffold a second platform or overwrite without `--force`.
@@ -364,13 +377,17 @@ Doc-platform detection and scaffolding. Scaffoldable: `mkdocs docusaurus sphinx 
 #### `mari check [--json] [--strict] [--deep [--limit N] [--threshold 0.3]]`
 Whole-project docs validation: internal links + anchors resolve; nav↔files agree; community-health files present (README/LICENSE/CONTRIBUTING required; CODE_OF_CONDUCT/SECURITY/CHANGELOG recommended) and structurally valid. Rules: `link-broken`, `nav-missing-target`, `nav-orphan-page`, `community-missing-file`, plus asset rules. Respects `ignoreRules` but **not** `ignoreFiles` (structural defects can't be hidden by prose waivers). `--deep` adds attention passes over the public API surface: undocumented symbols and doc sentences anchored to nothing.
 
-#### `docsite` (agent flow; entry `mari docsite` via pin or `/mari docsite`)
+#### `mari docsite <plan|status> [--json]` (agent flow; entry via pin or `/mari docsite`)
+`plan` prints the seven deterministic phases and grounding commands. `status` inspects the repository for an existing platform, docs directory, community-health files, hook configuration, and edit-notify rules. The CLI does not generate prose or call an LLM; page writing remains agent-owned and must be grounded in `mari surface`, `mari explore`, and the DuckDB catalog.
+
 Seven phases: survey codebase → choose platform (`mari platform`) → design IA (Diátaxis) → write every page grounded in code (`mari surface`, `mari explore`) → community-health files (license copied verbatim, everything else templated with `<placeholders>`) → validate `mari check --strict` (+ `--deep`) → keep alive (hook + `rules discover` + CI gate).
 
 ### 5.7 Localization
 
 #### `mari i18n <file>`
 List a file's translations/source across supported localization layouts (suffix `README.es.md`; dir `docs/{en,fr}/`; Hugo `content.zh`; Docusaurus `i18n/<lang>/...`).
+
+`mari localize` is an alias for the same deterministic localization command surface. Agent editorial localization still runs through the `localize` verb and uses these checks before/after edits.
 
 #### `mari i18n conform <file|dir> [--deep [--limit N]] [--strict]`
 Check translations share the source's structure (headings, code blocks, links). Directory = one-pass sweep. `--deep` adds attention prose-coverage.
@@ -387,7 +404,7 @@ The post-edit hook raises an i18n staleness note when a source-language file wit
 
 ### 6.0 Common contract
 
-Each source defines: `key`, config block, label, tracked-ref list keys, auth provider (or none), scope default, sync function, and flags `interactive_auth` / `always_when_connected`. A source is **active** when it has tracked refs OR (`always_when_connected` AND connected). Registry order: 10 cloud connectors → `git` → discovered plugins → `localfiles` **last** (path catch-all).
+Each source defines: `key`, config block, label, tracked-ref list keys, auth provider (or none), scope default, sync function, and flags `interactive_auth` / `always_when_connected`. A source is **active** when it has tracked refs OR (`always_when_connected` AND connected). Registry order: cloud connectors → `git` → discovered plugins → `localfiles` **last** (path catch-all).
 
 Shared sync semantics:
 - **Change detection:** per-doc revision signal (listed per source) decides *fetch*; a 16-hex content hash is the final authority for *re-embed* — a revision bump with identical text updates metadata only.
@@ -465,7 +482,7 @@ Shared sync semantics:
 ## 7. Indexing & retrieval
 
 ### 7.1 Embedding
-One built-in local embedding model (implementation-chosen; must run fully offline), task-aware (distinct document vs query encoding), normalized vectors. `status` warns on mismatch with the index and recommends `mari sync --rebuild`. No silent fallback — embedding failure is loud.
+The only permitted embedding model identity is `jina-embeddings-v5-text-nano`. Encoded vectors are task-aware (distinct document vs query encoding) and normalized. `status` warns on mismatch with the index and recommends `mari sync --rebuild`. No silent fallback is allowed: if that model is unavailable, vector embedding fails loudly and keyword-only search may still run without writing `embeddings` rows.
 
 ### 7.2 Chunking
 Fixed line windows: `lines` per window, `overlap` shared, step `max(1, lines−overlap)`; windows `< min_chars` dropped; each capped at `max_chars`. **Stable chunk ids** `<source>/<doc_id>#L<start>` (1-based) so unchanged docs re-embed nothing. `title_prefix` prepends the doc title to embedded text only (stored text stays raw). `large_chunks` joins every `large_chunk_ratio` base chunks into a coarse vector-only chunk (excluded from keyword and neighbor queries).
@@ -493,7 +510,7 @@ When `search.auto_weight`: identifier-like/quoted/short-numeric queries scale `v
 
 | Mechanism | Crate(s) |
 |---|---|
-| Embedding inference (local, task-aware) | `candle` or `ort` + `tokenizers`; `fastembed` as the batteries-included path |
+| Embedding inference | The only permitted model identity is `jina-embeddings-v5-text-nano`; use `candle` or `ort` + `tokenizers`, with `fastembed` acceptable only if it runs that exact model |
 | Vector store + ANN (IVF-PQ, scalar indexes) | `lancedb` / `lance` (native Rust) |
 | Keyword scoring over chunks | SQL via `duckdb` (bundled), or `tantivy` if a dedicated inverted index is preferred over the count-based scorer |
 | Cross-encoder rerank | `fastembed` (TextCrossEncoder) or `ort` |
@@ -506,15 +523,20 @@ When `search.auto_weight`: identifier-like/quoted/short-numeric queries scale `v
 ## 8. Data model & storage
 
 ### 8.1 Catalog tables (shared, syncable)
-- **documents**(source, doc_id, title, url, revision_id, hash, body, created_at, modified_at, author, mime, fetched_at) — upsert key `(source, doc_id)`. Timestamps are source-native.
-- **revisions**(source, doc_id, revision_id, hash, fetched_at) — append-only history.
-- **edges**(source, src_doc, rel, dst_kind, dst) — `rel ∈ {authored_by, in_repo, in_project, in_channel, links_to}`, `dst_kind ∈ {person, container, link, doc}`.
-- **chunks**(id, source, doc_id, title, url, start, end, text, vector, ord) — vector width fixed by the embedding model at first write; `ord` = base-chunk position (null for large chunks).
-- **tags**(ref, status, by, at, note) — mirror of `tags.entries` for query-time joins.
+The authoritative v1 schema is §8.7. At the logical level:
+
+- **sources** — connector identity, scope, config hash, and sync status.
+- **documents** — one current extracted body per source-native document/path, keyed by `doc_id`, with `canonical_ref`, title, URL/path, version, hash, timestamps, and connector metadata.
+- **chunks** — navigable byte/line windows over `documents.body`, with heading path, stable chunk id, token count, and text hash.
+- **embeddings** — optional vector rows keyed by `chunk_id`; every row must use `jina-embeddings-v5-text-nano`. Keyword search works without this table, but no fallback embedding model is allowed.
+- **spans** and **symbols** — precise byte/line ranges for headings, paragraphs, sentences, code symbols, config keys, commands, and other navigable targets.
+- **edges** and **lineage_edges** — graph relationships and curated span↔span maintenance promises.
+- **facts** and **tags** — grounding ledger rows and query-time mirrors of curation status.
+- **sync_events** — audit trail for source sync attempts.
+- **navigation_targets** and **graph_edges** — read-only views that flatten common joins for precise agent navigation.
 
 ### 8.2 Private state (per workspace, never shared)
-- **state**(key, value-json) — sync cursors and checkpoints: `last_sync`, `last_pull`, `embedding.model`, per-source cursors (`slack.cursor.<id>`, `github.since.<repo>`, `jira.since.<PROJ>`, `zendesk.tickets.start_time`, `git.head.<root>`, `gdocs.cursor`, `discord.cursor.<id>`, `localfiles.mtime.<path>`), cached user directories.
-- **embedded**(source, doc_id, embedded_hash) — embed checkpoint; deliberately not in the shared catalog so migrated/pulled docs re-embed locally as needed.
+Private state is stored in the same workspace DuckDB file, primarily in `schema_meta` and source-specific metadata columns. Required keys include `last_sync`, `embedding.model`, `embedding.dims`, chunking identity, extractor identity, and schema migration timestamps. `embedding.model` must be `jina-embeddings-v5-text-nano`; if that model is unavailable, vector embedding fails loudly and keyword-only search may still run without writing `embeddings` rows. Per-source cursors use namespaced keys such as `slack.cursor.<id>`, `github.since.<repo>`, `git.head.<root>`, and `localfiles.mtime.<path>` when the connector needs incremental state.
 
 ### 8.3 Lineage store (per repo)
 Edge table: id, endpoints (`file`, `start`, `end`, content-hash at stamp time ×2), `rel`, `status ∈ {proposed, confirmed, rejected}`, score, provenance (`--by llm|human`), note, timestamps.
@@ -530,7 +552,234 @@ Built at sync, no LLM: `authored_by → person(author)`; container edges from do
 ### 8.6 Concurrency & durability
 Index writes are atomic upserts/appends with commit-conflict retry (up to 5 attempts). SQL surface is read-only. Legacy-format catalogs migrate idempotently behind a state flag.
 
-*Rust:* the catalog maps to `lancedb` (merge_insert, delete-predicate, versioned commits — the conflict-retry semantics above are its native model); private state maps to `duckdb` (bundled) or `rusqlite`; the read-only `mari sql` surface registers the Lance datasets as DuckDB views via `duckdb`'s Arrow integration. Office/PDF/HTML extraction: `zip` + `quick-xml` for docx/pptx/xlsx/odt, `pdfium-render` or `lopdf`+`pdf-extract` for PDF text, `scraper` or `html2text` for HTML flattening; the OCR fallback runs through the Tier-2 model runtime (§17).
+*Rust:* the v1 catalog and private state map to `duckdb` (bundled). LanceDB remains a later ANN/index-scale option; if added, the read-only `mari sql` surface registers the Lance datasets as DuckDB views via `duckdb`'s Arrow integration. SQLite/rusqlite is not a storage target. Office/PDF/HTML extraction: `zip` + `quick-xml` for docx/pptx/xlsx/odt, `pdfium-render` or `lopdf`+`pdf-extract` for PDF text, `scraper` or `html2text` for HTML flattening; the OCR fallback runs through the Tier-2 model runtime (§17).
+
+### 8.7 DuckDB catalog schema
+
+The v1 catalog is a single DuckDB database at `<workspace>/catalog.duckdb`. The schema is part of the product contract: every row must carry enough source, byte-span, version, and relationship metadata for `mari sql`, search, lineage, audits, and hooks to navigate from any result back to the exact source span.
+
+All timestamps are UTC RFC 3339 strings. All byte offsets are UTF-8 byte offsets into `documents.body` after extraction/normalization, not character indexes. `*_json` columns are JSON strings when DuckDB JSON support is unavailable; otherwise they may be typed `JSON` with the same shape.
+
+```sql
+CREATE TABLE schema_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE sources (
+  source_id TEXT PRIMARY KEY,           -- slack, gdocs, github, git, localfiles, ...
+  provider TEXT NOT NULL,
+  scope TEXT NOT NULL,                  -- global | local
+  connector_version TEXT NOT NULL,
+  auth_provider TEXT,
+  list_keys_json TEXT NOT NULL,         -- config keys that selected this source
+  config_hash TEXT NOT NULL,
+  last_sync_at TEXT,
+  last_success_at TEXT,
+  last_error TEXT
+);
+
+CREATE TABLE documents (
+  doc_id TEXT PRIMARY KEY,              -- stable hash: source_id + external_id
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  external_id TEXT NOT NULL,            -- service-native id/path/URL key
+  canonical_ref TEXT NOT NULL,          -- user-facing ref accepted by `mari doc`
+  title TEXT,
+  url TEXT,
+  path TEXT,                            -- repo-relative/local path when applicable
+  mime_type TEXT,
+  kind TEXT NOT NULL,                   -- page, message, issue, pr, commit, file, thread, ...
+  author_id TEXT,
+  author_name TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  observed_at TEXT NOT NULL,
+  version TEXT NOT NULL,                -- etag, revision, commit SHA, mtime hash, etc.
+  content_sha256 TEXT NOT NULL,
+  body TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  UNIQUE (source_id, external_id)
+);
+
+CREATE TABLE chunks (
+  chunk_id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL REFERENCES documents(doc_id),
+  chunk_index INTEGER NOT NULL,
+  heading_path TEXT NOT NULL,           -- "Overview > Install > Token setup"
+  section_anchor TEXT,
+  start_byte INTEGER NOT NULL,
+  end_byte INTEGER NOT NULL,
+  start_line INTEGER NOT NULL,
+  end_line INTEGER NOT NULL,
+  token_count INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  text_sha256 TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  UNIQUE (doc_id, chunk_index)
+);
+
+CREATE TABLE embeddings (
+  chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id),
+  model_id TEXT NOT NULL,               -- must be jina-embeddings-v5-text-nano
+  dims INTEGER NOT NULL,
+  vector_json TEXT NOT NULL,            -- v1 portable representation; future binary/vector type allowed
+  norm REAL NOT NULL,
+  embedded_at TEXT NOT NULL
+);
+
+CREATE TABLE spans (
+  span_id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL REFERENCES documents(doc_id),
+  chunk_id TEXT REFERENCES chunks(chunk_id),
+  span_kind TEXT NOT NULL,              -- heading, paragraph, sentence, code_symbol, table, list_item, image, link
+  label TEXT,
+  start_byte INTEGER NOT NULL,
+  end_byte INTEGER NOT NULL,
+  start_line INTEGER NOT NULL,
+  end_line INTEGER NOT NULL,
+  stable_hash TEXT NOT NULL,            -- hash of normalized span text + local structural path
+  metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE symbols (
+  symbol_id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL REFERENCES documents(doc_id),
+  span_id TEXT REFERENCES spans(span_id),
+  language TEXT,
+  symbol_kind TEXT NOT NULL,            -- fn, class, const, type, heading, route, command, config_key, ...
+  name TEXT NOT NULL,
+  qualified_name TEXT NOT NULL,
+  signature TEXT,
+  start_byte INTEGER NOT NULL,
+  end_byte INTEGER NOT NULL,
+  start_line INTEGER NOT NULL,
+  end_line INTEGER NOT NULL,
+  metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE edges (
+  edge_id TEXT PRIMARY KEY,
+  from_type TEXT NOT NULL,              -- doc | chunk | span | symbol | person | tag | fact
+  from_id TEXT NOT NULL,
+  to_type TEXT NOT NULL,
+  to_id TEXT NOT NULL,
+  rel TEXT NOT NULL,                    -- contains, mentions, links_to, authored_by, cites, supersedes, related_to
+  confidence REAL NOT NULL DEFAULT 1.0,
+  evidence_span_id TEXT REFERENCES spans(span_id),
+  created_by TEXT NOT NULL,             -- sync | rule | llm | human
+  created_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  UNIQUE (from_type, from_id, to_type, to_id, rel)
+);
+
+CREATE TABLE lineage_edges (
+  lineage_id TEXT PRIMARY KEY,
+  from_span_id TEXT NOT NULL REFERENCES spans(span_id),
+  to_span_id TEXT NOT NULL REFERENCES spans(span_id),
+  rel TEXT NOT NULL,                    -- explains, implements, documents, contradicts, updates, translates
+  status TEXT NOT NULL,                 -- proposed | confirmed | rejected
+  confidence REAL NOT NULL,
+  confirmed_by TEXT,
+  confirmed_at TEXT,
+  last_checked_at TEXT,
+  metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE facts (
+  fact_id TEXT PRIMARY KEY,
+  claim TEXT NOT NULL,
+  source_ref TEXT,
+  source_span_id TEXT REFERENCES spans(span_id),
+  status TEXT NOT NULL,                 -- accepted | needs-review | rejected
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  metadata_json TEXT NOT NULL
+);
+
+CREATE TABLE tags (
+  target_type TEXT NOT NULL,            -- doc | chunk | span | symbol | ref
+  target_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  note TEXT,
+  "by" TEXT NOT NULL,
+  "at" TEXT NOT NULL,
+  metadata_json TEXT NOT NULL,
+  PRIMARY KEY (target_type, target_id)
+);
+
+CREATE TABLE sync_events (
+  event_id TEXT PRIMARY KEY,
+  source_id TEXT NOT NULL REFERENCES sources(source_id),
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL,                 -- success | partial | failed
+  docs_seen INTEGER NOT NULL DEFAULT 0,
+  docs_changed INTEGER NOT NULL DEFAULT 0,
+  docs_deleted INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  metadata_json TEXT NOT NULL
+);
+```
+
+Required indexes:
+
+```sql
+CREATE INDEX idx_documents_source_updated ON documents(source_id, updated_at);
+CREATE INDEX idx_documents_ref ON documents(canonical_ref);
+CREATE INDEX idx_chunks_doc_byte ON chunks(doc_id, start_byte, end_byte);
+CREATE INDEX idx_chunks_heading ON chunks(heading_path);
+CREATE INDEX idx_spans_doc_byte ON spans(doc_id, start_byte, end_byte);
+CREATE INDEX idx_symbols_qualified ON symbols(qualified_name);
+CREATE INDEX idx_edges_from ON edges(from_type, from_id, rel);
+CREATE INDEX idx_edges_to ON edges(to_type, to_id, rel);
+CREATE INDEX idx_lineage_from ON lineage_edges(from_span_id, status);
+CREATE INDEX idx_lineage_to ON lineage_edges(to_span_id, status);
+CREATE INDEX idx_tags_status ON tags(status);
+```
+
+Required read-only views:
+
+```sql
+CREATE VIEW navigation_targets AS
+SELECT target_type, target_id, doc_id, chunk_id, span_id, symbol_id,
+       source_id, canonical_ref, title, url, path, kind,
+       label, language, qualified_name,
+       start_byte, end_byte, start_line, end_line, metadata_json
+FROM (
+  -- documents, chunks, spans, and symbols normalized into one navigable surface
+);
+
+CREATE VIEW graph_edges AS
+SELECT edge_id, rel,
+       from_type, from_id, from_doc_id, from_ref, from_path,
+       to_type, to_id, to_doc_id, to_ref, to_path,
+       confidence, evidence_span_id, created_by, created_at, metadata_json
+FROM (
+  -- edges with doc endpoints resolved to canonical refs and paths when possible
+);
+```
+
+`navigation_targets` is the default SQL surface for "where exactly is this thing?" queries. `graph_edges` is the default SQL surface for "what does this thing relate to?" queries. Both views are derived from the base tables and must not hide first-class navigation fields only in JSON.
+
+Minimum `schema_meta` keys:
+
+| Key | Meaning |
+| --- | --- |
+| `schema.version` | Monotonic schema version. |
+| `schema.created_at` | Catalog creation time. |
+| `schema.migrated_at` | Last migration time. |
+| `embedding.model` | Required embedding identity: `jina-embeddings-v5-text-nano`. |
+| `embedding.dims` | Active embedding dimension count; `0` means no vector rows have been generated yet. |
+| `chunking.version` | Chunking algorithm identity. |
+| `extractor.version` | Extraction/normalization identity. |
+| `last_sync` | Last successful sync completion time. |
+
+Navigation requirements:
+
+- A search result must expose `doc_id`, `chunk_id`, `canonical_ref`, `title`, `url/path`, `heading_path`, byte range, line range, score parts, and matching terms.
+- A hook or lineage notice must be able to map an edited file and byte/line range to overlapping `spans`, `symbols`, `chunks`, confirmed `lineage_edges`, and `tags`.
+- Every connector-specific field that is not first-class belongs in `metadata_json`, but first-class navigation fields above must not be hidden only in JSON.
+- Deletions are represented by removing current rows after a sync event records `docs_deleted`; future tombstone support may add `deleted_at`, but v1 read surfaces show only current rows.
 
 ---
 
@@ -538,8 +787,9 @@ Index writes are atomic upserts/appends with commit-conflict retry (up to 5 atte
 
 One authoritative shared catalog per repo; every machine keeps a full local replica; **reads always run on the replica**.
 
-- `mari cloud init --backend git` — catalog lives at `<repo>/.mari/catalog`, data files on Git LFS (a `.gitattributes` is written). This machine becomes writer; teammates are read-only consumers via normal git pulls.
-- `mari cloud init --bucket B [--prefix P] [--region R]` — S3-backed writer; pushes the local index up.
+- `mari cloud init --backend git [--force]` — catalog lives at `<repo>/.mari/catalog`, data files on Git LFS (a `.gitattributes` is written). This machine becomes writer; teammates are read-only consumers via normal git pulls. If the shared catalog already exists, init refuses to overwrite it unless `--force` is passed.
+- `mari cloud connect --backend git` — read-only git consumer; copies the committed `<repo>/.mari/catalog/catalog.duckdb` into the local replica after a normal git pull.
+- `mari cloud init --bucket B [--prefix P] [--region R] [--force]` — S3-backed writer; pushes the local index up.
 - `mari cloud connect --bucket B [...]` — read-only consumer; pulls down.
 - `mari cloud role <writer|consumer>` — set this machine's role.
 - `mari pull` — fetch latest cloud index into the replica (errors if not cloud-enabled); read commands also auto-pull, throttled to once per 60s.
@@ -568,7 +818,7 @@ Boost values are config (`search.tag_boosts`). Tags apply to repo paths and to i
 Approved terms live in STYLE.md's Terminology table (Use / Not columns). `mari glossary harvest` proposes rows from the repo + knowledge base; accepted rows are enforced by the `terminology-consistency` rule and loaded into the skill's editorial context.
 
 ### 10.3 Facts
-FACTS.md is the deterministic grounding source: one fact per line with optional `(source)` attribution. Populated manually (`mari facts add`), or in bulk via `mari extract facts` (agent reviews before writing). `factcheck` treats FACTS.md as ground truth; contradictions are errors.
+FACTS.md is the deterministic grounding source: one fact per line with optional `(source)` attribution. Populated manually (`mari facts add`), or in bulk via `mari extract facts` (agent reviews before writing). Accepted ledger facts are mirrored into the catalog `facts` table when a catalog exists, with `status='accepted'`, source attribution, author, timestamp, and `metadata_json.source='FACTS.md'`. `factcheck` treats FACTS.md as ground truth; contradictions are errors.
 
 ---
 
@@ -1252,9 +1502,9 @@ Connector-setup skills ship per source: `connect-slack connect-github connect-gd
 Detection and grounding are layered by model size, never "rules vs AI":
 
 1. **Tier 0 — deterministic (always on):** the full rule registry, typed-span factcheck, structural checks. Instant, offline, dependency-free.
-2. **Tier 1 — local small models (default-on once provisioned, `--no-models` to skip):** machine-likelihood (perplexity), NLI entailment/contradiction (factcheck + audit contradictions), zero-shot slop-span extraction (labels: marketing buzzword, hype phrase, vague corporate jargon, empty filler phrase, overused cliché), embeddings (search/explore/assoc). Models load lazily into a resident sidecar; only structured output crosses the boundary. *Rust:* `ort` (ONNX Runtime) or `candle` for the NLI cross-encoder and embedding models, `tokenizers` for tokenization, `gline-rs` for GLiNER slop spans, `fastembed` (fastembed-rs) as a batteries-included embedding/rerank alternative — all in-process, which removes the prototype's Python sidecar entirely.
+2. **Tier 1 — local small models (default-on once provisioned, `--no-models` to skip):** machine-likelihood (perplexity), NLI entailment/contradiction (factcheck + audit contradictions), zero-shot slop-span extraction (labels: marketing buzzword, hype phrase, vague corporate jargon, empty filler phrase, overused cliché), embeddings (search/explore/assoc). Models load lazily into a resident sidecar; only structured output crosses the boundary. *Rust:* `ort` (ONNX Runtime) or `candle` for the NLI cross-encoder and the required `jina-embeddings-v5-text-nano` embedding model, `tokenizers` for tokenization, `gline-rs` for GLiNER slop spans, and `fastembed` only when it runs that exact embedding model identity — all in-process, which removes the prototype's Python sidecar entirely.
 3. **Tier 2 — local attention/generative (opt-in via configured model):** attention grounding with three modes — **coverage** (context the query ignores: dropped translation content, stale docs↔code), **grounding** (query sentences that ignore context: fabricated/unsupported), **focus** (where attention mass lands). Powers every `--deep` flag and `lineage refine`. ~seconds per document. *Rust:* `llama-cpp-2` (llama.cpp bindings) loads the GGUF model (qwen3.6 0.8b only), computes perplexity, and exposes attention capture for the mid-layer band — replacing the prototype's custom C++ binary.
-4. **Agent tier:** anything requiring generation — query expansion, claim decomposition, rewriting, glossary harvest, narrative questionnaire — is done by Claude in-session. The CLI never calls an LLM.
+4. **Agent tier:** anything requiring generation — query expansion, claim decomposition, rewriting, glossary harvest, narrative interpretation, and page drafting — is done by Claude in-session. Deterministic CLI surfaces may print candidate questions, spans, scores, and evidence, but they never call an LLM.
 
 Capability env toggles (the only permitted env vars): model paths/ids for the sidecar and attention binary, device selection, and feature switches equivalent to `--models`/`--slop-spans`.
 
@@ -1308,3 +1558,29 @@ Capability env toggles (the only permitted env vars): model paths/ids for the si
 - **lineage edge** — a confirmed span↔span maintenance promise.
 - **nudge** — a hand-declared edit obligation: when a file (or symbol span) changes, the agent is directed to edit named target files/spans.
 
+---
+
+## 22. Implementation decisions (v1 Rust build)
+
+The v1 implementation is a single Rust crate (`mari`). Where the spec left an implementation choice open, v1 decides:
+
+- **Storage:** the catalog and private state live in one DuckDB database per workspace (`catalog.duckdb`, bundled via the Rust `duckdb` crate — no external service). The `mari sql` surface queries it read-only. SQLite/rusqlite is not a v1 storage target. LanceDB remains the upgrade path if ANN at scale is needed.
+- **Embedding:** v1 standardizes on `jina-embeddings-v5-text-nano` as the only embedding model identity. There is no hash-vector fallback and no alternate embedding model. Until model-backed vector generation is wired in, sync records the required model identity and keeps `embedding.dims=0`; keyword scoring carries exact-term recall without writing `embeddings` rows. If the configured build cannot run `jina-embeddings-v5-text-nano`, vector embedding fails loudly and `mari sync --rebuild` is required after any embedding identity or dimension migration.
+- **Markdown parsing:** v1 implements the §11.0 engine contract directly — line-based masking (equal-length space blanking, newlines preserved) and regex structure extraction, exactly as the section specifies. `pulldown-cmark` remains the upgrade path if constructs outgrow the line model.
+- **Rule evaluation:** rules live as Rust functions over a shared `Ctx`/`Emitter` contract, with the normative word/phrase lists as in-module consts. Every rule ships a bad→good fixture test in its module (§19 discipline; 170+ assertions).
+- **Pattern matching:** large word/phrase maps use single case-insensitive `regex` alternations (which compile to Aho-Corasick internally — explicitly sanctioned by §11.0.5); `fancy-regex` carries the lookaround-heavy rules, with manual neighbor checks where lookbehinds would be variable-length.
+- **Style-pack references:** Microsoft, Google, AP, Chicago, and plain-language packs are treated as source-backed data packs, with Vale-compatible rule mechanics where the spec names Vale parity. The implementation may study or port Vale pack data, but Mari's emitted rule IDs, severities, offsets, waivers, and JSON schema remain the product contract.
+- **Grammar:** Harper is the grammar engine (`harper-core`) behind the `grammar` cargo feature; no custom grammar checker.
+- **ML tiers 1–2** (machine-likelihood, NLI, slop spans, attention grounding) are not in this build. Every `--models`/`--deep` flag parses, prints a loud "not available in this build" note to stderr, and degrades to the deterministic tier without changing exit semantics.
+- **Default grammar behavior:** the Harper pass is absent from the default build; `--grammar` prints the same not-in-this-build note unless the feature is enabled.
+- **Connectors:** all thirteen sources are implemented — `localfiles` and `git` locally, and Slack, Google Drive, GitHub, Confluence, Jira, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, and Linear over their HTTP APIs per §6, sharing one §6.0 contract implementation (retry/backoff honoring Retry-After, single 401 token-refresh, 60s timeout, per-source cursors in catalog state, content-hash re-embed authority, per-source prune rules). Live-service calls are exercised through unit tests over recorded payload shapes; a tracked-but-unconnected source remains a nudge, and one source's failure never aborts the others.
+- **OCR (§8.6):** the OCR/VLM is `baidu/Unlimited-OCR` — exclusively; there are no fallback engines. PDF extraction implements all three backends (`text` via embedded text, `auto` OCRing only pages with <16 extractable chars, `ocr-model` for every page) through a Python toolchain auto-provisioned into `~/.mari/ocr` on first use (PyMuPDF for text/rendering; torch + transformers for the model tiers, per the project README; CUDA when available, else CPU). `ocr.model` defaults to `baidu/Unlimited-OCR`; a missing toolchain with `ocr.auto_install=false`, or any extraction failure, errors loudly for that file — nothing is silently substituted. PDFs flow through `localfiles`, Google Drive, and OneDrive sync; unchanged PDF bytes never re-run OCR.
+- **Office extraction:** not in v1 — Office files are noted and skipped; markdown/text/HTML are extracted (Confluence storage HTML, Zendesk/HubSpot/Graph HTML bodies flatten to markdown-lite per §8.5).
+- **Cloud backends:** `git` backend is native (catalog copied under `.mari/catalog` + Git LFS `.gitattributes`); the `s3` backend shells out to the AWS CLI rather than embedding an AWS SDK.
+- **Hook integration:** `mari hooks on` installs a Claude Code `PostToolUse` hook (`mari hook run`) into the repo's `.claude/settings.json`; the hook reads the harness JSON on stdin and honors all §15.1 invariants. The §15.2 commit-association hook is `mari hooks commit-on`, which installs a git `post-commit` hook running `mari hook commit` — it flags rule/nudge-covered commits missing their coupled edits and persists commit↔knowledge association edges.
+- **Nudge symbol resolution** uses deterministic heuristics: markdown headings resolve to their section span; code symbols resolve via definition-line regexes (fn/class/const/def/export) with an indentation-bounded span — no tree-sitter dependency in v1.
+- **`mari track <source> <add|remove|list> [ref] [--list-key <key>]`** is the concrete command behind "tracked refs", writing the source's list keys in committed `.mari/config.json`.
+- **Humanizer vendoring** shells out to `git` for clone/update of `~/.mari/skills/humanizer`.
+- **Plugin packaging (§16):** the repo doubles as the installable Claude Code plugin: `.claude-plugin/plugin.json`, `skills/mari/SKILL.md` (with its reference flows and templates under `skills/mari/references/`), one `skills/connect-<source>/` per connector, the §16.1 default standalone commands under `commands/` (search, sync, tag, factcheck, audit, deslop, tighten, clarify, sharpen, understate, critique, polish, draft), and `hooks/hooks.json` registering the `PostToolUse` → `mari hook run` hook. Pinning/unpinning is adding or removing a command file.
+- **Lineage curation:** `mari lineage <list|add|confirm|reject>` curates §8.3 edges by hand (`--by human` edges are confirmed on creation; `--by llm` proposals start `proposed`). Machine proposal *generation* remains Tier-2 (`lineage refine`) and is out of this build.
+- **Editorial verbs** (`deslop`, `tighten`, …) remain agent-side skill flows per §17's agent tier; the CLI contributes `detect`/`audit`/`factcheck` and the reference flows shipped in this repo.

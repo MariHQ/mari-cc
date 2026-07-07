@@ -33,7 +33,11 @@ pub fn scan<F: FnMut(usize, usize, &str)>(ctx: &Ctx, re: &regex::Regex, mut cb: 
         match re.find_at(&ctx.masked, pos) {
             Some(m) => {
                 cb(m.start(), m.len(), m.as_str());
-                pos = if m.end() > m.start() { m.end() } else { next_char(&ctx.masked, m.end()) };
+                pos = if m.end() > m.start() {
+                    m.end()
+                } else {
+                    next_char(&ctx.masked, m.end())
+                };
             }
             None => break,
         }
@@ -41,17 +45,17 @@ pub fn scan<F: FnMut(usize, usize, &str)>(ctx: &Ctx, re: &regex::Regex, mut cb: 
 }
 
 /// Same, for fancy-regex (lookaround rules).
-pub fn scan_fancy<F: FnMut(usize, usize, &str)>(
-    ctx: &Ctx,
-    re: &fancy_regex::Regex,
-    mut cb: F,
-) {
+pub fn scan_fancy<F: FnMut(usize, usize, &str)>(ctx: &Ctx, re: &fancy_regex::Regex, mut cb: F) {
     let mut pos = 0usize;
     while pos <= ctx.masked.len() {
         match re.find_from_pos(&ctx.masked, pos).ok().flatten() {
             Some(m) => {
                 cb(m.start(), m.end() - m.start(), m.as_str());
-                pos = if m.end() > m.start() { m.end() } else { next_char(&ctx.masked, m.end()) };
+                pos = if m.end() > m.start() {
+                    m.end()
+                } else {
+                    next_char(&ctx.masked, m.end())
+                };
             }
             None => break,
         }

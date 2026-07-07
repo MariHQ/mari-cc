@@ -50,8 +50,7 @@ pub fn compute(text: &str, findings: &[Finding], machine: Option<f64>) -> Score 
     let base = 100.0 * (1.0 - (-per1k / 35.0).exp());
 
     // Human-signal discount.
-    let contraction_re =
-        regex::Regex::new(r"\w+['’](t|s|re|ve|ll|d|m)\b").unwrap();
+    let contraction_re = regex::Regex::new(r"\w+['’](t|s|re|ve|ll|d|m)\b").unwrap();
     let contractions = contraction_re.find_iter(text).count();
     let fp_re = regex::Regex::new(
         r"\b(I|I'm|I've|I'll|I'd|[Ww]e|[Ww]e're|[Ww]e've|[Ww]e'll|[Ww]e'd|[Mm]y|[Oo]ur|[Mm]e|[Uu]s)\b",

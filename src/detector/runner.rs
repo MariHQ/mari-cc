@@ -1,7 +1,7 @@
 //! Detector pipeline per SPEC §5.4 / §11.0.1 / §11.0.6: walk → skip checks →
 //! ctx → rules → waivers → sort → render.
 
-use super::{ctx::Ctx, render, score, Emitter, Finding, Rule, Severity};
+use super::{ctx::Ctx, render, score, Emitter, Finding, Severity};
 use crate::{config, workspace};
 use anyhow::Result;
 use globset::{Glob, GlobSet, GlobSetBuilder};
@@ -32,10 +32,28 @@ pub struct FileResult {
 }
 
 const SKIP_DIRS: &[&str] = &[
-    "node_modules", ".git", "dist", "build", ".next", "coverage", ".mari",
-    "testdata", "test-data", "fixtures", "__fixtures__", "golden", "snapshots",
-    "__snapshots__", "target", "out", "vendor", "vendored", "3rdparty",
-    "thirdparty", "third_party", "third-party",
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".next",
+    "coverage",
+    ".mari",
+    "testdata",
+    "test-data",
+    "fixtures",
+    "__fixtures__",
+    "golden",
+    "snapshots",
+    "__snapshots__",
+    "target",
+    "out",
+    "vendor",
+    "vendored",
+    "3rdparty",
+    "thirdparty",
+    "third_party",
+    "third-party",
 ];
 
 const MD_EXTS: &[&str] = &["md", "markdown", "mdx", "mdc"];
@@ -58,7 +76,10 @@ fn is_generated(path: &Path) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_lowercase();
-    matches!(stem.as_str(), "CHANGELOG" | "HISTORY" | "LICENSE" | "NOTICE") || name == "llms.txt"
+    matches!(
+        stem.as_str(),
+        "CHANGELOG" | "HISTORY" | "LICENSE" | "NOTICE"
+    ) || name == "llms.txt"
 }
 
 /// Non-Latin prose skip: ≥25% of letters non-Latin (SPEC §11.0.6).
@@ -113,16 +134,27 @@ pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettin
         config::resolve(Some(&workspace::work_root()))
     };
     let det = &cfg["detector"];
-    let style = style_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| det["styleGuide"].as_str().unwrap_or("microsoft").to_string());
+    let style = style_override.map(|s| s.to_string()).unwrap_or_else(|| {
+        det["styleGuide"]
+            .as_str()
+            .unwrap_or("microsoft")
+            .to_string()
+    });
     let ignore_rules: HashSet<String> = det["ignoreRules"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let globs: Vec<String> = det["ignoreFiles"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     let mut b = GlobSetBuilder::new();
     for g in &globs {
@@ -132,7 +164,11 @@ pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettin
     }
     let zero: HashSet<String> = det["zeroTolerance"]
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     DetectorSettings {
         style_guide: style,
@@ -176,7 +212,11 @@ pub fn file_ignored(s: &DetectorSettings, rel: &str) -> bool {
 /// Collect markdown files under the given args (files or trees).
 pub fn collect_files(paths: &[String]) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let roots: Vec<String> = if paths.is_empty() { vec![".".into()] } else { paths.to_vec() };
+    let roots: Vec<String> = if paths.is_empty() {
+        vec![".".into()]
+    } else {
+        paths.to_vec()
+    };
     for root in roots {
         let p = PathBuf::from(&root);
         if p.is_file() {
@@ -319,7 +359,57 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
         }
     }
 
-    Ok(if has_error || (args.strict && has_warn) { 1 } else { 0 })
+    Ok(if has_error || (args.strict && has_warn) {
+        1
+    } else {
+        0
+    })
+}
+
+#[cfg(test)]
+mod self_test {
+    use super::*;
+
+    /// SPEC §19: the deliberate-slop fixture must produce a known finding set.
+    #[test]
+    fn sloppy_fixture_fires_known_rules() {
+        let text = include_str!("../../fixtures/sloppy.md");
+        let s = test_settings("microsoft");
+        let r = detect_text("fixtures/sloppy.md", text, &s);
+        let ids: std::collections::HashSet<&str> =
+            r.findings.iter().map(|f| f.rule_id.as_str()).collect();
+        for expected in [
+            "cliche-opener",
+            "filler-phrase",
+            "marketing-buzzword",
+            "overused-word",
+            "assistant-meta",
+            "sycophancy",
+            "conclusion-restate",
+            "vague-attribution",
+            "hedge-overuse",
+            "wordy-phrase",
+            "redundant-pair",
+            "vague-link-text",
+            "tracking-param-in-citation",
+        ] {
+            assert!(
+                ids.contains(expected),
+                "expected {expected} to fire; got {ids:?}"
+            );
+        }
+        // And the clean scaffold must stay clean.
+        let clean = detect_text(
+            "clean.md",
+            "# Notes\n\nWe shipped the fix today. Tests pass.\n",
+            &s,
+        );
+        assert!(
+            clean.findings.is_empty(),
+            "clean text produced findings: {:?}",
+            clean.findings
+        );
+    }
 }
 
 /// `mari audit [path]` — human-facing report grouped by family with

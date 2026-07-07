@@ -1,11 +1,25 @@
 //! Readability internals per SPEC §11.12.
 
 const EXCEPTIONS: &[(&str, usize)] = &[
-    ("every", 2), ("business", 2), ("different", 3), ("comfortable", 3),
-    ("vegetable", 3), ("february", 4), ("area", 3), ("idea", 3),
-    ("science", 2), ("being", 2), ("create", 2), ("people", 2),
-    ("simile", 3), ("queue", 1), ("the", 1), ("average", 3),
-    ("naive", 2), ("real", 1), ("cereal", 3),
+    ("every", 2),
+    ("business", 2),
+    ("different", 3),
+    ("comfortable", 3),
+    ("vegetable", 3),
+    ("february", 4),
+    ("area", 3),
+    ("idea", 3),
+    ("science", 2),
+    ("being", 2),
+    ("create", 2),
+    ("people", 2),
+    ("simile", 3),
+    ("queue", 1),
+    ("the", 1),
+    ("average", 3),
+    ("naive", 2),
+    ("real", 1),
+    ("cereal", 3),
 ];
 
 pub fn syllables(word: &str) -> usize {
@@ -27,10 +41,7 @@ pub fn syllables(word: &str) -> usize {
         let before = bytes[s.len() - 3];
         let before2 = bytes.get(s.len().wrapping_sub(4)).copied();
         let is_vowel = |b: u8| matches!(b, b'a' | b'e' | b'i' | b'o' | b'u' | b'y');
-        if !is_vowel(before)
-            && before != b'l'
-            && before2.map(is_vowel).unwrap_or(false)
-        {
+        if !is_vowel(before) && before != b'l' && before2.map(is_vowel).unwrap_or(false) {
             s.truncate(s.len() - 2);
         }
     } else if s.ends_with("ed") && s.len() > 3 {

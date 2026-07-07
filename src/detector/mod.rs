@@ -1,18 +1,18 @@
 pub mod ctx;
 pub mod helpers;
-pub mod runner;
-pub mod render;
+pub mod pack_ap;
+pub mod pack_chicago;
+pub mod pack_google;
+pub mod pack_microsoft;
+pub mod pack_plain;
 pub mod readability;
-pub mod score;
+pub mod render;
 pub mod rules_a;
 pub mod rules_b;
 pub mod rules_c;
-pub mod pack_microsoft;
-pub mod pack_google;
-pub mod pack_ap;
-pub mod pack_chicago;
-pub mod pack_plain;
 pub mod rules_d;
+pub mod runner;
+pub mod score;
 
 use std::collections::HashSet;
 
@@ -101,7 +101,10 @@ pub struct Emitter {
 
 impl Emitter {
     pub fn new(zero_tolerance: HashSet<String>) -> Self {
-        Emitter { findings: Vec::new(), zero_tolerance }
+        Emitter {
+            findings: Vec::new(),
+            zero_tolerance,
+        }
     }
 
     pub fn zero_tol(&self, id: &str) -> bool {

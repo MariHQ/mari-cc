@@ -2,6 +2,8 @@
 
 use crate::{config, workspace};
 use anyhow::Result;
+use serde_json::Value;
+use std::path::Path;
 
 pub fn run(
     action: Option<&str>,
@@ -22,7 +24,7 @@ pub fn run(
                 );
                 for p in config::known_paths() {
                     if let Some(v) = config::get_path(&resolved, &p) {
-                        println!("{p} = {v}");
+                        println!("{}", format_config_line(&p, v, &root));
                     }
                 }
             }
@@ -77,5 +79,63 @@ fn unknown_path(p: &str) {
     eprintln!("unknown config path: {p}\nknown paths:");
     for k in config::known_paths() {
         eprintln!("  {k}");
+    }
+}
+
+fn format_config_line(path: &str, value: &Value, root: &Path) -> String {
+    format!(
+        "{path} = {value}  # source: {}; set: {}",
+        effective_source(path, root),
+        config::global_config_path().display()
+    )
+}
+
+fn effective_source(path: &str, root: &Path) -> String {
+    let mut layers = Vec::new();
+    let defaults = config::defaults();
+    if config::get_path(&defaults, path).is_some() {
+        layers.push("defaults");
+    }
+    let global = config::read_json(&config::global_config_path());
+    if config::get_path(&global, path).is_some() {
+        layers.push("global");
+    }
+    let repo = config::read_json(&config::repo_config_path(root));
+    if config::get_path(&repo, path).is_some() {
+        layers.push("repo");
+    }
+    let local = config::read_json(&config::repo_local_config_path(root));
+    if config::get_path(&local, path).is_some() {
+        layers.push("repo-local");
+    }
+    source_label(&layers, config::is_tracked_ref_dotted(path))
+}
+
+fn source_label(layers: &[&str], union_list: bool) -> String {
+    if layers.is_empty() {
+        return "unknown".into();
+    }
+    if union_list {
+        layers.join("+")
+    } else {
+        layers.last().unwrap().to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_label;
+
+    #[test]
+    fn scalar_source_label_uses_last_overlay() {
+        assert_eq!(source_label(&["defaults", "global", "repo"], false), "repo");
+    }
+
+    #[test]
+    fn tracked_list_source_label_keeps_all_contributors() {
+        assert_eq!(
+            source_label(&["defaults", "global", "repo"], true),
+            "defaults+global+repo"
+        );
     }
 }

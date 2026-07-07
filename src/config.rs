@@ -43,7 +43,7 @@ pub fn defaults() -> Value {
         "microsoft": { "drives": [], "mail": [], "teams": [] },
         "linear": { "teams": [], "projects": [] },
         "localfiles": { "paths": [] },
-        "ocr": { "backend": "auto", "model": "", "dpi": 200, "auto_install": true },
+        "ocr": { "backend": "auto", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true },
         "cloud": { "enabled": false, "backend": "s3", "bucket": "", "prefix": "", "region": "" },
         "detector": {
             "styleGuide": "microsoft",
@@ -68,7 +68,9 @@ pub fn defaults() -> Value {
 }
 
 pub fn mari_home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".mari")
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".mari")
 }
 
 pub fn global_config_path() -> PathBuf {
@@ -93,15 +95,24 @@ pub fn read_json(path: &Path) -> Value {
 /// Deep merge `overlay` onto `base`; `null` in overlay deletes the key;
 /// tracked-ref list keys UNION across layers (SPEC §3.3).
 pub fn deep_merge(base: &mut Value, overlay: &Value, union_lists: bool) {
+    deep_merge_at(base, overlay, union_lists, &mut Vec::new());
+}
+
+fn deep_merge_at(base: &mut Value, overlay: &Value, union_lists: bool, path: &mut Vec<String>) {
     match (base, overlay) {
         (Value::Object(b), Value::Object(o)) => {
             for (k, v) in o {
+                path.push(k.clone());
                 if v.is_null() {
                     b.remove(k);
                 } else if let Some(bv) = b.get_mut(k) {
                     if bv.is_object() && v.is_object() {
-                        deep_merge(bv, v, union_lists);
-                    } else if union_lists && bv.is_array() && v.is_array() {
+                        deep_merge_at(bv, v, union_lists, path);
+                    } else if union_lists
+                        && bv.is_array()
+                        && v.is_array()
+                        && is_tracked_ref_path(path)
+                    {
                         let arr = bv.as_array_mut().unwrap();
                         for item in v.as_array().unwrap() {
                             if !arr.contains(item) {
@@ -114,10 +125,44 @@ pub fn deep_merge(base: &mut Value, overlay: &Value, union_lists: bool) {
                 } else {
                     b.insert(k.clone(), v.clone());
                 }
+                path.pop();
             }
         }
         (b, o) => *b = o.clone(),
     }
+}
+
+fn is_tracked_ref_path(path: &[String]) -> bool {
+    is_tracked_ref_dotted(&dotted_path(path))
+}
+
+pub fn is_tracked_ref_dotted(dotted: &str) -> bool {
+    matches!(
+        dotted,
+        "slack.channels"
+            | "google.docs"
+            | "google.folders"
+            | "github.repos"
+            | "git.repos"
+            | "confluence.spaces"
+            | "confluence.pages"
+            | "jira.projects"
+            | "zendesk.include"
+            | "salesforce.objects"
+            | "hubspot.include"
+            | "microsoft.drives"
+            | "microsoft.mail"
+            | "microsoft.teams"
+            | "discord.channels"
+            | "discord.guilds"
+            | "linear.teams"
+            | "linear.projects"
+            | "localfiles.paths"
+    )
+}
+
+fn dotted_path(path: &[String]) -> String {
+    path.join(".")
 }
 
 /// Effective config for a repo (or global-only when repo is None).
@@ -145,7 +190,11 @@ pub fn known_paths() -> Vec<String> {
         match v {
             Value::Object(m) => {
                 for (k, val) in m {
-                    let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                    let p = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
                     walk(&p, val, out);
                 }
             }
@@ -162,11 +211,18 @@ pub fn known_paths() -> Vec<String> {
 /// (booleans accept 1/true/yes/on).
 pub fn coerce(dotted: &str, raw: &str) -> Result<Value> {
     let d = defaults();
-    let target = get_path(&d, dotted)
-        .ok_or_else(|| anyhow!("unknown config path: {dotted}"))?;
+    let target = get_path(&d, dotted).ok_or_else(|| anyhow!("unknown config path: {dotted}"))?;
     Ok(match target {
         Value::Bool(_) => {
-            let t = matches!(raw.to_lowercase().as_str(), "1" | "true" | "yes" | "on");
+            let t = match raw.to_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => true,
+                "0" | "false" | "no" | "off" => false,
+                _ => {
+                    return Err(anyhow!(
+                        "expected a boolean (true/false, yes/no, on/off, 1/0)"
+                    ))
+                }
+            };
             Value::Bool(t)
         }
         Value::Number(n) if n.is_i64() || n.is_u64() => {
@@ -226,4 +282,71 @@ pub fn needs_rebuild_reminder(dotted: &str) -> bool {
         || dotted == "chunking"
         || dotted.starts_with("chunking.")
         || dotted.contains(".chunking")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deep_merge_unions_only_tracked_ref_lists() {
+        let mut base = json!({
+            "github": {
+                "repos": ["acme/one"],
+                "include": ["issues", "pulls"]
+            },
+            "detector": {
+                "ignoreRules": ["old-rule"]
+            },
+            "tags": {
+                "statuses": ["canonical", "stale"]
+            }
+        });
+        let overlay = json!({
+            "github": {
+                "repos": ["acme/two"],
+                "include": ["issues"]
+            },
+            "detector": {
+                "ignoreRules": ["new-rule"]
+            },
+            "tags": {
+                "statuses": ["canonical", "draft"]
+            }
+        });
+
+        deep_merge(&mut base, &overlay, true);
+
+        assert_eq!(base["github"]["repos"], json!(["acme/one", "acme/two"]));
+        assert_eq!(base["github"]["include"], json!(["issues"]));
+        assert_eq!(base["detector"]["ignoreRules"], json!(["new-rule"]));
+        assert_eq!(base["tags"]["statuses"], json!(["canonical", "draft"]));
+    }
+
+    #[test]
+    fn deep_merge_null_deletes_key() {
+        let mut base = json!({
+            "search": {
+                "k": 8,
+                "tag_boosts": { "draft": 0.9 }
+            }
+        });
+        let overlay = json!({
+            "search": {
+                "tag_boosts": null
+            }
+        });
+
+        deep_merge(&mut base, &overlay, true);
+
+        assert_eq!(base["search"]["k"], json!(8));
+        assert!(base["search"].get("tag_boosts").is_none());
+    }
+
+    #[test]
+    fn coerce_bool_accepts_explicit_forms_only() {
+        assert_eq!(coerce("search.hybrid", "yes").unwrap(), json!(true));
+        assert_eq!(coerce("search.hybrid", "off").unwrap(), json!(false));
+        assert!(coerce("search.hybrid", "tru").is_err());
+    }
 }

@@ -107,9 +107,8 @@ pub struct Ctx {
 }
 
 const ABBREVIATIONS: &[&str] = &[
-    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "inc",
-    "ltd", "co", "no", "fig", "al", "eg", "ie", "e.g", "i.e", "u.s", "u.k",
-    "a.m", "p.m", "approx",
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "inc", "ltd", "co", "no",
+    "fig", "al", "eg", "ie", "e.g", "i.e", "u.s", "u.k", "a.m", "p.m", "approx",
 ];
 
 impl Ctx {
@@ -242,9 +241,7 @@ pub fn count_words(s: &str) -> usize {
 pub fn word_token_re() -> &'static regex::Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        regex::Regex::new(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*").unwrap()
-    })
+    RE.get_or_init(|| regex::Regex::new(r"[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*").unwrap())
 }
 
 fn line_starts(text: &str) -> Vec<usize> {
@@ -384,8 +381,12 @@ struct Structure {
 fn extract_structure(text: &str, masked: &str, line_starts: &[usize]) -> Structure {
     let heading_re = regex::Regex::new(r"^(\s{0,3})(#{1,6})\s+(.*?)\s*#*\s*$").unwrap();
     let list_re = regex::Regex::new(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$").unwrap();
-    let break_re = regex::Regex::new(r"^\s{0,3}([-*_])(\s*\1){2,}\s*$").unwrap();
-    let sep_row_re = regex::Regex::new(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$").unwrap();
+    // No backreferences in the `regex` crate — expand the ([-*_])(\s*\1){2,}
+    // pattern into one alternation per break char.
+    let break_re =
+        regex::Regex::new(r"^\s{0,3}(?:-(?:\s*-){2,}|\*(?:\s*\*){2,}|_(?:\s*_){2,})\s*$").unwrap();
+    let sep_row_re =
+        regex::Regex::new(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$").unwrap();
     let refdef_re = regex::Regex::new(r"^\s{0,3}\[([^\]]+)\]:\s+(\S+)").unwrap();
 
     let mut s = Structure {
@@ -476,10 +477,7 @@ fn extract_structure(text: &str, masked: &str, line_starts: &[usize]) -> Structu
         if let Some(c) = refdef_re.captures(m) {
             let id = c.get(1).unwrap();
             s.ref_defs.push(RefDef {
-                id: raw
-                    .get(id.start()..id.end())
-                    .unwrap_or("")
-                    .to_lowercase(),
+                id: raw.get(id.start()..id.end()).unwrap_or("").to_lowercase(),
                 line: lineno,
                 start,
                 url: c.get(2).unwrap().as_str().to_string(),
@@ -518,8 +516,7 @@ fn extract_structure(text: &str, masked: &str, line_starts: &[usize]) -> Structu
     }
 
     // Bold spans (single line).
-    let bold_re =
-        regex::Regex::new(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__").unwrap();
+    let bold_re = regex::Regex::new(r"\*\*([^*\n]+)\*\*|__([^_\n]+)__").unwrap();
     for c in bold_re.captures_iter(masked) {
         let whole = c.get(0).unwrap();
         let inner = c.get(1).or_else(|| c.get(2)).unwrap();
@@ -534,14 +531,11 @@ fn extract_structure(text: &str, masked: &str, line_starts: &[usize]) -> Structu
     // not an image).
     let use_re = fancy_regex::Regex::new(r"\]\[([^\]]+)\]").unwrap();
     for c in use_re.captures_iter(masked).flatten() {
-        s.ref_uses
-            .insert(c.get(1).unwrap().as_str().to_lowercase());
+        s.ref_uses.insert(c.get(1).unwrap().as_str().to_lowercase());
     }
-    let shortcut_re =
-        fancy_regex::Regex::new(r"(?<!\!)\[([^\]\[]+)\](?![\[(:])").unwrap();
+    let shortcut_re = fancy_regex::Regex::new(r"(?<!\!)\[([^\]\[]+)\](?![\[(:])").unwrap();
     for c in shortcut_re.captures_iter(masked).flatten() {
-        s.ref_uses
-            .insert(c.get(1).unwrap().as_str().to_lowercase());
+        s.ref_uses.insert(c.get(1).unwrap().as_str().to_lowercase());
     }
 
     s
@@ -564,25 +558,49 @@ fn split_blocks(masked: &str, line_starts: &[usize]) -> Vec<Block> {
 
         if blank_line {
             if let Some(ps) = para_start.take() {
-                blocks.push(Block { kind: BlockKind::Paragraph, start: ps, end: prev_end });
+                blocks.push(Block {
+                    kind: BlockKind::Paragraph,
+                    start: ps,
+                    end: prev_end,
+                });
             }
         } else if heading_re.is_match(line) {
             if let Some(ps) = para_start.take() {
-                blocks.push(Block { kind: BlockKind::Paragraph, start: ps, end: prev_end });
+                blocks.push(Block {
+                    kind: BlockKind::Paragraph,
+                    start: ps,
+                    end: prev_end,
+                });
             }
-            blocks.push(Block { kind: BlockKind::Heading, start, end });
+            blocks.push(Block {
+                kind: BlockKind::Heading,
+                start,
+                end,
+            });
         } else if list_re.is_match(line) {
             if let Some(ps) = para_start.take() {
-                blocks.push(Block { kind: BlockKind::Paragraph, start: ps, end: prev_end });
+                blocks.push(Block {
+                    kind: BlockKind::Paragraph,
+                    start: ps,
+                    end: prev_end,
+                });
             }
-            blocks.push(Block { kind: BlockKind::ListItem, start, end });
+            blocks.push(Block {
+                kind: BlockKind::ListItem,
+                start,
+                end,
+            });
         } else if para_start.is_none() {
             para_start = Some(start);
         }
         prev_end = end;
     }
     if let Some(ps) = para_start {
-        blocks.push(Block { kind: BlockKind::Paragraph, start: ps, end: prev_end });
+        blocks.push(Block {
+            kind: BlockKind::Paragraph,
+            start: ps,
+            end: prev_end,
+        });
     }
     blocks
 }
@@ -626,7 +644,11 @@ fn split_sentences(masked: &str, blocks: &[Block]) -> Vec<Sentence> {
             let text_slice = &seg[cursor..m.end()];
             let words = count_words(text_slice);
             if words > 0 {
-                out.push(Sentence { start: s_start, end: s_end, words });
+                out.push(Sentence {
+                    start: s_start,
+                    end: s_end,
+                    words,
+                });
             }
             cursor = m.end();
         }

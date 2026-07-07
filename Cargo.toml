@@ -18,7 +18,9 @@ regex = "1"
 fancy-regex = "0.14"
 globset = "0.4"
 ignore = "0.4"
-rusqlite = { version = "0.32", features = ["bundled"] }
+duckdb = { version = "1", features = ["bundled"] }
+pulldown-cmark = "0.12"
+aho-corasick = "1"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 sha2 = "0.10"

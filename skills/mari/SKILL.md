@@ -58,18 +58,18 @@ Route on what follows `/mari` (or, if the skill auto-triggered, on the user's me
   the ask is editorial, run the detector and surface the 2–3 highest-value commands (many
   buzzword/cliché hits → `deslop`; long-sentence hits → `tighten`; passive/jargon → `clarify`;
   inclusive/heading/link hits → `audit`). Never auto-edit.
-- **`init`** → `reference-init.md` — routes to the **search** flow (connectors), the **style**
+- **`init`** → `references/reference-init.md` — routes to the **search** flow (connectors), the **style**
   flow (PRODUCT.md/STYLE.md/hook), or both.
 - **`sync` / `status` / `config` / `features` / `plugins`** → run the CLI directly (see below).
-- **`tag` / `facts` / `extract` / `glossary`** → the curation flows (`reference-tag.md`,
-  `reference-extract.md`, `reference-glossary.md`). Tagging is a team decision — confirm the
+- **`tag` / `facts` / `extract` / `glossary`** → the curation flows (`references/reference-tag.md`,
+  `references/reference-extract.md`, `references/reference-glossary.md`). Tagging is a team decision — confirm the
   status meaning before writing it.
 - **A deterministic docs command** (`detect`, `audit`, `asset`, `i18n`, `platform`, `community`,
   `check`, `surface`, `explore`, `lineage`, `scan`, `factcheck`) → run the CLI directly, loading
   `reference-<command>.md` where one exists (factcheck, lineage, scan, platform, community,
   docsite have interactive flows). `check --strict` is the CI gate; add `--deep` only when asked.
 - **`docsite`** (or "document the whole codebase") → the end-to-end flow in
-  `reference-docsite.md`: survey the code, choose + scaffold a platform, design the information
+  `references/reference-docsite.md`: survey the code, choose + scaffold a platform, design the information
   architecture (Diátaxis), fill every page from the code, add community-health files, validate
   with `check --strict`.
 - **An editing command** (`init`, `document`, `draft`, `outline`, `glossary`, `critique`,
@@ -185,14 +185,14 @@ prunes). Then suggest `/mari sync`.
 - **`mari tag <path-or-ref> <status>`** — statuses: `canonical`, `stale`, `deprecated`, `draft`,
   `internal`, `customer-facing`, `needs-review`. Tags are team-shared (committed config), boost
   or bury search results, gate factcheck evidence, and drive hook advisories. Load
-  `reference-tag.md`. When tagging `deprecated`, suggest a lineage edge to the replacement.
+  `references/reference-tag.md`. When tagging `deprecated`, suggest a lineage edge to the replacement.
 - **`mari facts add "<fact>" [--source "<ref>"]`** / `mari facts list` — the FACTS.md ledger that
   `factcheck` grounds against.
 - **`mari extract facts [--source S] [--doc D] [--since N]`** — mine candidate facts from recent
   knowledge (e.g. `#product` Slack messages); review each with the user before writing. Load
-  `reference-extract.md`.
+  `references/reference-extract.md`.
 - **`glossary`** — harvest approved terms + variants into STYLE.md (feeds the
-  `terminology-consistency` rule). Load `reference-glossary.md`.
+  `terminology-consistency` rule). Load `references/reference-glossary.md`.
 - **`mari audit kb [path…]`** — audit the knowledge base: stale pages, contradiction candidates,
   duplicates, unsupported claims, inconsistent terminology, the `needs-review` backlog.
 
@@ -216,7 +216,7 @@ The most-used verbs (each has a `reference-<command>.md` with its full flow):
 `docsite draft outline glossary`; refine — `sharpen soften harden`; external — `humanize`;
 enhance — `voice cadence format delight`; channel — `adapt localize`; iterate — `live`;
 verify — `factcheck` (the deep `--decompose` tier has *you* split sentences into atomic claims
-in-session — see `reference-factcheck.md`).
+in-session — see `references/reference-factcheck.md`).
 
 ## Management
 
