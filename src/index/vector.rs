@@ -93,7 +93,10 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         return Ok(Vec::new());
     }
     let cfg = config::resolve(Some(&workspace::work_root()));
-    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(64) as usize).clamp(1, 64);
+    // The unified KV cache is partitioned across `n_seq_max` sequences, so the
+    // per-sequence slot is n_ctx / seq_cap. Keeping seq_cap modest guarantees
+    // each sequence gets at least PER_SEQ_CAP cells (16 * 1024 = 16384 = n_ctx).
+    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(16) as usize).clamp(1, 16);
 
     crate::models::quiet_llama_logs();
     let path = ensure_model()?;
@@ -108,18 +111,22 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
 
     // Pooled embeddings need the whole batch in one ubatch; budget the
     // token count so every packed group fits a single decode.
-    const TOKEN_BUDGET: usize = 4096;
     const PER_SEQ_CAP: usize = 1024;
+    let token_budget = PER_SEQ_CAP * seq_cap;
     let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(std::num::NonZeroU32::new(TOKEN_BUDGET as u32))
-        .with_n_batch(TOKEN_BUDGET as u32)
-        .with_n_ubatch(TOKEN_BUDGET as u32)
+        .with_n_ctx(std::num::NonZeroU32::new(token_budget as u32))
+        .with_n_batch(token_budget as u32)
+        .with_n_ubatch(token_budget as u32)
         .with_n_seq_max(seq_cap as u32)
         .with_embeddings(true)
         .with_pooling_type(LlamaPoolingType::Last);
     let mut ctx = model
         .new_context(&backend, ctx_params)
         .map_err(|e| anyhow!("llama context: {e}"))?;
+    // The unified cache may be padded larger than requested; the real
+    // per-sequence capacity is the actual n_ctx split across the seq slots.
+    // Clamp every sequence to that so a decode can never overflow its slot.
+    let per_seq_cap = (ctx.n_ctx() as usize / seq_cap).clamp(1, PER_SEQ_CAP);
 
     // Qwen3-Embedding is instruction-aware: queries carry the retrieval
     // instruct prefix, documents embed raw (per the model card).
@@ -131,14 +138,14 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         let mut tokens = model
             .str_to_token(&format!("{prefix}{text}"), AddBos::Always)
             .map_err(|e| anyhow!("tokenize: {e}"))?;
-        if tokens.len() > PER_SEQ_CAP {
-            tokens.truncate(PER_SEQ_CAP);
+        if tokens.len() > per_seq_cap {
+            tokens.truncate(per_seq_cap);
         }
         tokenized.push(tokens);
     }
 
     let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-    let mut batch = LlamaBatch::new(TOKEN_BUDGET, seq_cap as i32);
+    let mut batch = LlamaBatch::new(token_budget, seq_cap as i32);
     let mut i = 0usize;
     let total = tokenized.len();
     while i < total {
@@ -148,7 +155,7 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         batch.clear();
         while i + group < total
             && group < seq_cap
-            && budget + tokenized[i + group].len() <= TOKEN_BUDGET
+            && budget + tokenized[i + group].len() <= token_budget
         {
             batch.add_sequence(&tokenized[i + group], group as i32, false)?;
             budget += tokenized[i + group].len();
@@ -160,12 +167,25 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
             return Err(anyhow!("embedding batch packing stalled"));
         }
         ctx.clear_kv_cache();
-        ctx.decode(&mut batch).map_err(|e| anyhow!("decode: {e}"))?;
-        for seq in 0..group {
-            let emb = ctx
-                .embeddings_seq_ith(seq as i32)
-                .map_err(|e| anyhow!("embeddings: {e}"))?;
-            out.push(normalize(emb));
+        // A decode can still fail on a pathological sequence; rather than
+        // abort the whole sync (which would drop every chunk's vector), fall
+        // back to embedding this group one sequence at a time so a single bad
+        // chunk is isolated.
+        match ctx.decode(&mut batch) {
+            Ok(()) => {
+                for seq in 0..group {
+                    let emb = ctx
+                        .embeddings_seq_ith(seq as i32)
+                        .map_err(|e| anyhow!("embeddings: {e}"))?;
+                    out.push(normalize(emb));
+                }
+            }
+            Err(e) => {
+                eprintln!("  batch decode failed ({e}); retrying sequences individually");
+                for seq in 0..group {
+                    out.push(embed_one(&mut ctx, &tokenized[i + seq]));
+                }
+            }
         }
         i += group;
         if total > seq_cap {
@@ -173,6 +193,28 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         }
     }
     Ok(out)
+}
+
+/// Embed a single already-capped token sequence, returning a zero vector if it
+/// still cannot be decoded. Zero vectors sort last in cosine ranking, so the
+/// chunk stays keyword-searchable without a stale or misleading vector.
+fn embed_one(
+    ctx: &mut llama_cpp_2::context::LlamaContext,
+    tokens: &[llama_cpp_2::token::LlamaToken],
+) -> Vec<f32> {
+    use llama_cpp_2::llama_batch::LlamaBatch;
+    let mut batch = LlamaBatch::new(tokens.len().max(1), 1);
+    ctx.clear_kv_cache();
+    if batch.add_sequence(tokens, 0, false).is_err() {
+        return vec![0.0; DIMS];
+    }
+    if ctx.decode(&mut batch).is_err() {
+        return vec![0.0; DIMS];
+    }
+    match ctx.embeddings_seq_ith(0) {
+        Ok(emb) => normalize(emb),
+        Err(_) => vec![0.0; DIMS],
+    }
 }
 
 pub fn normalize(v: &[f32]) -> Vec<f32> {

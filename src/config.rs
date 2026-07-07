@@ -11,7 +11,7 @@ pub fn defaults() -> Value {
     json!({
         "embedding": {
             "model": "",
-            "batch_size": 64,
+            "batch_size": 16,
             "auto_download": true,
             "gpu_layers": 999
         },
