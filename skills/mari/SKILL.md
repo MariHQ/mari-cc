@@ -67,11 +67,16 @@ Route on what follows `/mari` (or, if the skill auto-triggered, on the user's me
 - **A deterministic docs command** (`detect`, `audit`, `asset`, `i18n`, `platform`, `community`,
   `check`, `surface`, `explore`, `lineage`, `scan`, `factcheck`) → run the CLI directly, loading
   `reference-<command>.md` where one exists (factcheck, lineage, scan, platform, community,
-  docsite have interactive flows). `check --strict` is the CI gate; add `--deep` only when asked.
+  docsite have interactive flows). `check --strict` is the CI gate; add `--deep` only when asked,
+  `--anchors` to validate in-page `#anchor`→`id` links in HTML/JSX on code-based sites. To lint
+  copy that lives in code, `detect --strings <dir>` extracts and checks user-facing strings; for
+  a list of nav/menu labels, `detect --labels` treats each line as its own unit.
 - **`docsite`** (or "document the whole codebase") → the end-to-end flow in
   `references/reference-docsite.md`: survey the code, choose + scaffold a platform, design the information
   architecture (Diátaxis), fill every page from the code, add community-health files, validate
-  with `check --strict`.
+  with `check --strict`. `docsite check` is the focused links-only validator; `docsite sync`
+  reports command/config drift between the docs and the real surface. Removing a page is a plain
+  delete — the hook reruns `docsite check` to surface what broke.
 - **An editing command** (`init`, `document`, `draft`, `outline`, `glossary`, `critique`,
   `deslop`, `humanize`, `understate`, `tighten`, `clarify`, `polish`, `sharpen`, `soften`,
   `harden`, `voice`, `cadence`, `format`, `delight`, `adapt`, `localize`, `live`) → run the
@@ -222,7 +227,10 @@ in-session — see `references/reference-factcheck.md`).
 
 - `mari install [--providers=…]` — wire the post-edit hook + skill for this project.
 - `mari hooks status | on | off` — hook state; `mari ignores add-rule|add-file|add-value …` —
-  detector waivers (config JSON only; no inline in-file comments).
+  detector waivers (config JSON only; no inline in-file comments). For finer control than an
+  all-or-nothing file waiver, `detector.ignoreSpans` (`{path: [[startLine,endLine], …]}`) waives
+  findings within a line range — so a file that deliberately demonstrates slop can waive just
+  those spans while genuine violations elsewhere stay visible.
 - `mari rules add <name> --paths "<globs>" --notify "<msg>" [--exclude …]` — edit-notify rules;
   `rules discover` proposes code↔docs couplings.
 - `mari nudge add <name> --when "<glob>[#symbol]" --edit "<file>[#symbol]" [--edit …] [--message …]`

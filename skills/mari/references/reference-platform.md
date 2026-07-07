@@ -42,6 +42,31 @@ user. Never scaffold a platform the user hasn't picked.
    rules — offer to run `init`'s discover step (`mari rules discover`) so code
    changes nudge the agent to update the new docs.
 
+## After the scaffold: theming, enhancement, and accessibility (agent flows)
+
+The CLI stops at a plain, valid scaffold. Brand theming and responsive polish need design
+judgment and have **no deterministic hook**, so you own them — there is no `mari platform theme`,
+`restyle`, or `enhance` subcommand. Ground the work in `mari surface` and `mari docsite check`.
+
+- **Brand theme.** Read a token source (a Tailwind config, a tokens CSS file, or a live site) and
+  write the platform's theme: map tokens onto its theme variables (mdBook `--bg`/`--fg`/`--links`,
+  Docusaurus Infima, …), wire the fonts, set the favicon, and produce a light and a dark variant.
+  Iterate from plain-language requests ("full-width tables with more cell padding").
+- **Responsive enhancement.** Add a per-page H2/H3 table of contents with scrollspy, a sidebar
+  that collapses on narrow screens, a mobile drawer that overlays rather than pushes content
+  aside, and wide-table scroll wrappers.
+- **Accessibility review.** Reason about color-token contrast against WCAG AA/AAA and effective
+  font sizes; alt-text and heading order are already deterministic detector rules.
+
+Bake in the known platform traps so no one rediscovers them: mdBook's 62.5% root font-size (so
+`rem` sizing compensates), `.content { overflow-y: auto }` breaking `position: sticky`, unwrapped
+wide tables, the sub-620px content push-off (convert to an overlay drawer), the dropped flex
+spacer when the menu title is hidden (`margin-inline-start: auto`), the `#mdbook-*` id rename
+(`#mdbook-searchbar`, formerly `#searchbar`), and `toc.js` leaking H2–H6 into the left sidebar.
+
+A rendered responsive check (overflow and sticky/drawer behavior at real widths) is out of scope
+for the CLI — it needs a headless browser Mari does not carry. Verify layout in a real browser.
+
 ## Notes
 
 - The CLI is non-interactive by design — it never prompts. All the "which one?" logic is yours.

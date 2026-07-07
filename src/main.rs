@@ -339,6 +339,12 @@ enum Cmd {
         grammar: bool,
         #[arg(long = "no-config")]
         no_config: bool,
+        /// Extract and lint user-facing copy from code under <dir> (JSX/TSX text, string literals)
+        #[arg(long)]
+        strings: Option<String>,
+        /// Treat each input line as its own unit (nav titles, menu labels, stdin label lists)
+        #[arg(long)]
+        labels: bool,
     },
     /// Vendored humanizer skill management
     Humanize {
@@ -408,6 +414,9 @@ enum Cmd {
         strict: bool,
         #[arg(long)]
         deep: bool,
+        /// Validate in-page #anchor→id links in HTML/JSX (code-based sites)
+        #[arg(long)]
+        anchors: bool,
         #[arg(long)]
         limit: Option<usize>,
         #[arg(long)]
@@ -670,6 +679,8 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             slop_spans,
             grammar,
             no_config,
+            strings,
+            labels,
         } => detector::runner::cmd_detect(detector::runner::DetectArgs {
             paths,
             stdin,
@@ -683,6 +694,8 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             slop_spans,
             grammar,
             no_config,
+            strings,
+            labels,
         }),
         Cmd::Humanize { action, json } => curation::humanize(action.as_deref(), json),
         Cmd::Factcheck {
@@ -732,9 +745,10 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             json,
             strict,
             deep,
+            anchors,
             limit,
             threshold,
-        } => checkcmd::run(json, strict, deep, limit, threshold),
+        } => checkcmd::run(json, strict, deep, anchors, limit, threshold),
         Cmd::I18n {
             args,
             deep,

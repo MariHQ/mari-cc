@@ -98,6 +98,22 @@ missing targets, no orphan pages), community files exist, and each one's structu
 complete. Fix and re-run until warn-free; advisories are judgment calls — resolve or
 consciously leave them.
 
+Two focused checks scoped to the docs site sit alongside the whole-project gate:
+
+- `mari docsite check` — the links-only validator: internal links + anchors resolve and
+  nav↔files agree, plus in-page `#anchor`→`id` links in HTML/JSX (so code-based sites are
+  covered). Faster than `mari check` and the right thing to run after moving or deleting pages.
+- `mari docsite sync` — reports drift between the documented surface and the real one: CLI
+  commands and config keys the docs miss, and stale "N commands" count phrases in prose. Run it
+  whenever the code's command surface changes; it exits non-zero on hard drift so it can gate CI.
+
+### Removing a page
+
+There is **no** `docsite remove` command. Delete the page like any file and drop it from the nav.
+The post-edit hook fires on the deletion and reruns `mari docsite check`, surfacing every
+now-dangling link and orphaned nav entry for you to repair — finding the breakage is
+deterministic; healing the surrounding prose is yours.
+
 Then:
 
 - **Completeness + staleness (attention):** `mari check --deep --limit 0`.
