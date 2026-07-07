@@ -1360,6 +1360,71 @@ fn empty_as_unknown(s: &str) -> &str {
     }
 }
 
+/// The kind of a typed span for contradiction comparison: money, percent,
+/// year, or count. Only same-kind spans are comparable.
+fn span_kind(s: &str) -> &'static str {
+    let t = s.trim();
+    if t.starts_with('$') {
+        "money"
+    } else if t.ends_with('%') || t.contains("percent") {
+        "percent"
+    } else {
+        let digits: String = t.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() == 4 && (digits.starts_with("19") || digits.starts_with("20")) {
+            "year"
+        } else {
+            "count"
+        }
+    }
+}
+
+/// Numeric magnitude of a span (commas/currency stripped), for agreement check.
+fn span_value(s: &str) -> Option<f64> {
+    let cleaned: String = s
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    cleaned.parse::<f64>().ok()
+}
+
+/// If the two span sets have a same-kind pair with *different* values, return
+/// that pair (a, b). Returns None when every shared kind agrees or no kind is
+/// shared — i.e. no genuine contradiction.
+fn conflicting_span_pair(a: &BTreeSet<String>, b: &BTreeSet<String>) -> Option<(String, String)> {
+    use std::collections::BTreeMap;
+    let by_kind = |set: &BTreeSet<String>| -> BTreeMap<&'static str, Vec<String>> {
+        let mut m: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+        for v in set {
+            m.entry(span_kind(v)).or_default().push(v.clone());
+        }
+        m
+    };
+    let am = by_kind(a);
+    let bm = by_kind(b);
+    for (kind, avals) in &am {
+        // High-precision kinds only: money and percent conflicts are almost
+        // always genuine. Bare counts (30 days vs 7 hours vs 500 members) and
+        // years are too ambiguous without unit/NLI awareness — comparing them
+        // produces noise, so they don't raise a deterministic contradiction.
+        if *kind != "money" && *kind != "percent" {
+            continue;
+        }
+        let Some(bvals) = bm.get(kind) else { continue };
+        for av in avals {
+            for bv in bvals {
+                let agree = match (span_value(av), span_value(bv)) {
+                    (Some(x), Some(y)) => (x - y).abs() < f64::EPSILON,
+                    _ => av == bv,
+                };
+                if !agree {
+                    return Some((av.clone(), bv.clone()));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn catalog_contradiction_findings_from_paths(paths: &[PathBuf]) -> Result<Vec<KbFinding>> {
     let claims = catalog_claims_from_paths(paths)?;
     let mut findings = Vec::new();
@@ -1375,6 +1440,16 @@ fn catalog_contradiction_findings_from_paths(paths: &[PathBuf]) -> Result<Vec<Kb
             if overlap < 2 {
                 continue;
             }
+            // A genuine contradiction needs a same-KIND span with different
+            // values: money vs money, percent vs percent, year vs year. A
+            // price ($49) and a customer count (6625) are different kinds and
+            // never contradict, even if both docs mention "seat". And if the
+            // two claims agree on a value within a kind, that kind isn't a
+            // conflict. This is the precision gate.
+            let Some((a_val, b_val)) = conflicting_span_pair(&a.spans, &b.spans) else {
+                continue;
+            };
+            let _ = (&a_val, &b_val);
             let key = if a.reference <= b.reference {
                 format!(
                     "{}\0{}\0{:?}\0{:?}",
@@ -1394,10 +1469,8 @@ fn catalog_contradiction_findings_from_paths(paths: &[PathBuf]) -> Result<Vec<Kb
                 rule: "contradiction-candidate",
                 file: a.reference.clone(),
                 message: format!(
-                    "typed spans differ from {} on related terms: {} vs {}",
-                    b.reference,
-                    a.spans.iter().cloned().collect::<Vec<_>>().join(", "),
-                    b.spans.iter().cloned().collect::<Vec<_>>().join(", ")
+                    "conflicting values vs {}: {} vs {} (same kind, different value)",
+                    b.reference, a_val, b_val
                 ),
             });
             if findings.len() >= 50 {
@@ -2127,6 +2200,23 @@ mod tests {
 
         let code = audit_kb_in(root, &[], true, true).unwrap();
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn conflicting_span_pair_is_kind_aware() {
+        use std::collections::BTreeSet;
+        let set =
+            |vals: &[&str]| -> BTreeSet<String> { vals.iter().map(|s| s.to_string()).collect() };
+        // Money vs money, different → conflict.
+        assert!(conflicting_span_pair(&set(&["$49"]), &set(&["$99"])).is_some());
+        // Percent vs percent, different → conflict.
+        assert!(conflicting_span_pair(&set(&["40%"]), &set(&["50%"])).is_some());
+        // Money vs count (a price vs a customer count) → NOT a conflict.
+        assert!(conflicting_span_pair(&set(&["$49"]), &set(&["6625"])).is_none());
+        // Count vs count (30 days vs 7 hours) → not flagged (ambiguous units).
+        assert!(conflicting_span_pair(&set(&["30"]), &set(&["7"])).is_none());
+        // Agreeing money value with extra coverage → NOT a conflict.
+        assert!(conflicting_span_pair(&set(&["$49"]), &set(&["$49", "500"])).is_none());
     }
 
     #[test]

@@ -393,6 +393,77 @@ fn check_dataset_identity(global: bool) -> Result<()> {
     Ok(())
 }
 
+/// Per-document nearest neighbours by mean-pooled chunk vector: returns, for
+/// each doc_id, up to `k` other doc_ids with cosine similarity, for lineage
+/// proposal generation. None when no vectors exist.
+pub fn doc_neighbours(
+    global: bool,
+    k: usize,
+) -> Option<std::collections::HashMap<String, Vec<(String, f64)>>> {
+    let rows = read_dataset(global).ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    // Map chunk_id → doc_id via the catalog, then mean-pool per doc.
+    let db = crate::index::catalog_path(global);
+    let conn = duckdb::Connection::open(&db).ok()?;
+    let mut stmt = conn.prepare("SELECT chunk_id, doc_id FROM chunks").ok()?;
+    let chunk_doc: std::collections::HashMap<String, String> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .ok()?
+        .flatten()
+        .collect();
+
+    let mut sums: std::collections::HashMap<String, (Vec<f32>, usize)> =
+        std::collections::HashMap::new();
+    for (chunk_id, v) in &rows {
+        if v.len() != DIMS {
+            continue;
+        }
+        let Some(doc) = chunk_doc.get(chunk_id) else {
+            continue;
+        };
+        let entry = sums
+            .entry(doc.clone())
+            .or_insert_with(|| (vec![0.0; DIMS], 0));
+        for (a, b) in entry.0.iter_mut().zip(v.iter()) {
+            *a += *b;
+        }
+        entry.1 += 1;
+    }
+    let doc_vecs: Vec<(String, Vec<f32>)> = sums
+        .into_iter()
+        .map(|(doc, (mut sum, n))| {
+            let inv = 1.0 / n as f32;
+            for x in &mut sum {
+                *x *= inv;
+            }
+            (doc, normalize(&sum))
+        })
+        .collect();
+    if doc_vecs.len() < 2 {
+        return Some(std::collections::HashMap::new());
+    }
+
+    let mut out: std::collections::HashMap<String, Vec<(String, f64)>> =
+        std::collections::HashMap::new();
+    for (i, (id_a, va)) in doc_vecs.iter().enumerate() {
+        let mut scored: Vec<(String, f64)> = doc_vecs
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, (id_b, vb))| {
+                let dot: f32 = va.iter().zip(vb.iter()).map(|(x, y)| x * y).sum();
+                (id_b.clone(), ((dot as f64) * 1000.0).round() / 1000.0)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(k);
+        out.insert(id_a.clone(), scored);
+    }
+    Some(out)
+}
+
 pub fn rank_many(
     global: bool,
     phrasings: &[String],

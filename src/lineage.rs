@@ -230,120 +230,110 @@ fn list(json: bool) -> Result<i32> {
 /// for human confirm/reject. Findings are leads, not verdicts.
 fn refine(doc_ref: Option<&str>, by: &str) -> Result<i32> {
     let root = crate::workspace::work_root();
-    // Public surface as the context corpus (the "what could this doc couple to").
-    let mut symbols = crate::surface::collect_surface(&root, &root);
-    symbols.retain(|s| matches!(s.kind.as_str(), "rust" | "js-ts" | "python" | "go"));
-    if symbols.is_empty() {
-        eprintln!("note: no public code surface found to couple against");
-        return Ok(0);
-    }
-    let mut surface_text = String::new();
-    for s in &symbols {
-        surface_text.push_str(&format!("{} {}  ({}:{})\n", s.kind, s.name, s.file, s.line));
-    }
-    surface_text.truncate(48_000);
-
     let conn = open()?;
-    // Which docs to refine.
-    let docs: Vec<(String, String, String)> = {
+
+    // Candidate docs to refine (all indexed markdown, or one when named).
+    let docs: Vec<(String, String)> = {
         let mut stmt = conn.prepare(
-            "SELECT doc_id, COALESCE(path, canonical_ref), body FROM documents \
-             WHERE (path LIKE '%.md' OR mime_type = 'text/markdown') AND body IS NOT NULL \
+            "SELECT doc_id, COALESCE(path, canonical_ref) FROM documents \
+             WHERE (path LIKE '%.md' OR mime_type = 'text/markdown') \
              AND (?1 IS NULL OR path LIKE '%' || ?1 OR canonical_ref = ?1) \
-             ORDER BY path LIMIT 25",
+             ORDER BY path LIMIT 100",
         )?;
         stmt.query_map(duckdb::params![doc_ref], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?
         .flatten()
         .collect()
+    };
+    // Collapse the same file indexed by multiple overlapping sources (git +
+    // localfiles) — keep one doc_id per normalized path.
+    let docs: Vec<(String, String)> = {
+        let mut seen = std::collections::HashSet::new();
+        docs.into_iter()
+            .filter(|(_, desc)| {
+                let path = desc
+                    .split_once(':')
+                    .map(|(_, p)| p)
+                    .unwrap_or(desc)
+                    .trim_start_matches("./");
+                seen.insert(path.to_string())
+            })
+            .collect()
     };
     if docs.is_empty() {
         eprintln!("note: no indexed markdown docs to refine (run `mari sync` first)");
         return Ok(0);
     }
 
-    let threshold = crate::config::resolve(Some(&root))["attention"]["threshold"]
-        .as_f64()
-        .unwrap_or(0.3);
-    let mut proposed = 0usize;
-    for (doc_id, doc_desc, body) in &docs {
-        if body.trim().len() < 40 {
-            continue;
+    // Source code is deliberately not indexed (§20/§6.12), so lineage couples
+    // indexed doc↔doc; doc↔code obligations are the nudge's job (filesystem
+    // symbol resolution). Propose couplings between docs that are strong
+    // embedding neighbours — "maintain these two together". Uses the vector
+    // store already built at sync.
+    let neighbours = match crate::index::vector::doc_neighbours(false, 2) {
+        Some(n) => n,
+        None => {
+            eprintln!(
+                "note: lineage refine needs vector embeddings — run `mari sync` with the embedding model available"
+            );
+            return Ok(0);
         }
-        match crate::attn::analyze(
-            &surface_text,
-            body,
-            crate::attn::Mode::Focus,
-            threshold,
-            None,
-        ) {
-            Ok(flagged) => {
-                for f in flagged.iter().take(3) {
-                    // The focused surface region names a symbol; propose a
-                    // coupling from the doc to that symbol's file.
-                    let symbol_line = f.text.lines().next().unwrap_or("");
-                    if let Some(file) = symbol_line
-                        .split('(')
-                        .nth(1)
-                        .and_then(|s| s.split(':').next())
-                    {
-                        let file = file.trim();
-                        if propose_edge(&conn, doc_id, doc_desc, file, f.score, by)? {
-                            proposed += 1;
-                        }
-                    }
-                }
+    };
+    let doc_ids: std::collections::HashSet<&str> = docs.iter().map(|(id, _)| id.as_str()).collect();
+
+    let mut proposed = 0usize;
+    let mut seen_pairs = std::collections::HashSet::new();
+    for (doc_id, _desc) in &docs {
+        for (other_id, score) in neighbours.get(doc_id).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if !doc_ids.contains(other_id.as_str()) {
+                continue;
             }
-            Err(e) => {
-                eprintln!("✗ lineage refine attention failed: {e:#}");
-                break;
+            // Only reasonably strong couplings; skip the self and duplicates.
+            if score < &0.6 {
+                continue;
+            }
+            let pair = if doc_id <= other_id {
+                (doc_id.clone(), other_id.clone())
+            } else {
+                (other_id.clone(), doc_id.clone())
+            };
+            if !seen_pairs.insert(pair) {
+                continue;
+            }
+            if propose_doc_edge(&conn, doc_id, other_id, *score, by)? {
+                proposed += 1;
             }
         }
     }
     println!(
-        "✓ proposed {proposed} lineage edge(s) — review with `mari lineage list`, then confirm/reject"
+        "✓ proposed {proposed} lineage edge(s) from embedding neighbours — review with `mari lineage list`, then confirm/reject"
     );
+    let _ = root;
     Ok(0)
 }
 
-/// Insert a proposed doc→file coupling edge (first span of each side).
-fn propose_edge(
+/// Insert a proposed doc↔doc coupling (first span of each doc), never
+/// clobbering an existing human decision.
+fn propose_doc_edge(
     conn: &Connection,
     from_doc: &str,
-    from_desc: &str,
-    to_file: &str,
+    to_doc: &str,
     score: f64,
     by: &str,
 ) -> Result<bool> {
-    // Resolve the target file to an indexed doc + its first span.
-    let to = conn
-        .query_row(
-            "SELECT s.span_id, d.doc_id FROM documents d JOIN spans s ON s.doc_id = d.doc_id \
-             WHERE d.path = ?1 OR d.path LIKE '%' || ?1 ORDER BY s.start_line ASC LIMIT 1",
-            [to_file],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .ok();
-    let Some((to_span, _to_doc)) = to else {
-        return Ok(false);
-    };
-    let from_span: Option<String> = conn
-        .query_row(
+    let first_span = |doc: &str| -> Option<String> {
+        conn.query_row(
             "SELECT span_id FROM spans WHERE doc_id = ?1 ORDER BY start_line ASC LIMIT 1",
-            [from_doc],
+            [doc],
             |r| r.get(0),
         )
-        .ok();
-    let Some(from_span) = from_span else {
+        .ok()
+    };
+    let (Some(from_span), Some(to_span)) = (first_span(from_doc), first_span(to_doc)) else {
         return Ok(false);
     };
     let lineage_id = hash_hex(&format!("lineage:{from_span}:{to_span}"));
-    // Don't clobber an existing human decision.
     let existing: Option<String> = conn
         .query_row(
             "SELECT status FROM lineage_edges WHERE lineage_id = ?1",
@@ -367,7 +357,7 @@ fn propose_edge(
             to_span,
             score,
             now(),
-            serde_json::json!({"by": by, "note": format!("attention-proposed from {from_desc} → {to_file}")}).to_string(),
+            serde_json::json!({"by": by, "note": "attention/embedding-proposed doc coupling"}).to_string(),
         ],
     )?;
     Ok(true)

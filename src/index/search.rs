@@ -51,7 +51,7 @@ struct Hit {
     context: Vec<ContextChunk>,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Default, serde::Serialize)]
 struct ScoreParts {
     keyword: i64,
     vector: i64,
@@ -301,12 +301,30 @@ fn ranked_hits_across_catalogs(
 }
 
 fn dedupe_hits(hits: &mut Vec<Hit>) {
+    // First: exact (source, doc, chunk) dedup across the repo+global scope union.
     let mut seen = HashSet::new();
     hits.retain(|hit| {
         seen.insert(format!(
             "{}\u{1f}{}\u{1f}{}",
             hit.source, hit.doc_id, hit.chunk_id
         ))
+    });
+    // Second: collapse the same local file+span indexed by multiple overlapping
+    // sources (e.g. `git` and `localfiles` both tracking the repo). Hits are
+    // already score-sorted, so keeping the first occurrence keeps the best.
+    let mut seen_files = HashSet::new();
+    hits.retain(|hit| {
+        match &hit.path {
+            Some(p) if !p.is_empty() => {
+                let norm = p.trim_start_matches("./");
+                seen_files.insert(format!(
+                    "{norm}\u{1f}{}\u{1f}{}",
+                    hit.start_line, hit.end_line
+                ))
+            }
+            // No filesystem path (remote sources) — keep as-is.
+            _ => true,
+        }
     });
 }
 
@@ -1656,7 +1674,7 @@ fn related_reason(rel: &str, to_type: &str, to_id: &str) -> String {
 mod tests {
     use super::{
         age_years, apply_recency_decay_with, apply_tag_boosts, collect_recent_docs, date_in_range,
-        find_docs_across_catalogs, keyword_score, keyword_score_weighted,
+        dedupe_hits, find_docs_across_catalogs, keyword_score, keyword_score_weighted,
         neighbor_rows_across_catalogs, normalize_date, ranked_hits_across_catalogs, related_reason,
         related_rows_across_catalogs, replacement_pointer, snippet, terms, validate_tag_filters,
         weighted_keyword_score_with, weighted_terms, Hit, ScoreParts, SearchArgs,
@@ -2059,6 +2077,41 @@ mod tests {
         )
         .unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn path_dedup_collapses_same_file_from_multiple_sources() {
+        // Two sources indexing the same local file+span collapse to one hit
+        // (the higher-scored one, since hits arrive score-sorted).
+        let mk = |source: &str, score: i64| Hit {
+            doc_id: format!("{source}-doc"),
+            chunk_id: format!("{source}#L1"),
+            chunk_index: 0,
+            source: source.into(),
+            canonical_ref: format!("{source}:docs/pricing.md"),
+            title: "Pricing".into(),
+            path: Some("docs/pricing.md".into()),
+            url: None,
+            author: None,
+            updated_at: None,
+            heading_path: String::new(),
+            start_byte: 0,
+            end_byte: 10,
+            start_line: 1,
+            end_line: 8,
+            score,
+            tag: None,
+            tag_note: None,
+            replacement: None,
+            matched_terms: vec!["pricing".into()],
+            text: "The plan costs $49".into(),
+            context: Vec::new(),
+            score_parts: ScoreParts::default(),
+        };
+        let mut hits = vec![mk("git", 100), mk("localfiles", 90)];
+        dedupe_hits(&mut hits);
+        assert_eq!(hits.len(), 1, "same file from two sources should collapse");
+        assert_eq!(hits[0].source, "git"); // higher score kept
     }
 
     #[test]
