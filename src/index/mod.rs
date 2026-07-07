@@ -32,6 +32,38 @@ pub fn open_catalog(global: bool) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Open the catalog **read-only**. DuckDB permits many concurrent read-only
+/// connections to one database file, so read commands (search, audit, sql,
+/// hooks) opened this way no longer exclusively lock the catalog and no longer
+/// fail with "Conflicting lock is held" when another mari process is reading.
+/// Read-only opens cannot run DDL, so the schema is assumed to already exist;
+/// if the catalog is missing (never synced) this returns `Ok(None)` and the
+/// caller degrades gracefully rather than erroring.
+pub fn open_catalog_readonly(global: bool) -> Result<Option<Connection>> {
+    open_readonly_path(&catalog_path(global))
+}
+
+/// Read-only open of a specific catalog file. `Ok(None)` when the file does not
+/// exist yet; a lock/config error still surfaces as `Err`.
+pub fn open_readonly_path(path: &Path) -> Result<Option<Connection>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
+    let conn = Connection::open_with_flags(path, config)?;
+    Ok(Some(conn))
+}
+
+/// Catalog open for a read command: read-only (concurrent-reader safe) when the
+/// catalog already exists, falling back to a read-write open that creates the
+/// schema on first run.
+pub fn open_catalog_read(global: bool) -> Result<Connection> {
+    match open_catalog_readonly(global)? {
+        Some(conn) => Ok(conn),
+        None => open_catalog(global),
+    }
+}
+
 pub fn read_preflight(global: bool) {
     if !global {
         cloud::auto_pull_if_due();
@@ -46,10 +78,7 @@ fn warn_if_stale(global: bool) {
         return;
     }
     let path = catalog_path(global);
-    if !path.exists() {
-        return;
-    }
-    let Ok(conn) = Connection::open(&path) else {
+    let Ok(Some(conn)) = open_readonly_path(&path) else {
         return;
     };
     let last_sync: Option<String> = conn
@@ -473,7 +502,7 @@ pub fn sqlcmd(query: Option<&str>, global: bool) -> Result<i32> {
         eprintln!("mari sql is read-only; use SELECT/WITH/SHOW/DESCRIBE");
         return Ok(2);
     }
-    let conn = open_catalog(global)?;
+    let conn = open_catalog_read(global)?;
     let mut stmt = conn.prepare(q)?;
     let mut rows = stmt.query([])?;
     let stmt_ref = rows.as_ref().unwrap();

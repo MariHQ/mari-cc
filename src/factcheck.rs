@@ -302,8 +302,9 @@ fn load_kb_facts_from_paths(paths: &[PathBuf]) -> Result<Vec<Fact>> {
     }
     let mut facts = Vec::new();
     for path in paths {
-        let conn = duckdb::Connection::open(path)?;
-        index::ensure_schema(&conn)?;
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
         let mut stmt = conn.prepare(
             "SELECT d.canonical_ref, d.body, t.status
                FROM documents d

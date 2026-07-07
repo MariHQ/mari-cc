@@ -361,10 +361,7 @@ fn doc_ids_for_path(conn: &Connection, rel: &str) -> anyhow::Result<Vec<String>>
 
 fn open_existing_catalog() -> Option<Connection> {
     let path = index::catalog_path(false);
-    if !path.exists() {
-        return None;
-    }
-    Connection::open(path).ok()
+    index::open_readonly_path(&path).ok().flatten()
 }
 
 fn tag_notice(root: &Path, cfg: &Value, file: &Path) {
@@ -866,10 +863,7 @@ fn commit_association(root: &Path, cfg: &Value) -> anyhow::Result<()> {
     }
     for global in [false, true] {
         let db = index::catalog_path(global);
-        if !db.exists() {
-            continue;
-        }
-        let Ok(conn) = duckdb::Connection::open(&db) else {
+        let Ok(Some(conn)) = index::open_readonly_path(&db) else {
             continue;
         };
         let like: Vec<String> = terms.iter().map(|t| format!("%{t}%")).collect();
@@ -1044,10 +1038,7 @@ fn pending_impact_notice(root: &Path, cfg: &Value, file: &Path) {
     let _ = root;
     for global in [false, true] {
         let db = index::catalog_path(global);
-        if !db.exists() {
-            continue;
-        }
-        let Ok(conn) = duckdb::Connection::open(&db) else {
+        let Ok(Some(conn)) = index::open_readonly_path(&db) else {
             continue;
         };
         let Ok(mut stmt) = conn.prepare(

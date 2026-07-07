@@ -1,6 +1,6 @@
 //! Keyword retrieval over the DuckDB catalog (SPEC §7 deterministic tier).
 
-use super::{catalog_path, open_catalog, read_preflight};
+use super::{catalog_path, open_catalog_read, read_preflight};
 use crate::{config, workspace};
 use anyhow::Result;
 use duckdb::{params, Connection};
@@ -235,10 +235,10 @@ fn search_exit_code(hits: &[Hit]) -> i32 {
 }
 
 fn read_catalogs() -> Result<Vec<Connection>> {
-    let mut catalogs = vec![open_catalog(false)?];
+    let mut catalogs = vec![open_catalog_read(false)?];
     if catalog_path(true).exists() {
         read_preflight(true);
-        catalogs.push(open_catalog(true)?);
+        catalogs.push(open_catalog_read(true)?);
     }
     Ok(catalogs)
 }

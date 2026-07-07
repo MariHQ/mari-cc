@@ -508,7 +508,9 @@ fn catalog_glossary_harvest_seen(
 ) -> Result<HashMap<&'static str, HashSet<&'static str>>> {
     let mut seen = HashMap::new();
     for path in paths {
-        let conn = duckdb::Connection::open(path)?;
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
         let mut stmt = conn.prepare("SELECT COALESCE(body, '') FROM documents")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for text in rows.flatten() {
@@ -827,7 +829,9 @@ fn extract_catalog_candidates_from_paths(
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     for path in paths {
-        let conn = duckdb::Connection::open(path)?;
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
         let mut stmt = conn.prepare(
             "SELECT source_id, canonical_ref, COALESCE(title, ''), COALESCE(path, ''), COALESCE(updated_at, ''), body FROM documents",
         )?;
@@ -1298,7 +1302,9 @@ fn catalog_needs_review_findings_from_paths(
 ) -> Result<Vec<KbFinding>> {
     let mut findings = Vec::new();
     for path in paths {
-        let conn = duckdb::Connection::open(path)?;
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
         let mut stmt = conn.prepare(
             "SELECT t.target_id,
                     COALESCE(d.path, d.canonical_ref, t.target_id),
@@ -1485,8 +1491,9 @@ fn catalog_claims_from_paths(paths: &[PathBuf]) -> Result<Vec<CatalogClaim>> {
     let mut claims = Vec::new();
     let mut seen = HashSet::new();
     for path in paths {
-        let conn = duckdb::Connection::open(path)?;
-        index::ensure_schema(&conn)?;
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
         let mut stmt = conn.prepare("SELECT canonical_ref, body FROM documents")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
