@@ -213,7 +213,14 @@ pub fn file_ignored(s: &DetectorSettings, rel: &str) -> bool {
 
 /// Collect markdown files under the given args (files or trees).
 pub fn collect_files(paths: &[String]) -> Vec<PathBuf> {
+    collect_files_checked(paths).0
+}
+
+/// Like `collect_files`, but also reports paths that don't exist so callers
+/// can distinguish "no findings" from "you typed a path that isn't there".
+pub fn collect_files_checked(paths: &[String]) -> (Vec<PathBuf>, Vec<String>) {
     let mut out = Vec::new();
+    let mut missing = Vec::new();
     let roots: Vec<String> = if paths.is_empty() {
         vec![".".into()]
     } else {
@@ -221,6 +228,10 @@ pub fn collect_files(paths: &[String]) -> Vec<PathBuf> {
     };
     for root in roots {
         let p = PathBuf::from(&root);
+        if !p.exists() {
+            missing.push(root.clone());
+            continue;
+        }
         if p.is_file() {
             if is_markdown(&p) {
                 out.push(p);
@@ -246,7 +257,7 @@ pub fn collect_files(paths: &[String]) -> Vec<PathBuf> {
         }
     }
     out.sort();
-    out
+    (out, missing)
 }
 
 /// Run the detector over one text. The heart of `detect`, `audit`, the hook,
@@ -323,6 +334,19 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     let s = settings(args.no_config, args.style.as_deref());
     if args.slop_spans {
         eprintln!("note: zero-shot slop-span extraction is not available in this build (--slop-spans ignored)");
+    }
+    // A named path that doesn't exist is a usage error, not silent "clean" —
+    // otherwise a typo'd path reads as a passing file.
+    if !args.stdin && !args.paths.is_empty() {
+        let (_, missing) = collect_files_checked(&args.paths);
+        if !missing.is_empty() {
+            for m in &missing {
+                eprintln!("✗ path does not exist: {m}");
+            }
+            if missing.len() == args.paths.len() {
+                return Ok(2);
+            }
+        }
     }
     let mut results: Vec<FileResult> = if args.stdin {
         use std::io::Read;

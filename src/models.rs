@@ -21,6 +21,32 @@ pub struct ModelSpec {
     pub auto_download: bool,
 }
 
+use std::sync::Once;
+
+/// Suppress llama.cpp / ggml's verbose tensor-loading and inference logs
+/// (they otherwise dump tens of KB to stderr per model load, cluttering
+/// output and confusing agents that read stderr). Errors still pass through.
+/// Idempotent and thread-safe.
+pub fn quiet_llama_logs() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| unsafe {
+        llama_cpp_sys_2::llama_log_set(Some(quiet_log_cb), std::ptr::null_mut());
+        llama_cpp_sys_2::ggml_log_set(Some(quiet_log_cb), std::ptr::null_mut());
+    });
+}
+
+unsafe extern "C" fn quiet_log_cb(
+    level: llama_cpp_sys_2::ggml_log_level,
+    text: *const std::os::raw::c_char,
+    _user_data: *mut std::os::raw::c_void,
+) {
+    // Only surface genuine errors; drop info/warn/debug/cont chatter.
+    if level == llama_cpp_sys_2::GGML_LOG_LEVEL_ERROR && !text.is_null() {
+        let msg = std::ffi::CStr::from_ptr(text).to_string_lossy();
+        eprint!("{msg}");
+    }
+}
+
 pub fn models_dir() -> PathBuf {
     config::mari_home().join("models")
 }

@@ -273,6 +273,7 @@ pub fn analyze(
     let gpu_layers = config::resolve(Some(&workspace::work_root()))["attention"]["gpu_layers"]
         .as_i64()
         .unwrap_or(999) as i32;
+    crate::models::quiet_llama_logs();
     unsafe {
         ll::llama_backend_init();
         let mut mparams = ll::llama_model_default_params();
@@ -682,6 +683,7 @@ fn perplexity_bits(text: &str) -> Result<Option<f64>> {
     let gpu_layers = config::resolve(Some(&workspace::work_root()))["attention"]["gpu_layers"]
         .as_i64()
         .unwrap_or(999) as i32;
+    crate::models::quiet_llama_logs();
     unsafe {
         ll::llama_backend_init();
         let mut mparams = ll::llama_model_default_params();

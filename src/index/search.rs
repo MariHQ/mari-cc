@@ -1311,6 +1311,10 @@ fn normalize_date(raw: &str) -> Option<String> {
 }
 
 pub fn doc(r: &str, source: Option<&str>, full: Option<usize>) -> Result<i32> {
+    if r.trim().is_empty() {
+        eprintln!("usage: mari doc <ref> — a document id or title substring");
+        return Ok(2);
+    }
     read_preflight(false);
     let catalogs = read_catalogs()?;
     let catalog_refs: Vec<&Connection> = catalogs.iter().collect();
@@ -1472,6 +1476,10 @@ fn neighbor_rows_for_catalog(
 }
 
 pub fn related(r: &str, source: Option<&str>, limit: usize, full: Option<usize>) -> Result<i32> {
+    if r.trim().is_empty() {
+        eprintln!("usage: mari related <ref> — a document id or title substring");
+        return Ok(2);
+    }
     read_preflight(false);
     let catalogs = read_catalogs()?;
     let catalog_refs: Vec<&Connection> = catalogs.iter().collect();

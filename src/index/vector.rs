@@ -95,6 +95,7 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
     let cfg = config::resolve(Some(&workspace::work_root()));
     let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(64) as usize).clamp(1, 64);
 
+    crate::models::quiet_llama_logs();
     let path = ensure_model()?;
     let backend = LlamaBackend::init().map_err(|e| anyhow!("llama backend init: {e}"))?;
     // Configurable GPU offload (§8.3 portability): low-VRAM machines can lower
@@ -197,6 +198,7 @@ fn lance_schema() -> std::sync::Arc<arrow_schema::Schema> {
     use arrow_schema::{DataType, Field, Schema};
     std::sync::Arc::new(Schema::new(vec![
         Field::new("chunk_id", DataType::Utf8, false),
+        Field::new("content_hash", DataType::Utf8, false),
         Field::new(
             "vector",
             DataType::FixedSizeList(
@@ -208,10 +210,11 @@ fn lance_schema() -> std::sync::Arc<arrow_schema::Schema> {
     ]))
 }
 
-fn to_batch(rows: &[(String, Vec<f32>)]) -> Result<arrow_array::RecordBatch> {
+fn to_batch(rows: &[(String, String, Vec<f32>)]) -> Result<arrow_array::RecordBatch> {
     use arrow_array::{Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray};
-    let ids = StringArray::from(rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>());
-    let flat: Vec<f32> = rows.iter().flat_map(|(_, v)| v.iter().copied()).collect();
+    let ids = StringArray::from(rows.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>());
+    let hashes = StringArray::from(rows.iter().map(|(_, h, _)| h.as_str()).collect::<Vec<_>>());
+    let flat: Vec<f32> = rows.iter().flat_map(|(_, _, v)| v.iter().copied()).collect();
     let values = Float32Array::from(flat);
     let field = std::sync::Arc::new(arrow_schema::Field::new(
         "item",
@@ -226,12 +229,16 @@ fn to_batch(rows: &[(String, Vec<f32>)]) -> Result<arrow_array::RecordBatch> {
     )?;
     Ok(RecordBatch::try_new(
         lance_schema(),
-        vec![std::sync::Arc::new(ids), std::sync::Arc::new(vectors)],
+        vec![
+            std::sync::Arc::new(ids),
+            std::sync::Arc::new(hashes),
+            std::sync::Arc::new(vectors),
+        ],
     )?)
 }
 
 /// Write rows as the whole dataset (overwrite/create).
-pub fn write_dataset(global: bool, rows: &[(String, Vec<f32>)]) -> Result<()> {
+pub fn write_dataset(global: bool, rows: &[(String, String, Vec<f32>)]) -> Result<()> {
     let uri = dataset_path(global);
     workspace::ensure_dir(uri.parent().unwrap())?;
     let batch = to_batch(rows)?;
@@ -248,8 +255,8 @@ pub fn write_dataset(global: bool, rows: &[(String, Vec<f32>)]) -> Result<()> {
     Ok(())
 }
 
-/// Read the whole dataset back as (chunk_id, vector) rows.
-pub fn read_dataset(global: bool) -> Result<Vec<(String, Vec<f32>)>> {
+/// Read the whole dataset back as (chunk_id, content_hash, vector) rows.
+pub fn read_dataset(global: bool) -> Result<Vec<(String, String, Vec<f32>)>> {
     use arrow_array::{cast::AsArray, types::Float32Type};
     use futures::TryStreamExt;
     let uri = dataset_path(global);
@@ -277,6 +284,10 @@ pub fn read_dataset(global: bool) -> Result<Vec<(String, Vec<f32>)>> {
             .ok_or_else(|| anyhow!("lance dataset missing chunk_id"))?
             .as_string::<i32>()
             .clone();
+        // Older datasets predate the content_hash column; treat as empty.
+        let hashes = batch
+            .column_by_name("content_hash")
+            .and_then(|c| c.as_string_opt::<i32>().cloned());
         let vectors = batch
             .column_by_name("vector")
             .ok_or_else(|| anyhow!("lance dataset missing vector"))?
@@ -284,12 +295,26 @@ pub fn read_dataset(global: bool) -> Result<Vec<(String, Vec<f32>)>> {
             .clone();
         for i in 0..batch.num_rows() {
             let id = ids.value(i).to_string();
+            let hash = hashes.as_ref().map(|h| h.value(i).to_string()).unwrap_or_default();
             let cell = vectors.value(i);
             let floats = cell.as_primitive::<Float32Type>();
-            out.push((id, floats.values().to_vec()));
+            out.push((id, hash, floats.values().to_vec()));
         }
     }
     Ok(out)
+}
+
+/// Vectors only (chunk_id, vector), for ranking/neighbours.
+pub fn read_vectors(global: bool) -> Result<Vec<(String, Vec<f32>)>> {
+    Ok(read_dataset(global)?
+        .into_iter()
+        .map(|(id, _, v)| (id, v))
+        .collect())
+}
+
+/// Short content hash for a chunk's embedded text (freshness key).
+fn chunk_content_hash(text: &str) -> String {
+    crate::index::hash_hex(text)[..16].to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -310,16 +335,28 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
         return Ok(0);
     }
 
-    let existing: Vec<(String, Vec<f32>)> = if rebuild {
+    // Per-chunk content hash so a chunk whose text changed (even at a stable
+    // id/line) is re-embedded rather than keeping a stale vector.
+    let current_hash: BTreeMap<String, String> = current
+        .iter()
+        .map(|(id, text)| (id.clone(), chunk_content_hash(text)))
+        .collect();
+
+    let existing: Vec<(String, String, Vec<f32>)> = if rebuild {
         Vec::new()
     } else {
         read_dataset(global)?
     };
-    let kept: Vec<(String, Vec<f32>)> = existing
+    // Keep a vector only when the chunk still exists AND its content hash is
+    // unchanged AND the dims match.
+    let kept: Vec<(String, String, Vec<f32>)> = existing
         .into_iter()
-        .filter(|(id, v)| current.contains_key(id) && v.len() == DIMS)
+        .filter(|(id, hash, v)| {
+            v.len() == DIMS
+                && current_hash.get(id).map(|h| h == hash).unwrap_or(false)
+        })
         .collect();
-    let have: std::collections::HashSet<&str> = kept.iter().map(|(id, _)| id.as_str()).collect();
+    let have: std::collections::HashSet<&str> = kept.iter().map(|(id, _, _)| id.as_str()).collect();
     let pending: Vec<(String, String)> = current
         .iter()
         .filter(|(id, _)| !have.contains(id.as_str()))
@@ -337,8 +374,8 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
         // One model load; packing into shared decode batches happens inside.
         let texts: Vec<String> = pending.iter().map(|(_, t)| t.clone()).collect();
         let vecs = embed_texts(&texts, false)?;
-        for ((id, _), v) in pending.iter().zip(vecs) {
-            rows.push((id.clone(), v));
+        for ((id, text), v) in pending.iter().zip(vecs) {
+            rows.push((id.clone(), chunk_content_hash(text), v));
         }
     }
     let _ = batch_size;
@@ -400,7 +437,7 @@ pub fn doc_neighbours(
     global: bool,
     k: usize,
 ) -> Option<std::collections::HashMap<String, Vec<(String, f64)>>> {
-    let rows = read_dataset(global).ok()?;
+    let rows = read_vectors(global).ok()?;
     if rows.is_empty() {
         return None;
     }
@@ -481,7 +518,7 @@ pub fn rank_many(
     }
     let inner = || -> Result<Vec<Vec<(String, f64)>>> {
         let qvecs = embed_texts(phrasings, true)?;
-        let rows = read_dataset(global)?;
+        let rows = read_vectors(global)?;
         if rows.is_empty() {
             return Ok(vec![Vec::new(); phrasings.len()]);
         }
@@ -574,6 +611,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn chunk_content_hash_changes_with_text() {
+        // The freshness key must differ when content changes (even at a stable
+        // chunk id) so an edited chunk re-embeds instead of keeping a stale
+        // vector.
+        let h1 = chunk_content_hash("The plan costs $49 per seat.");
+        let h2 = chunk_content_hash("The plan costs $99 per seat.");
+        let h1b = chunk_content_hash("The plan costs $49 per seat.");
+        assert_ne!(h1, h2);
+        assert_eq!(h1, h1b);
+        assert_eq!(h1.len(), 16);
+    }
+
+    #[test]
     fn embedding_identity_is_internally_consistent() {
         // Guards against the exact drift that broke embeddings once: the
         // model name, dims, file, and URL host must all agree.
@@ -635,16 +685,19 @@ mod tests {
         c[0] = 0.9;
         c[1] = 0.1;
         let rows = vec![
-            ("chunk-a".to_string(), a.clone()),
-            ("chunk-b".to_string(), b),
-            ("chunk-c".to_string(), normalize(&c)),
+            ("chunk-a".to_string(), "h1".to_string(), a.clone()),
+            ("chunk-b".to_string(), "h2".to_string(), b),
+            ("chunk-c".to_string(), "h3".to_string(), normalize(&c)),
         ];
         write_dataset(false, &rows).unwrap();
         let back = read_dataset(false).unwrap();
         assert_eq!(back.len(), 3);
-        assert_eq!(back[0].1.len(), DIMS);
+        assert_eq!(back[0].1, "h1"); // content hash round-trips
+        assert_eq!(back[0].2.len(), DIMS);
 
-        let ranked = duckdb_cosine_topk(&back, &a, 2).unwrap();
+        let vecs: Vec<(String, Vec<f32>)> =
+            back.iter().map(|(id, _, v)| (id.clone(), v.clone())).collect();
+        let ranked = duckdb_cosine_topk(&vecs, &a, 2).unwrap();
         assert_eq!(ranked[0].0, "chunk-a");
         assert!((ranked[0].1 - 1.0).abs() < 1e-3);
         assert_eq!(ranked[1].0, "chunk-c");
