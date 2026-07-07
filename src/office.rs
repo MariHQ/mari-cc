@@ -25,7 +25,7 @@ pub fn extract(path: &Path) -> Result<String> {
         .unwrap_or("")
         .to_lowercase();
     let bytes = std::fs::read(path)?;
-    let text = match ext.as_str() {
+    let mut text = match ext.as_str() {
         "docx" | "docm" => docx(&bytes)?,
         "odt" => odt(&bytes)?,
         "fodt" => flat_odt(&bytes)?,
@@ -36,6 +36,13 @@ pub fn extract(path: &Path) -> Result<String> {
     };
     if text.trim().is_empty() {
         return Err(anyhow!("no extractable text in {}", path.display()));
+    }
+    // Defensive cap (§7.5): a hostile document must not exhaust memory. 32 MB
+    // of extracted text is far beyond any legitimate office file.
+    const MAX_TEXT: usize = 32 * 1024 * 1024;
+    if text.len() > MAX_TEXT {
+        text.truncate(MAX_TEXT);
+        eprintln!("note: {} extraction truncated at {MAX_TEXT} bytes", path.display());
     }
     Ok(text)
 }

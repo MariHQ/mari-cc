@@ -5,7 +5,7 @@
 //! The glossary is STYLE.md's Terminology table (Use / Not columns); FACTS.md
 //! is the deterministic grounding ledger (one `- fact  (source)` per line).
 
-use crate::{config, index, workspace};
+use crate::{authcmd, config, index, workspace};
 use anyhow::Result;
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -153,6 +153,16 @@ fn tag_in(
 }
 
 fn tag_list(root: &Path, status_filter: Option<&str>, json_out: bool) -> Result<i32> {
+    if let Some(status) = status_filter {
+        let valid = statuses_in(root);
+        if !valid.iter().any(|s| s == status) {
+            eprintln!(
+                "✗ unknown status filter '{status}' — valid statuses: {}",
+                valid.join(", ")
+            );
+            return Ok(2);
+        }
+    }
     // Show the resolved view (repo config layered on defaults/global).
     let cfg = resolved(root);
     let entries: BTreeMap<String, Value> = cfg["tags"]["entries"]
@@ -359,16 +369,18 @@ fn terminology_section(text: &str) -> Option<(usize, usize)> {
     for line in text.lines() {
         let next = off + line.len() + 1;
         let t = line.trim();
-        if start.is_none() {
-            if t.starts_with('#')
-                && t.trim_start_matches('#')
-                    .trim()
-                    .eq_ignore_ascii_case("terminology")
-            {
-                start = Some(next.min(text.len()));
+        match start {
+            None => {
+                if t.starts_with('#')
+                    && t.trim_start_matches('#')
+                        .trim()
+                        .eq_ignore_ascii_case("terminology")
+                {
+                    start = Some(next.min(text.len()));
+                }
             }
-        } else if t.starts_with('#') {
-            return Some((start.unwrap(), off));
+            Some(s) if t.starts_with('#') => return Some((s, off)),
+            Some(_) => {}
         }
         off = next;
     }
@@ -586,9 +598,14 @@ fn facts_in(root: &Path, args: &[String], source: Option<&str>) -> Result<i32> {
                 eprintln!("usage: mari facts add \"<fact>\" [--source \"<ref>\"]");
                 return Ok(2);
             };
+            let fact = fact.trim();
+            if fact.is_empty() {
+                eprintln!("usage: mari facts add \"<fact>\" [--source \"<ref>\"]");
+                return Ok(2);
+            }
             let line = match source {
-                Some(s) => format!("- {}  ({})\n", fact.trim(), s.trim()),
-                None => format!("- {}\n", fact.trim()),
+                Some(s) => format!("- {}  ({})\n", fact, s.trim()),
+                None => format!("- {}\n", fact),
             };
             let mut text = std::fs::read_to_string(&path).unwrap_or_default();
             if !text.is_empty() && !text.ends_with('\n') {
@@ -596,7 +613,7 @@ fn facts_in(root: &Path, args: &[String], source: Option<&str>) -> Result<i32> {
             }
             text.push_str(&line);
             std::fs::write(&path, text)?;
-            mirror_fact_to_catalogs(root, fact.trim(), source)?;
+            mirror_fact_to_catalogs(root, fact, source)?;
             println!("✓ added fact to {}", path.display());
             Ok(0)
         }
@@ -654,8 +671,8 @@ fn mirror_fact_to_catalog_paths(
 /// True when a sentence carries a typed span worth grounding: number, date,
 /// money, or percent.
 fn has_typed_span(s: &str) -> bool {
-    let mut chars = s.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
+    let chars = s.char_indices();
+    for (i, c) in chars {
         match c {
             '$' | '€' | '£' => {
                 if s[i + c.len_utf8()..]
@@ -672,7 +689,7 @@ fn has_typed_span(s: &str) -> bool {
                     .chars()
                     .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
                     .count();
-                let after = rest[..].chars().skip(num_len).next();
+                let after = rest[..].chars().nth(num_len);
                 if after == Some('%') {
                     return true;
                 }
@@ -757,6 +774,12 @@ fn extract_in(
             return Ok(2);
         }
     }
+    if let Some(source) = source {
+        if !authcmd::SOURCES.contains(&source) {
+            eprintln!("✗ unknown source: {source}");
+            return Ok(2);
+        }
+    }
     let cutoff = since.map(cutoff_rfc3339);
     let candidates =
         if let Some(candidates) = extract_catalog_candidates(source, doc, cutoff.as_deref())? {
@@ -804,7 +827,7 @@ fn extract_catalog_candidates_from_paths(
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
     for path in paths {
-        let conn = duckdb::Connection::open(&path)?;
+        let conn = duckdb::Connection::open(path)?;
         let mut stmt = conn.prepare(
             "SELECT source_id, canonical_ref, COALESCE(title, ''), COALESCE(path, ''), COALESCE(updated_at, ''), body FROM documents",
         )?;
@@ -1458,7 +1481,19 @@ fn salient_terms_for_audit(text: &str) -> BTreeSet<String> {
 // mari humanize — vendored skill management (SPEC §5.4)
 // ---------------------------------------------------------------------------
 
-const HUMANIZER_REPO: &str = "https://github.com/blader/humanizer";
+/// Default upstream for the vendored humanizer skill. Overridable via the
+/// `humanizer.repo` config key when a team hosts their own. Set to empty to
+/// disable the `humanize` command's clone/update.
+const HUMANIZER_REPO_DEFAULT: &str = "";
+
+fn humanizer_repo() -> String {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    cfg["humanizer"]["repo"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(HUMANIZER_REPO_DEFAULT)
+        .to_string()
+}
 
 fn humanizer_dir() -> PathBuf {
     config::mari_home().join("skills").join("humanizer")
@@ -1479,9 +1514,21 @@ pub fn humanize(action: Option<&str>, json: bool) -> Result<i32> {
     match action.unwrap_or("ensure") {
         "ensure" => {
             if !dir.join(".git").exists() {
+                let repo = humanizer_repo();
+                if repo.is_empty() {
+                    eprintln!(
+                        "✗ no humanizer upstream configured — set one with \
+                         `mari config set humanizer.repo <git-url>` (the vendored \
+                         humanizer skill has no default upstream in this build)"
+                    );
+                    if json {
+                        println!("{}", json!({ "ok": false, "error": "humanizer.repo not set" }));
+                    }
+                    return Ok(1);
+                }
                 std::fs::create_dir_all(dir.parent().unwrap())?;
                 let out = Command::new("git")
-                    .args(["clone", "--depth", "1", HUMANIZER_REPO])
+                    .args(["clone", "--depth", "1", &repo])
                     .arg(&dir)
                     .output()?;
                 if !out.status.success() {
@@ -1633,6 +1680,17 @@ mod tests {
         .unwrap();
         assert_eq!(code, 2);
         assert!(!config::repo_config_path(dir.path()).exists());
+        assert_eq!(
+            tag_in(
+                dir.path(),
+                &s(&["list"]),
+                None,
+                Some("totally-bogus-status"),
+                false
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]
@@ -1930,6 +1988,15 @@ mod tests {
     }
 
     #[test]
+    fn facts_add_rejects_empty_fact() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        assert_eq!(facts_in(root, &s(&["add", "   "]), None).unwrap(), 2);
+        assert!(!root.join("FACTS.md").exists());
+    }
+
+    #[test]
     fn typed_span_heuristic() {
         assert!(has_typed_span("Latency dropped 40% after the change."));
         assert!(has_typed_span("It costs $12 per seat."));
@@ -2014,6 +2081,30 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].reference, "facts.md");
         assert_eq!(got[0].line, Some(4));
+    }
+
+    #[test]
+    fn extract_rejects_unknown_source_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("facts.md"),
+            "# Facts\n\nLatency dropped 40% after launch.\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_in(
+                root,
+                &s(&["facts"]),
+                Some("totally-bogus-source"),
+                None,
+                None,
+                false
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

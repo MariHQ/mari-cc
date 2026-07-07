@@ -4,7 +4,7 @@ use super::{catalog_path, open_catalog, read_preflight};
 use crate::{config, workspace};
 use anyhow::Result;
 use duckdb::{params, Connection};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
 pub struct SearchArgs {
@@ -42,12 +42,21 @@ struct Hit {
     start_line: i64,
     end_line: i64,
     score: i64,
+    score_parts: ScoreParts,
     tag: Option<String>,
     tag_note: Option<String>,
     replacement: Option<String>,
     matched_terms: Vec<String>,
     text: String,
     context: Vec<ContextChunk>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ScoreParts {
+    keyword: i64,
+    vector: i64,
+    tag_multiplier: f64,
+    recency_multiplier: f64,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -103,6 +112,10 @@ struct QueryTerm {
 }
 
 pub fn run(args: SearchArgs) -> Result<i32> {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    if let Some(code) = validate_tag_filters(&cfg, args.tag.as_deref(), args.no_tag.as_deref()) {
+        return Ok(code);
+    }
     read_preflight(false);
     let query_terms = weighted_terms(&args.query, &args.variants);
     if query_terms.is_empty() {
@@ -395,7 +408,7 @@ fn search_hits(
         if matched.is_empty() && !in_vector_pool {
             continue;
         }
-        let score = if matched.is_empty() {
+        let keyword_score = if matched.is_empty() {
             0
         } else {
             weighted_keyword_score_float(
@@ -425,7 +438,13 @@ fn search_hits(
             end_byte: r.get(9)?,
             start_line: r.get(10)?,
             end_line: r.get(11)?,
-            score,
+            score: keyword_score,
+            score_parts: ScoreParts {
+                keyword: keyword_score,
+                vector: 0,
+                tag_multiplier: 1.0,
+                recency_multiplier: 1.0,
+            },
             tag,
             tag_note,
             replacement,
@@ -482,7 +501,9 @@ fn fuse_with_vectors(
             .get(hit.chunk_id.as_str())
             .map(|r| vec_w / (rrf_k + *r as f64 + 1.0))
             .unwrap_or(0.0);
-        hit.score = ((kw_term + vec_term) * 1_000_000.0).round() as i64;
+        hit.score_parts.keyword = (kw_term * 1_000_000.0).round() as i64;
+        hit.score_parts.vector = (vec_term * 1_000_000.0).round() as i64;
+        hit.score = hit.score_parts.keyword + hit.score_parts.vector;
     }
     hits.retain(|h| h.score > 0);
     hits.sort_by(|a, b| {
@@ -531,6 +552,7 @@ fn apply_tag_boosts(hits: &mut [Hit]) {
             continue;
         };
         let boost = boosts[tag].as_f64().unwrap_or(1.0);
+        hit.score_parts.tag_multiplier = boost;
         hit.score = ((hit.score as f64) * boost).round().max(1.0) as i64;
     }
     hits.sort_by(|a, b| {
@@ -562,6 +584,7 @@ fn apply_recency_decay_with(
     for hit in hits.iter_mut() {
         let age = age_years(hit.updated_at.as_deref(), now);
         let multiplier = (1.0 / (1.0 + decay * age)).max(floor);
+        hit.score_parts.recency_multiplier = multiplier;
         hit.score = ((hit.score as f64) * multiplier).round().max(1.0) as i64;
     }
     sort_hits(hits);
@@ -1033,6 +1056,10 @@ pub fn recent(
     full: Option<usize>,
     json_out: bool,
 ) -> Result<i32> {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    if let Some(code) = validate_tag_filters(&cfg, tag, no_tag) {
+        return Ok(code);
+    }
     read_preflight(false);
     let catalogs = read_catalogs()?;
     let catalog_refs: Vec<&Connection> = catalogs.iter().collect();
@@ -1075,6 +1102,38 @@ pub fn recent(
         println!("{}", serde_json::to_string_pretty(&arr)?);
     }
     Ok(results_exit_code(result_count))
+}
+
+fn validate_tag_filters(cfg: &Value, tag: Option<&str>, no_tag: Option<&str>) -> Option<i32> {
+    for (flag, value) in [("--tag", tag), ("--no-tag", no_tag)] {
+        let Some(status) = value else {
+            continue;
+        };
+        if !valid_tag_status(cfg, status) {
+            eprintln!(
+                "✗ unknown {flag} status '{status}' — valid statuses: {}",
+                tag_statuses(cfg).join(", ")
+            );
+            return Some(2);
+        }
+    }
+    None
+}
+
+fn valid_tag_status(cfg: &Value, status: &str) -> bool {
+    tag_statuses(cfg).iter().any(|s| s == status)
+}
+
+fn tag_statuses(cfg: &Value) -> Vec<String> {
+    cfg["tags"]["statuses"]
+        .as_array()
+        .map(|statuses| {
+            statuses
+                .iter()
+                .filter_map(|status| status.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn collect_recent_docs(
@@ -1599,8 +1658,8 @@ mod tests {
         age_years, apply_recency_decay_with, apply_tag_boosts, collect_recent_docs, date_in_range,
         find_docs_across_catalogs, keyword_score, keyword_score_weighted,
         neighbor_rows_across_catalogs, normalize_date, ranked_hits_across_catalogs, related_reason,
-        related_rows_across_catalogs, replacement_pointer, snippet, terms,
-        weighted_keyword_score_with, weighted_terms, Hit, SearchArgs,
+        related_rows_across_catalogs, replacement_pointer, snippet, terms, validate_tag_filters,
+        weighted_keyword_score_with, weighted_terms, Hit, ScoreParts, SearchArgs,
     };
     use chrono::TimeZone;
     use duckdb::{params, Connection};
@@ -1639,6 +1698,28 @@ mod tests {
         assert_eq!(
             terms("pricing", &["annual refund policy".into()]),
             vec!["annual", "policy", "pricing", "refund"]
+        );
+    }
+
+    #[test]
+    fn tag_filters_must_use_configured_statuses() {
+        let cfg = json!({
+            "tags": {
+                "statuses": ["canonical", "stale", "needs-review"]
+            }
+        });
+
+        assert_eq!(
+            validate_tag_filters(&cfg, Some("canonical"), Some("stale")),
+            None
+        );
+        assert_eq!(
+            validate_tag_filters(&cfg, Some("totally-bogus"), None),
+            Some(2)
+        );
+        assert_eq!(
+            validate_tag_filters(&cfg, None, Some("totally-bogus")),
+            Some(2)
         );
     }
 
@@ -1981,6 +2062,36 @@ mod tests {
     }
 
     #[test]
+    fn search_hits_expose_score_parts_for_navigation() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        insert_doc_with_chunk(&conn, "doc1", "docs/a.md", "A", "refund policy text");
+
+        let hits = super::search_hits(
+            &conn,
+            "refund",
+            &weighted_terms("refund", &[]),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            10,
+            None,
+            true,
+            60.0,
+        )
+        .unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].score_parts.keyword, hits[0].score);
+        assert_eq!(hits[0].score_parts.vector, 0);
+        assert_eq!(hits[0].score_parts.tag_multiplier, 1.0);
+        assert_eq!(hits[0].score_parts.recency_multiplier, 1.0);
+    }
+
+    #[test]
     fn ranked_search_unions_repo_and_global_catalogs() {
         let repo = Connection::open_in_memory().unwrap();
         let global = Connection::open_in_memory().unwrap();
@@ -2304,6 +2415,12 @@ mod tests {
             start_line: 1,
             end_line: 1,
             score,
+            score_parts: ScoreParts {
+                keyword: score,
+                vector: 0,
+                tag_multiplier: 1.0,
+                recency_multiplier: 1.0,
+            },
             tag: tag.map(str::to_string),
             tag_note: None,
             replacement: None,

@@ -307,7 +307,7 @@ pub fn file_id_from_ref(r: &str) -> String {
         if let Some(i) = r.find(marker) {
             let rest = &r[i + marker.len()..];
             return rest
-                .split(|c: char| c == '/' || c == '?' || c == '&' || c == '#')
+                .split(['/', '?', '&', '#'])
                 .next()
                 .unwrap_or(rest)
                 .to_string();

@@ -6,6 +6,7 @@ pub mod gitlog;
 use crate::{config, workspace};
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::path::Path;
 
 fn list_keys(source: &str) -> Option<&'static [&'static str]> {
     match source {
@@ -27,6 +28,10 @@ fn list_keys(source: &str) -> Option<&'static [&'static str]> {
 }
 
 pub fn track(args: &[String], list_key: Option<&str>) -> Result<i32> {
+    track_at(&workspace::work_root(), args, list_key)
+}
+
+fn track_at(root: &Path, args: &[String], list_key: Option<&str>) -> Result<i32> {
     let Some(source) = args.first().map(|s| s.as_str()) else {
         eprintln!("usage: mari track <source> <add|remove|list> [ref] [--list-key <key>]");
         return Ok(2);
@@ -46,7 +51,7 @@ pub fn track(args: &[String], list_key: Option<&str>) -> Result<i32> {
     };
     match action {
         "list" => {
-            let cfg = config::resolve(Some(&workspace::work_root()));
+            let cfg = config::resolve(Some(root));
             for k in keys {
                 let vals = config::get_path(&cfg, k)
                     .and_then(|v| v.as_array())
@@ -67,7 +72,7 @@ pub fn track(args: &[String], list_key: Option<&str>) -> Result<i32> {
                 eprintln!("usage: mari track {source} {action} <ref>");
                 return Ok(2);
             };
-            mutate_array(key, r, action == "add")?;
+            mutate_array_at(root, key, r, action == "add")?;
             if action == "add" {
                 println!("✓ tracked {source}: {r}");
             } else {
@@ -101,9 +106,8 @@ fn select_list_key<'a>(keys: &'a [&'a str], requested: Option<&str>) -> Option<&
     }
 }
 
-fn mutate_array(dotted: &str, item: &str, add: bool) -> Result<()> {
-    let root = workspace::work_root();
-    let path = config::repo_config_path(&root);
+fn mutate_array_at(root: &Path, dotted: &str, item: &str, add: bool) -> Result<()> {
+    let path = config::repo_config_path(root);
     std::fs::create_dir_all(path.parent().unwrap())?;
     let mut cfg = config::read_json(&path);
     let mut arr = config::get_path(&cfg, dotted)
@@ -125,7 +129,9 @@ fn mutate_array(dotted: &str, item: &str, add: bool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::select_list_key;
+    use super::{select_list_key, track_at};
+    use crate::config;
+    use tempfile::tempdir;
 
     #[test]
     fn list_key_defaults_to_first_key() {
@@ -147,5 +153,87 @@ mod tests {
     fn list_key_rejects_unknown_key() {
         let keys = ["google.docs", "google.folders"];
         assert_eq!(select_list_key(&keys, Some("channels")), None);
+    }
+
+    #[test]
+    fn track_rejects_unknown_source_and_list_key() {
+        let dir = tempdir().unwrap();
+
+        assert_eq!(
+            track_at(
+                dir.path(),
+                &[String::from("bogus"), String::from("list")],
+                None
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            track_at(
+                dir.path(),
+                &[String::from("gdocs"), String::from("list")],
+                Some("channels")
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn track_list_and_mutation_follow_spec_contract() {
+        let dir = tempdir().unwrap();
+
+        assert_eq!(
+            track_at(
+                dir.path(),
+                &[String::from("gdocs"), String::from("list")],
+                None
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            track_at(
+                dir.path(),
+                &[
+                    String::from("gdocs"),
+                    String::from("add"),
+                    String::from("folder-123"),
+                ],
+                Some("folders")
+            )
+            .unwrap(),
+            0
+        );
+
+        let cfg = config::read_json(&config::repo_config_path(dir.path()));
+        assert_eq!(
+            config::get_path(&cfg, "google.folders")
+                .and_then(|v| v.as_array())
+                .and_then(|a| a.first())
+                .and_then(|v| v.as_str()),
+            Some("folder-123")
+        );
+
+        assert_eq!(
+            track_at(
+                dir.path(),
+                &[
+                    String::from("gdocs"),
+                    String::from("remove"),
+                    String::from("folder-123"),
+                ],
+                Some("google.folders")
+            )
+            .unwrap(),
+            0
+        );
+        let cfg = config::read_json(&config::repo_config_path(dir.path()));
+        assert_eq!(
+            config::get_path(&cfg, "google.folders")
+                .and_then(|v| v.as_array())
+                .map(Vec::is_empty),
+            Some(true)
+        );
     }
 }

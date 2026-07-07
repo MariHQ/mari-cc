@@ -9,7 +9,12 @@ use std::path::{Path, PathBuf};
 
 pub fn defaults() -> Value {
     json!({
-        "embedding": { "batch_size": 64, "auto_download": true },
+        "embedding": {
+            "model": "",
+            "batch_size": 64,
+            "auto_download": true,
+            "gpu_layers": 999
+        },
         "chunking": {
             "lines": 40, "overlap": 8, "max_chars": 2000, "min_chars": 40,
             "title_prefix": true, "large_chunks": false, "large_chunk_ratio": 4
@@ -43,7 +48,7 @@ pub fn defaults() -> Value {
         "microsoft": { "drives": [], "mail": [], "teams": [] },
         "linear": { "teams": [], "projects": [] },
         "localfiles": { "paths": [] },
-        "ocr": { "backend": "text", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true },
+        "ocr": { "backend": "text", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true, "accept_remote_code": false },
         "cloud": { "enabled": false, "backend": "s3", "bucket": "", "prefix": "", "region": "" },
         "detector": {
             "styleGuide": "microsoft",
@@ -64,7 +69,8 @@ pub fn defaults() -> Value {
             "slack": { "channels": [], "lookbackDays": 14 }
         },
         "assoc": { "attn": 0.5 },
-        "attention": { "model": "", "auto_download": true, "threshold": 0.3 }
+        "attention": { "model": "", "auto_download": true, "threshold": 0.3 },
+        "humanizer": { "repo": "" }
     })
 }
 
@@ -349,5 +355,20 @@ mod tests {
         assert_eq!(coerce("search.hybrid", "yes").unwrap(), json!(true));
         assert_eq!(coerce("search.hybrid", "off").unwrap(), json!(false));
         assert!(coerce("search.hybrid", "tru").is_err());
+    }
+
+    #[test]
+    fn embedding_model_override_is_registered_and_empty_by_default() {
+        // Default is empty so the built-in Qwen3-Embedding-0.6B identity is
+        // used; a non-empty value is a path override (air-gapped installs).
+        assert_eq!(
+            get_path(&defaults(), "embedding.model").and_then(|v| v.as_str()),
+            Some("")
+        );
+        assert!(known_paths().contains(&"embedding.model".to_string()));
+        assert_eq!(
+            coerce("embedding.model", "/models/custom.gguf").unwrap(),
+            json!("/models/custom.gguf")
+        );
     }
 }

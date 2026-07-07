@@ -1,6 +1,6 @@
 //! Whole-document narrative questionnaire (SPEC §13.3).
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -37,8 +37,13 @@ pub fn run(action: Option<&str>, file: Option<&str>, json: bool) -> Result<i32> 
                 eprintln!("usage: mari narrative score <file> [--json]");
                 return Ok(2);
             };
-            let text = std::fs::read_to_string(file)
-                .with_context(|| format!("failed to read narrative target {file}"))?;
+            let text = match std::fs::read_to_string(file) {
+                Ok(text) => text,
+                Err(err) => {
+                    eprintln!("✗ failed to read narrative target {file}: {err}");
+                    return Ok(1);
+                }
+            };
             print_score(file, &text, json)
         }
         other => {
@@ -376,6 +381,19 @@ mod tests {
     fn narrative_usage_errors_return_exit_2() {
         assert_eq!(run(Some("score"), None, false).unwrap(), 2);
         assert_eq!(run(Some("publish"), None, false).unwrap(), 2);
+    }
+
+    #[test]
+    fn narrative_score_missing_file_returns_runtime_error() {
+        assert_eq!(
+            run(
+                Some("score"),
+                Some("definitely-missing-narrative.md"),
+                false
+            )
+            .unwrap(),
+            1
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! (SPEC §5.1/§4.7/§15).
 
 use crate::{config, workspace};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -82,28 +82,28 @@ mari hook commit
             Ok(0)
         }
         Some("ignore-rule") => {
-            let id = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari hooks ignore-rule <id> [--reason ...]"))?;
+            let Some(id) = args.get(1) else {
+                eprintln!("usage: mari hooks ignore-rule <id> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_rule(&root, id, reason)?;
             println!("✓ ignored rule {id}");
             Ok(0)
         }
         Some("ignore-file") => {
-            let glob = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari hooks ignore-file <glob> [--reason ...]"))?;
+            let Some(glob) = args.get(1) else {
+                eprintln!("usage: mari hooks ignore-file <glob> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_file(&root, glob, reason)?;
             println!("✓ ignored file {glob}");
             Ok(0)
         }
         Some("ignore-value") => {
-            let rule = args.get(1).ok_or_else(|| {
-                anyhow!("usage: mari hooks ignore-value <rule> <value> [--reason ...]")
-            })?;
-            let value = args.get(2).ok_or_else(|| {
-                anyhow!("usage: mari hooks ignore-value <rule> <value> [--reason ...]")
-            })?;
+            let (Some(rule), Some(value)) = (args.get(1), args.get(2)) else {
+                eprintln!("usage: mari hooks ignore-value <rule> <value> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_value(&root, rule, value, reason)?;
             println!("✓ ignored value for {rule}: {value}");
             Ok(0)
@@ -124,28 +124,28 @@ pub fn ignores(args: &[String], reason: Option<&str>) -> Result<i32> {
             Ok(0)
         }
         Some("add-rule") => {
-            let id = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari ignores add-rule <id> [--reason ...]"))?;
+            let Some(id) = args.get(1) else {
+                eprintln!("usage: mari ignores add-rule <id> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_rule(&root, id, reason)?;
             println!("✓ ignored rule {id}");
             Ok(0)
         }
         Some("add-file") => {
-            let glob = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari ignores add-file <glob> [--reason ...]"))?;
+            let Some(glob) = args.get(1) else {
+                eprintln!("usage: mari ignores add-file <glob> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_file(&root, glob, reason)?;
             println!("✓ ignored file {glob}");
             Ok(0)
         }
         Some("add-value") => {
-            let rule = args.get(1).ok_or_else(|| {
-                anyhow!("usage: mari ignores add-value <rule> <value> [--reason ...]")
-            })?;
-            let value = args.get(2).ok_or_else(|| {
-                anyhow!("usage: mari ignores add-value <rule> <value> [--reason ...]")
-            })?;
+            let (Some(rule), Some(value)) = (args.get(1), args.get(2)) else {
+                eprintln!("usage: mari ignores add-value <rule> <value> [--reason ...]");
+                return Ok(2);
+            };
             add_ignore_value(&root, rule, value, reason)?;
             println!("✓ ignored value for {rule}: {value}");
             Ok(0)
@@ -167,9 +167,10 @@ pub fn zero(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         Some("add") => {
-            let id = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari zero add <rule-id>"))?;
+            let Some(id) = args.get(1) else {
+                eprintln!("usage: mari zero add <rule-id>");
+                return Ok(2);
+            };
             mutate_repo(&root, |cfg| {
                 push_unique_path(cfg, "detector.zeroTolerance", id)
             })?;
@@ -177,9 +178,10 @@ pub fn zero(args: &[String]) -> Result<i32> {
             Ok(0)
         }
         Some("remove") => {
-            let id = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari zero remove <rule-id>"))?;
+            let Some(id) = args.get(1) else {
+                eprintln!("usage: mari zero remove <rule-id>");
+                return Ok(2);
+            };
             mutate_repo(&root, |cfg| {
                 remove_from_path(cfg, "detector.zeroTolerance", id)
             })?;
@@ -206,11 +208,18 @@ pub fn rules(
         None | Some("list") => print_array(&config::resolve(Some(&root))["rules"], json_out),
         Some("discover") => discover_rules(&root, json_out, write),
         Some("add") => {
-            let name = args.get(1).ok_or_else(|| {
-                anyhow!("usage: mari rules add <name> --paths <globs> --notify <msg>")
-            })?;
-            let paths = paths.ok_or_else(|| anyhow!("missing --paths"))?;
-            let notify = notify.ok_or_else(|| anyhow!("missing --notify"))?;
+            let Some(name) = args.get(1) else {
+                eprintln!("usage: mari rules add <name> --paths <globs> --notify <msg>");
+                return Ok(2);
+            };
+            let Some(paths) = paths else {
+                eprintln!("missing --paths");
+                return Ok(2);
+            };
+            let Some(notify) = notify else {
+                eprintln!("missing --notify");
+                return Ok(2);
+            };
             let rule = json!({
                 "name": name,
                 "paths": split_csv(paths),
@@ -222,9 +231,10 @@ pub fn rules(
             Ok(0)
         }
         Some("remove") => {
-            let name = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari rules remove <name>"))?;
+            let Some(name) = args.get(1) else {
+                eprintln!("usage: mari rules remove <name>");
+                return Ok(2);
+            };
             remove_named(&root, "rules", name)?;
             println!("✓ removed rule {name}");
             Ok(0)
@@ -248,14 +258,19 @@ pub fn nudge(
     match args.first().map(|s| s.as_str()) {
         None | Some("list") => print_array(&config::resolve(Some(&root))["nudges"], json_out),
         Some("add") => {
-            let name = args.get(1).ok_or_else(|| {
-                anyhow!(
+            let Some(name) = args.get(1) else {
+                eprintln!(
                     "usage: mari nudge add <name> --when <glob[#symbol]> --edit <file[#symbol]>..."
-                )
-            })?;
-            let when = when.ok_or_else(|| anyhow!("missing --when"))?;
+                );
+                return Ok(2);
+            };
+            let Some(when) = when else {
+                eprintln!("missing --when");
+                return Ok(2);
+            };
             if edit.is_empty() {
-                return Err(anyhow!("missing --edit"));
+                eprintln!("missing --edit");
+                return Ok(2);
             }
             let nudge = json!({
                 "name": name,
@@ -276,9 +291,10 @@ pub fn nudge(
             Ok(0)
         }
         Some("remove") => {
-            let name = args
-                .get(1)
-                .ok_or_else(|| anyhow!("usage: mari nudge remove <name>"))?;
+            let Some(name) = args.get(1) else {
+                eprintln!("usage: mari nudge remove <name>");
+                return Ok(2);
+            };
             remove_named(&root, "nudges", name)?;
             println!("✓ removed nudge {name}");
             Ok(0)
@@ -747,6 +763,46 @@ mod tests {
         let errors = validate_nudge(dir.path(), &nudge);
 
         assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn missing_rule_command_operands_are_usage_errors() {
+        assert_eq!(hooks(&[String::from("ignore-rule")], None).unwrap(), 2);
+        assert_eq!(hooks(&[String::from("ignore-value")], None).unwrap(), 2);
+        assert_eq!(ignores(&[String::from("add-file")], None).unwrap(), 2);
+        assert_eq!(zero(&[String::from("add")]).unwrap(), 2);
+        assert_eq!(
+            rules(&[String::from("add")], false, false, None, None, None).unwrap(),
+            2
+        );
+        assert_eq!(
+            rules(
+                &[String::from("add"), String::from("docs")],
+                false,
+                false,
+                Some("src/**"),
+                None,
+                None
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            nudge(&[String::from("add")], false, None, &[], None, None).unwrap(),
+            2
+        );
+        assert_eq!(
+            nudge(
+                &[String::from("add"), String::from("api")],
+                false,
+                Some("src/**"),
+                &[],
+                None,
+                None
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

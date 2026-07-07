@@ -102,6 +102,12 @@ pub fn run(args: FactcheckArgs) -> Result<i32> {
     if args.models {
         eprintln!("note: local NLI model tier is not available in this build; running deterministic factcheck only");
     }
+    if let Some(ground) = args.ground.as_deref() {
+        if ground != "attention" {
+            eprintln!("✗ unknown grounding mode `{ground}`; expected attention");
+            return Ok(2);
+        }
+    }
     let attention_grounding = args.deep || args.ground.as_deref() == Some("attention");
     if attention_grounding && args.source.is_none() {
         eprintln!("✗ --deep/--ground=attention requires --source <file> (§5.5)");
@@ -991,6 +997,29 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "unsupported-claim");
         assert_eq!(findings[0].span, "$5000000");
+    }
+
+    #[test]
+    fn unknown_grounding_mode_is_usage_error() {
+        let code = run(FactcheckArgs {
+            file: "missing.md".into(),
+            source: None,
+            kb: false,
+            models: false,
+            decompose: false,
+            claims: None,
+            emit_claim_targets: false,
+            deep: false,
+            ground: Some("semantic".into()),
+            threshold: None,
+            json: false,
+            strict: false,
+            quiet: false,
+            lookback: None,
+        })
+        .unwrap();
+
+        assert_eq!(code, 2);
     }
 
     #[test]

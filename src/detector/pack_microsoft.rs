@@ -199,6 +199,8 @@ fn spell_out_small_numbers(ctx: &Ctx, em: &mut Emitter) {
 }
 
 fn no_numeral_sentence_start(ctx: &Ctx, em: &mut Emitter) {
+    static ORDERED_LIST: OnceLock<regex::Regex> = OnceLock::new();
+    let ordered = ORDERED_LIST.get_or_init(|| regex::Regex::new(r"^\s*\d+[.)]\s*$").unwrap());
     for s in &ctx.sentences {
         let text = &ctx.masked[s.start..s.end];
         let trimmed = text.trim_start();
@@ -211,10 +213,7 @@ fn no_numeral_sentence_start(ctx: &Ctx, em: &mut Emitter) {
         {
             let line_start = ctx.masked[..off].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let line_prefix = &ctx.masked[line_start..off];
-            if regex::Regex::new(r"^\s*\d+[.)]\s*$")
-                .unwrap()
-                .is_match(line_prefix)
-            {
+            if ordered.is_match(line_prefix) {
                 continue;
             }
             em.emit(

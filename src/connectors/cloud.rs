@@ -14,6 +14,7 @@ use duckdb::{params, Connection};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+#[derive(Default)]
 pub struct SyncStats {
     pub seen: usize,
     pub changed: usize,
@@ -21,16 +22,6 @@ pub struct SyncStats {
     pub chunks: usize,
 }
 
-impl Default for SyncStats {
-    fn default() -> Self {
-        SyncStats {
-            seen: 0,
-            changed: 0,
-            deleted: 0,
-            chunks: 0,
-        }
-    }
-}
 
 pub struct RemoteDoc {
     pub external_id: String,

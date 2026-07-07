@@ -105,3 +105,63 @@ pub fn set_source_scope(source: &str, scope: &str) -> anyhow::Result<()> {
     std::fs::write(&path, serde_json::to_string_pretty(&scopes)?)?;
     Ok(())
 }
+
+/// A best-effort per-workspace sync lock (SPEC §8.6 / robustness): a second
+/// concurrent `mari sync` exits cleanly instead of corrupting the catalog.
+/// The lock is an advisory PID file; a stale lock from a dead process is
+/// reclaimed.
+pub struct SyncLock {
+    path: std::path::PathBuf,
+}
+
+impl SyncLock {
+    /// Acquire the lock for a workspace dir, or return the holder's PID.
+    pub fn acquire(workspace_dir: &Path) -> std::io::Result<std::result::Result<SyncLock, u32>> {
+        ensure_dir(workspace_dir)?;
+        let path = workspace_dir.join("sync.lock");
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Some(pid) = contents.split_whitespace().next().and_then(|s| s.parse::<u32>().ok()) {
+                if process_alive(pid) {
+                    return Ok(Err(pid));
+                }
+                // Stale lock from a dead process — reclaim it.
+            }
+        }
+        std::fs::write(&path, format!("{} {}", std::process::id(), now_iso()))?;
+        Ok(Ok(SyncLock { path }))
+    }
+}
+
+impl Drop for SyncLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    // signal 0 probes existence without delivering a signal.
+    unsafe { libc_kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    // Conservative on non-Unix: assume alive so we never stomp a real sync.
+    true
+}
+
+
+/// Serializes tests that mutate the process-global `HOME` env var (they would
+/// otherwise race `~/.mari` resolution across parallel test threads).
+#[cfg(test)]
+pub static HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

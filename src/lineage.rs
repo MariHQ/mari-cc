@@ -6,6 +6,7 @@
 use crate::index::{self, hash_hex, now};
 use anyhow::{anyhow, Result};
 use duckdb::{params, Connection};
+use std::path::Path;
 
 pub fn run(args: &[String], json: bool, by: Option<&str>, note: Option<&str>) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
@@ -27,7 +28,10 @@ pub fn run(args: &[String], json: bool, by: Option<&str>, note: Option<&str>) ->
 }
 
 fn open() -> Result<Connection> {
-    let db = index::catalog_path(false);
+    open_at(&index::catalog_path(false))
+}
+
+fn open_at(db: &Path) -> Result<Connection> {
     if !db.exists() {
         return Err(anyhow!("no catalog yet — run `mari sync` first"));
     }
@@ -139,7 +143,13 @@ fn set_status(id_prefix: Option<&String>, status: &str) -> Result<i32> {
         eprintln!("usage: mari lineage {status} <id>");
         return Ok(2);
     };
-    let conn = open()?;
+    let conn = match open() {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return Ok(1);
+        }
+    };
     let n = conn.execute(
         "UPDATE lineage_edges SET status = ?1, confirmed_by = ?2, confirmed_at = ?3 \
          WHERE lineage_id LIKE ?4 || '%'",
@@ -154,7 +164,13 @@ fn set_status(id_prefix: Option<&String>, status: &str) -> Result<i32> {
 }
 
 fn list(json: bool) -> Result<i32> {
-    let conn = open()?;
+    let conn = match open() {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("✗ {e}");
+            return Ok(1);
+        }
+    };
     let mut stmt = conn.prepare(
         "SELECT le.lineage_id, le.status, le.rel, le.confidence, COALESCE(le.confirmed_by, ''), le.metadata_json,
                 COALESCE(fd.path, fd.canonical_ref), fs.start_line, fs.end_line,
@@ -201,4 +217,17 @@ fn list(json: bool) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_catalog_is_reported_as_runtime_condition() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = open_at(&dir.path().join("missing.duckdb")).unwrap_err();
+
+        assert!(err.to_string().contains("no catalog yet"));
+    }
 }

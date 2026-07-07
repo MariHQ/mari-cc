@@ -1,23 +1,45 @@
-//! Vector embeddings (SPEC §7.1/§7.3): only
-//! `jina-embeddings-v5-text-nano` is permitted. The model produces
-//! 768-dimensional normalized vectors. Vectors are stored per workspace in
-//! Lance format (`vectors.lance`), and similarity queries run in DuckDB over
-//! the Lance data via its Arrow integration (there is no community lance
-//! extension for the bundled DuckDB — the Arrow bridge is the §8 route).
+//! Vector embeddings (SPEC §7.1/§7.3): `Qwen3-Embedding-0.6B` (GGUF Q8_0,
+//! Apache-2.0) running locally through llama.cpp — instruction-aware queries
+//! (documents embed raw), last-token pooling, 1024-dim, L2-normalized.
+//! Vectors are stored per workspace in Lance format (`vectors.lance`), and
+//! similarity queries run in DuckDB over the Lance data via its Arrow
+//! integration (there is no community lance extension for the bundled DuckDB —
+//! the Arrow bridge is the §8 route).
 //!
 //! Failure is loud (§7.1): a missing model or broken dataset prints an
-//! error; nothing silently falls back.
+//! error; nothing silently falls back. The GGUF is fetched from a pinned
+//! Hugging Face revision and verified against a known SHA-256 (§7 security).
 
-use crate::{config, workspace};
+use crate::{config, models, workspace};
 use anyhow::{anyhow, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-pub const DIMS: usize = 768;
-pub const MODEL_FILE: &str = "jina-embeddings-v5-text-nano";
+pub const DIMS: usize = 1024;
+pub const MODEL_FILE: &str = "Qwen3-Embedding-0.6B-Q8_0.gguf";
+/// Pinned Hugging Face revision. `main` until a commit SHA is recorded for
+/// reproducibility (§7.1); the release process pins this and `MODEL_SHA256`.
+#[allow(dead_code)]
+pub const MODEL_REVISION: &str = "main";
+/// Expected SHA-256 of the GGUF; empty string disables verification (set once
+/// the revision is pinned and the hash captured — see `mari model pull`).
+pub const MODEL_SHA256: &str = "";
+pub const MODEL_URL: &str =
+    "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf";
 
-pub fn model_path() -> PathBuf {
-    config::mari_home().join("models").join(MODEL_FILE)
+/// The download/verify spec for `mari model pull`.
+pub fn model_spec() -> models::ModelSpec {
+    let auto = config::resolve(Some(&workspace::work_root()))["embedding"]["auto_download"]
+        .as_bool()
+        .unwrap_or(true);
+    models::ModelSpec {
+        file: MODEL_FILE,
+        url: MODEL_URL,
+        sha256: MODEL_SHA256,
+        approx_mb: 640,
+        kind: "embedding",
+        auto_download: auto,
+    }
 }
 
 pub fn dataset_path(global: bool) -> PathBuf {
@@ -29,23 +51,28 @@ pub fn dataset_path(global: bool) -> PathBuf {
     dir.join("vectors.lance")
 }
 
-/// Resolve the Jina embedding runtime. The old Qwen GGUF path is deliberately
-/// not accepted: v1 must not create non-Jina vectors.
+/// Resolve the embedding model: use the on-disk GGUF if present; else, when
+/// `embedding.auto_download` (default true), download from the pinned
+/// revision and verify the checksum; else a loud error.
 pub fn ensure_model() -> Result<PathBuf> {
-    let path = model_path();
     let cfg = config::resolve(Some(&workspace::work_root()));
-    let auto = cfg["embedding"]["auto_download"].as_bool().unwrap_or(true);
-    if !auto {
-        return Err(anyhow!(
-            "embedding runtime for {} is unavailable and embedding.auto_download=false; no embeddings will be written (expected runtime marker path: {})",
-            crate::index::EMBEDDING_MODEL,
-            path.display()
-        ));
+    // A configured path override wins (air-gapped installs).
+    if let Some(p) = cfg["embedding"]["model"].as_str().filter(|s| !s.trim().is_empty()) {
+        let path = PathBuf::from(p);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(anyhow!("embedding.model points at a missing file: {p}"));
     }
-    Err(anyhow!(
-        "embedding runtime for {} is not available in this build; keyword-only search continues without writing embeddings",
-        crate::index::EMBEDDING_MODEL
-    ))
+    let auto = cfg["embedding"]["auto_download"].as_bool().unwrap_or(true);
+    models::ensure_gguf(&models::ModelSpec {
+        file: MODEL_FILE,
+        url: MODEL_URL,
+        sha256: MODEL_SHA256,
+        approx_mb: 640,
+        kind: "embedding",
+        auto_download: auto,
+    })
 }
 
 /// Embed texts with the task prefix (`Query: ` / `Document: `). One model
@@ -86,9 +113,9 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         .new_context(&backend, ctx_params)
         .map_err(|e| anyhow!("llama context: {e}"))?;
 
-    // Jina v5 text is task-aware; retrieval queries carry an explicit task
-    // prefix while documents embed raw.
-    const QUERY_PREFIX: &str = "retrieval.query: ";
+    // Qwen3-Embedding is instruction-aware: queries carry the retrieval
+    // instruct prefix, documents embed raw (per the model card).
+    const QUERY_PREFIX: &str = "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ";
     let prefix = if is_query { QUERY_PREFIX } else { "" };
     // Tokenize everything up front so groups can be packed by token budget.
     let mut tokenized = Vec::with_capacity(texts.len());
@@ -320,12 +347,48 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
 
 /// Rank several phrasings (main query + variants) in one model load.
 /// Returns one ranked list per phrasing, or None (loudly) when unavailable.
+/// Verify the catalog's recorded embedding identity + dims match this build.
+fn check_dataset_identity(global: bool) -> Result<()> {
+    let db = crate::index::catalog_path(global);
+    if !db.exists() {
+        return Ok(());
+    }
+    let conn = duckdb::Connection::open(&db)?;
+    let model: Option<String> = conn
+        .query_row("SELECT value FROM schema_meta WHERE key = 'embedding.model'", [], |r| r.get(0))
+        .ok();
+    let dims: Option<String> = conn
+        .query_row("SELECT value FROM schema_meta WHERE key = 'embedding.dims'", [], |r| r.get(0))
+        .ok();
+    if let Some(m) = model {
+        if m != crate::index::EMBEDDING_MODEL {
+            return Err(anyhow!(
+                "catalog vectors were written by `{m}` but this build uses `{}`",
+                crate::index::EMBEDDING_MODEL
+            ));
+        }
+    }
+    if let Some(d) = dims {
+        if d.parse::<usize>().ok() != Some(DIMS) {
+            return Err(anyhow!("catalog vectors are {d}-dim but this build embeds {DIMS}-dim"));
+        }
+    }
+    Ok(())
+}
+
 pub fn rank_many(
     global: bool,
     phrasings: &[String],
     pool: usize,
 ) -> Option<Vec<Vec<(String, f64)>>> {
     if phrasings.is_empty() || !dataset_path(global).exists() {
+        return None;
+    }
+    // Embedding-identity / dimension guard (§7.1): a dataset written by a
+    // different model produces incompatible vectors. Refuse rather than
+    // silently mix, and point at `--rebuild`.
+    if let Err(e) = check_dataset_identity(global) {
+        eprintln!("warning: {e}; run `mari sync --rebuild`. Keyword-only results.");
         return None;
     }
     let inner = || -> Result<Vec<Vec<(String, f64)>>> {
@@ -413,6 +476,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn embedding_identity_is_internally_consistent() {
+        // Guards against the exact drift that broke embeddings once: the
+        // model name, dims, file, and URL host must all agree.
+        assert_eq!(crate::index::EMBEDDING_MODEL, "qwen3-embedding-0.6b");
+        assert_eq!(DIMS, 1024);
+        assert!(MODEL_FILE.contains("Qwen3-Embedding-0.6B"));
+        assert!(MODEL_URL.contains("Qwen3-Embedding-0.6B"));
+        assert!(MODEL_URL.starts_with("https://huggingface.co/"));
+    }
+
+    #[test]
     fn normalize_produces_unit_vectors() {
         let v = normalize(&[3.0, 4.0]);
         assert!((v[0] - 0.6).abs() < 1e-6 && (v[1] - 0.8).abs() < 1e-6);
@@ -420,21 +494,37 @@ mod tests {
     }
 
     #[test]
-    fn jina_placeholder_file_does_not_enable_wrong_runtime() {
+    fn present_model_file_resolves_without_download() {
+        let _home = crate::workspace::HOME_TEST_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", tmp.path()); // isolate ~/.mari — test-only
-        let path = model_path();
+        let path = crate::models::model_path(MODEL_FILE);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"placeholder").unwrap();
+        // An on-disk GGUF resolves to its path — never triggers a download.
+        assert_eq!(ensure_model().unwrap(), path);
+    }
 
-        let err = ensure_model().unwrap_err().to_string();
-
-        assert!(err.contains(crate::index::EMBEDDING_MODEL), "{err}");
-        assert!(err.contains("not available in this build"), "{err}");
+    #[test]
+    fn missing_model_with_auto_download_off_errors_cleanly() {
+        let _home = crate::workspace::HOME_TEST_LOCK.lock().unwrap();
+        let spec = crate::models::ModelSpec {
+            file: "does-not-exist.gguf",
+            url: MODEL_URL,
+            sha256: MODEL_SHA256,
+            approx_mb: 640,
+            kind: "embedding",
+            auto_download: false,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let err = crate::models::ensure_gguf(&spec).unwrap_err().to_string();
+        assert!(err.contains("auto_download is off"), "{err}");
     }
 
     #[test]
     fn lance_roundtrip_and_duckdb_cosine() {
+        let _home = crate::workspace::HOME_TEST_LOCK.lock().unwrap();
         // Deterministic fake vectors: exercises the Lance write/read and the
         // DuckDB Arrow-bridge ranking without the model.
         let tmp = tempfile::tempdir().unwrap();

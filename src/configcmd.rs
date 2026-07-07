@@ -52,6 +52,12 @@ pub fn run(
                 eprintln!("usage: mari config set <dotted.path> <value>");
                 return Ok(2);
             };
+            if p == "embedding.model" && raw != "jina-embeddings-v5-text-nano" {
+                eprintln!(
+                    "✗ embedding.model must be jina-embeddings-v5-text-nano; no other embedding identity is supported"
+                );
+                return Ok(2);
+            }
             if !config::known_paths().iter().any(|k| k == p) {
                 // Allow subtree paths that exist as objects (e.g. slack.chunking).
                 let d = config::defaults();
@@ -124,7 +130,7 @@ fn source_label(layers: &[&str], union_list: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::source_label;
+    use super::{run, source_label};
 
     #[test]
     fn scalar_source_label_uses_last_overlay() {
@@ -136,6 +142,20 @@ mod tests {
         assert_eq!(
             source_label(&["defaults", "global", "repo"], true),
             "defaults+global+repo"
+        );
+    }
+
+    #[test]
+    fn config_rejects_non_jina_embedding_model_identity() {
+        assert_eq!(
+            run(
+                Some("set"),
+                Some("embedding.model"),
+                Some("other-model"),
+                false
+            )
+            .unwrap(),
+            2
         );
     }
 }

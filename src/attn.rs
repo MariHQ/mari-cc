@@ -26,6 +26,8 @@ use std::path::PathBuf;
 pub const DEFAULT_MODEL_FILE: &str = "Qwen3.5-0.8B-Q4_K_M.gguf";
 pub const DEFAULT_MODEL_URL: &str =
     "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_K_M.gguf";
+/// Expected SHA-256 of the default attention GGUF; empty disables verification.
+pub const DEFAULT_MODEL_SHA256: &str = "";
 const LAYER_BAND: (f64, f64) = (0.60, 0.88);
 const PHRASE_TOKENS: usize = 10;
 const MIN_FLAG_CHARS: usize = 12;
@@ -96,28 +98,24 @@ pub fn model_file() -> Result<PathBuf> {
     if let Some(first) = candidates.first() {
         return Ok(first.clone());
     }
-    // Auto-download the default.
-    let auto = cfg["attention"]["auto_download"].as_bool().unwrap_or(true);
-    let target = dir.join(DEFAULT_MODEL_FILE);
-    if !auto {
-        return Err(anyhow!(
-            "no attention model — set attention.model, drop a multilingual GGUF in {}, or enable attention.auto_download",
-            dir.display()
-        ));
+    // Auto-download the default through the shared, checksum-verified,
+    // resumable provisioner (§7 security).
+    crate::models::ensure_gguf(&model_spec())
+}
+
+/// The download/verify spec for the default attention model.
+pub fn model_spec() -> crate::models::ModelSpec {
+    let auto = config::resolve(Some(&workspace::work_root()))["attention"]["auto_download"]
+        .as_bool()
+        .unwrap_or(true);
+    crate::models::ModelSpec {
+        file: DEFAULT_MODEL_FILE,
+        url: DEFAULT_MODEL_URL,
+        sha256: DEFAULT_MODEL_SHA256,
+        approx_mb: 520,
+        kind: "attention",
+        auto_download: auto,
     }
-    workspace::ensure_dir(&dir)?;
-    eprintln!("downloading {DEFAULT_MODEL_FILE} (~500 MB, one-time) …");
-    let resp = ureq::get(DEFAULT_MODEL_URL)
-        .timeout(std::time::Duration::from_secs(3600))
-        .call()
-        .map_err(|e| anyhow!("attention model download failed: {e}"))?;
-    let part = target.with_extension("part");
-    let mut file = std::fs::File::create(&part)?;
-    std::io::copy(&mut resp.into_reader(), &mut file)?;
-    drop(file);
-    std::fs::rename(&part, &target)?;
-    eprintln!("  ✓ model ready at {}", target.display());
-    Ok(target)
 }
 
 const TASK_TRANSLATION: &str =

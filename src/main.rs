@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 mod assets;
 mod attn;
 mod authcmd;
@@ -16,6 +17,7 @@ mod i18n;
 mod index;
 mod initcmd;
 mod lineage;
+mod models;
 mod narrative;
 mod ocr;
 mod office;
@@ -108,7 +110,7 @@ enum Cmd {
         #[arg(long)]
         exclude: Option<String>,
     },
-    /// Nudges: directed edit obligations
+    /// Nudges: list | add | remove | check
     Nudge {
         args: Vec<String>,
         #[arg(long)]
@@ -441,6 +443,10 @@ enum Cmd {
         #[arg(long)]
         note: Option<String>,
     },
+    /// Provision local models: pull [embedding|attention|all] | status
+    Model { args: Vec<String> },
+    /// Report which optional external tools and models are available
+    Doctor,
     /// Post-edit hook entry point (called by the agent harness, never breaks the turn)
     Hook { args: Vec<String> },
 }
@@ -747,6 +753,8 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             by,
             note,
         } => lineage::run(&args, json, by.as_deref(), note.as_deref()),
+        Cmd::Model { args } => models::run(&args),
+        Cmd::Doctor => statuscmd::doctor(),
         Cmd::Hook { args } => Ok(hook::run(&args)),
     }
 }

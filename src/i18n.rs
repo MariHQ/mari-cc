@@ -92,6 +92,10 @@ pub fn source_language_siblings(path: &Path) -> Vec<PathBuf> {
 }
 
 fn list(path: &Path) -> Result<i32> {
+    if !path.exists() {
+        eprintln!("✗ i18n target does not exist: {}", path.display());
+        return Ok(1);
+    }
     let source = source_for(path);
     println!("source: {}", source.display());
     let translations = find_translations(&source);
@@ -150,6 +154,10 @@ fn attention_coverage_under(source: &Path, translation: &Path) {
 }
 
 fn conform(target: &Path, limit: Option<usize>, strict: bool, deep: bool) -> Result<i32> {
+    if !target.exists() {
+        eprintln!("✗ i18n target does not exist: {}", target.display());
+        return Ok(1);
+    }
     let mut sources = source_files(target);
     sources.sort();
     sources.dedup();
@@ -213,6 +221,19 @@ fn conform(target: &Path, limit: Option<usize>, strict: bool, deep: bool) -> Res
 }
 
 fn coverage(source: &Path, translation: Option<&Path>, strict: bool) -> Result<i32> {
+    if !source.exists() {
+        eprintln!("✗ i18n source does not exist: {}", source.display());
+        return Ok(1);
+    }
+    if let Some(translation) = translation {
+        if !translation.exists() {
+            eprintln!(
+                "✗ i18n translation does not exist: {}",
+                translation.display()
+            );
+            return Ok(1);
+        }
+    }
     let source = source_for(source);
     let translations = match translation {
         Some(t) => vec![Translation {
@@ -676,6 +697,29 @@ mod tests {
         assert_eq!(
             run(&[String::from("coverage")], false, None, false).unwrap(),
             2
+        );
+    }
+
+    #[test]
+    fn missing_i18n_targets_return_runtime_error() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("missing.md");
+        let missing_arg = missing.to_string_lossy().to_string();
+
+        assert_eq!(run(&[missing_arg.clone()], false, None, false).unwrap(), 1);
+        assert_eq!(
+            run(
+                &[String::from("conform"), missing_arg.clone()],
+                false,
+                None,
+                false
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            run(&[String::from("coverage"), missing_arg], false, None, false).unwrap(),
+            1
         );
     }
 

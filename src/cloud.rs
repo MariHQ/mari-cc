@@ -86,6 +86,9 @@ fn init(
     region: Option<&str>,
     force: bool,
 ) -> Result<i32> {
+    if let Some(code) = validate_backend(backend) {
+        return Ok(code);
+    }
     let repo = workspace::work_root();
     let replica = replica_path();
     if !replica.exists() {
@@ -104,12 +107,15 @@ fn init(
             return Ok(1);
         }
         std::fs::copy(&replica, &target)?;
+        // Replicate the Lance vector dataset alongside the catalog so a
+        // consumer's search isn't silently keyword-only (§7 robustness).
+        replicate_vectors_git(&catalog_dir)?;
         // Data files ride Git LFS (SPEC §9).
         let gitattributes = catalog_dir.join(".gitattributes");
         if !gitattributes.exists() {
             std::fs::write(
                 &gitattributes,
-                "*.duckdb filter=lfs diff=lfs merge=lfs -text\n",
+                "*.duckdb filter=lfs diff=lfs merge=lfs -text\n*.lance filter=lfs diff=lfs merge=lfs -text\ncatalog/vectors.lance/** filter=lfs diff=lfs merge=lfs -text\n",
             )?;
         }
         write_cloud_cfg("git", "", "", "")?;
@@ -145,6 +151,9 @@ fn connect(
     prefix: Option<&str>,
     region: Option<&str>,
 ) -> Result<i32> {
+    if let Some(code) = validate_backend(backend) {
+        return Ok(code);
+    }
     if backend == Some("git") {
         let root = workspace::work_root();
         let src = git_catalog_path(&root);
@@ -171,6 +180,16 @@ fn connect(
     pull()?;
     println!("✓ connected as read-only consumer of s3://{bucket}");
     Ok(0)
+}
+
+fn validate_backend(backend: Option<&str>) -> Option<i32> {
+    match backend {
+        Some("s3" | "git") | None => None,
+        Some(other) => {
+            eprintln!("unknown cloud backend: {other} (expected s3 | git)");
+            Some(2)
+        }
+    }
 }
 
 fn s3_url(bucket: &str, prefix: &str) -> String {
@@ -203,6 +222,47 @@ fn aws(args: &[&str], region: &str) -> Result<()> {
     Ok(())
 }
 
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copy the local Lance vector dataset into the git catalog dir.
+fn replicate_vectors_git(catalog_dir: &Path) -> Result<()> {
+    let local = crate::index::vector::dataset_path(false);
+    if local.exists() {
+        let dst = catalog_dir.join("vectors.lance");
+        if dst.exists() {
+            std::fs::remove_dir_all(&dst)?;
+        }
+        copy_dir_recursive(&local, &dst)?;
+    }
+    Ok(())
+}
+
+/// Restore the Lance vector dataset from the git catalog dir into the replica.
+fn restore_vectors_git() -> Result<()> {
+    let src = workspace::work_root().join(".mari").join("catalog").join("vectors.lance");
+    if src.exists() {
+        let dst = crate::index::vector::dataset_path(false);
+        if dst.exists() {
+            std::fs::remove_dir_all(&dst)?;
+        }
+        copy_dir_recursive(&src, &dst)?;
+    }
+    Ok(())
+}
+
 fn push_s3(replica: &Path, bucket: &str, prefix: &str, region: &str) -> Result<()> {
     aws(
         &[
@@ -212,7 +272,24 @@ fn push_s3(replica: &Path, bucket: &str, prefix: &str, region: &str) -> Result<(
             &s3_url(bucket, prefix),
         ],
         region,
-    )
+    )?;
+    // Sync the Lance vector dataset directory so consumers get vectors too.
+    let local = crate::index::vector::dataset_path(false);
+    if local.exists() {
+        aws(
+            &["s3", "sync", &local.to_string_lossy(), &s3_vectors_url(bucket, prefix), "--delete"],
+            region,
+        )?;
+    }
+    Ok(())
+}
+
+fn s3_vectors_url(bucket: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        format!("s3://{bucket}/vectors.lance")
+    } else {
+        format!("s3://{}/{}/vectors.lance", bucket, prefix.trim_matches('/'))
+    }
 }
 
 /// `mari pull` — fetch the latest cloud index into the replica.
@@ -235,6 +312,7 @@ pub fn pull() -> Result<i32> {
                 return Ok(1);
             }
             std::fs::copy(&src, &replica)?;
+            restore_vectors_git()?;
         }
         _ => {
             let bucket = cfg["bucket"].as_str().unwrap_or("");
@@ -249,6 +327,11 @@ pub fn pull() -> Result<i32> {
                 ],
                 region,
             )?;
+            let dst = crate::index::vector::dataset_path(false);
+            let _ = aws(
+                &["s3", "sync", &s3_vectors_url(bucket, prefix), &dst.to_string_lossy(), "--delete"],
+                region,
+            );
         }
     }
     record_last_pull();
@@ -321,5 +404,13 @@ mod tests {
 
         assert!(should_refuse_overwrite(&path, false));
         assert!(!should_refuse_overwrite(&path, true));
+    }
+
+    #[test]
+    fn cloud_backend_accepts_only_s3_or_git() {
+        assert_eq!(validate_backend(None), None);
+        assert_eq!(validate_backend(Some("s3")), None);
+        assert_eq!(validate_backend(Some("git")), None);
+        assert_eq!(validate_backend(Some("sqlite")), Some(2));
     }
 }

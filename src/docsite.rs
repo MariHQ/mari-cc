@@ -125,11 +125,11 @@ fn print_status(json: bool) -> Result<i32> {
 fn status_for_root(root: &Path) -> DocsiteStatus {
     DocsiteStatus {
         root: root.display().to_string(),
-        platform: detect_platform(&root),
+        platform: detect_platform(root),
         docs_dir: root.join("docs").is_dir(),
-        readme: exists_any(&root, &["README.md", "README.mdx", "readme.md"]),
-        license: exists_any(&root, &["LICENSE", "LICENSE.md", "COPYING"]),
-        contributing: exists_any(&root, &["CONTRIBUTING.md", ".github/CONTRIBUTING.md"]),
+        readme: exists_any(root, &["README.md", "README.mdx", "readme.md"]),
+        license: exists_any(root, &["LICENSE", "LICENSE.md", "COPYING"]),
+        contributing: exists_any(root, &["CONTRIBUTING.md", ".github/CONTRIBUTING.md"]),
         code_of_conduct: exists_any(root, &["CODE_OF_CONDUCT.md", ".github/CODE_OF_CONDUCT.md"]),
         security: exists_any(root, &["SECURITY.md", ".github/SECURITY.md"]),
         changelog: exists_any(root, &["CHANGELOG.md", "CHANGES.md", "HISTORY.md"]),

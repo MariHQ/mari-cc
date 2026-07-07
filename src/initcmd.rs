@@ -264,7 +264,7 @@ fn init_style() -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{auth_command_template, SOURCES};
+    use super::{auth_command_template, run, SOURCES};
 
     #[test]
     fn auth_command_templates_are_concrete() {
@@ -302,5 +302,14 @@ mod tests {
                 "localfiles"
             ]
         );
+    }
+
+    #[test]
+    fn init_targets_follow_spec_exit_contract() {
+        assert_eq!(run(None).unwrap(), 0);
+        assert_eq!(run(Some("all")).unwrap(), 0);
+        assert_eq!(run(Some("search")).unwrap(), 0);
+        assert_eq!(run(Some("style")).unwrap(), 0);
+        assert_eq!(run(Some("unknown")).unwrap(), 2);
     }
 }

@@ -127,7 +127,7 @@ pub fn issue_doc(base: &str, issue: &Value) -> RemoteDoc {
         updated_at: f["updated"].as_str().map(String::from),
         mime: "text/plain",
         kind: "issue",
-        container: (!project.is_empty()).then(|| (project, "in_project")),
+        container: (!project.is_empty()).then_some((project, "in_project")),
         body,
         revision: f["updated"].as_str().unwrap_or_default().to_string(),
     }

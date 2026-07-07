@@ -483,7 +483,7 @@ fn thematic_break_before_heading(ctx: &Ctx, em: &mut Emitter) {
             && next_text
                 .chars()
                 .nth(1)
-                .map_or(false, |c| c == ' ' || c == '#')
+                .is_some_and(|c| c == ' ' || c == '#')
         {
             let off = ctx.line_start_offset(line);
             em.emit(
@@ -839,7 +839,7 @@ fn malformed_doi_isbn(ctx: &Ctx, em: &mut Emitter) {
     let doi = DOI.get_or_init(|| regex::Regex::new(r"(?i)\bdoi:\s*(\S+)").unwrap());
     let good_doi = regex::Regex::new(r"^10\.\d{4,}/\S+$").unwrap();
     helpers::scan(ctx, doi, |off, len, m| {
-        let value = m.splitn(2, ':').nth(1).unwrap_or("").trim();
+        let value = m.split_once(':').map(|x| x.1).unwrap_or("").trim();
         if !good_doi.is_match(value.trim_end_matches(['.', ',', ')'])) {
             em.emit(
                 ctx,

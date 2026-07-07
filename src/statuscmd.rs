@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(status.last_sync.as_deref(), Some("2026-02-01T00:00:00Z"));
         assert_eq!(
             embedding_line(&status).as_deref(),
-            Some("jina-embeddings-v5-text-nano, other-model")
+            Some("other-model, qwen3-embedding-0.6b")
         );
         assert_eq!(status.tag_counts.get("canonical"), Some(&2));
         assert_eq!(status.tag_counts.get("stale"), Some(&2));
@@ -386,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_status_reads_embedding_model_ids_from_rows() {
+    fn embeddings_table_reads_model_rows() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("catalog.duckdb");
         write_catalog(
@@ -396,10 +396,19 @@ mod tests {
             index::EMBEDDING_MODEL,
         );
         let conn = duckdb::Connection::open(&catalog).unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO embeddings (chunk_id, model_id, dims, vector_json, norm, embedded_at)
+                 VALUES ('orphan-chunk', 'other-model', 3, '[0.1,0.2,0.3]', 1.0, 'now')",
+                [],
+            )
+            .unwrap_err();
+
+        assert!(err.to_string().contains("CHECK"));
         conn.execute(
             "INSERT INTO embeddings (chunk_id, model_id, dims, vector_json, norm, embedded_at)
-             VALUES ('orphan-chunk', 'other-model', 3, '[0.1,0.2,0.3]', 1.0, 'now')",
-            [],
+             VALUES ('orphan-chunk', ?1, 768, '[0.1,0.2,0.3]', 1.0, 'now')",
+            duckdb::params![index::EMBEDDING_MODEL],
         )
         .unwrap();
 
@@ -407,7 +416,7 @@ mod tests {
 
         assert_eq!(
             embedding_line(&status).as_deref(),
-            Some("jina-embeddings-v5-text-nano, other-model")
+            Some("qwen3-embedding-0.6b")
         );
     }
 
@@ -503,4 +512,57 @@ mod tests {
             .unwrap();
         }
     }
+}
+
+/// `mari doctor` — report which optional external tools and models are present
+/// and which features they gate (SPEC §22 / portability). Never fails; it is a
+/// diagnostic.
+pub fn doctor() -> Result<i32> {
+    println!("mari doctor — optional dependencies and models\n");
+
+    println!("external tools:");
+    for (tool, gates) in [
+        ("git", "git-history connector, commit-association hook, humanizer, curator identity"),
+        ("gcloud", "Google Drive connector (rides your gcloud session)"),
+        ("aws", "S3 cloud-sharing backend"),
+        ("python3", "optional Unlimited-OCR model tiers (ocr.backend=auto|ocr-model)"),
+    ] {
+        let present = which(tool);
+        println!(
+            "  [{}] {:<8} {}",
+            if present { "x" } else { " " },
+            tool,
+            gates
+        );
+    }
+
+    println!("\nmodels (~/.mari/models):");
+    for spec in [crate::index::vector::model_spec(), crate::attn::model_spec()] {
+        let path = crate::models::model_path(spec.file);
+        let state = if path.exists() {
+            format!(
+                "present ({} MB)",
+                std::fs::metadata(&path).map(|m| m.len() >> 20).unwrap_or(0)
+            )
+        } else {
+            format!("missing — `mari model pull {}`", spec.kind)
+        };
+        println!("  {:<10} {:<40} {state}", spec.kind, spec.file);
+    }
+
+    println!("\nfeatures:");
+    println!("  detector, factcheck, curation, connectors  — always available");
+    println!("  semantic search                            — needs the embedding model");
+    println!("  --deep / --focus / i18n coverage           — needs the attention model");
+    println!("  --grammar                                  — Harper, compiled in");
+    println!("  ocr.backend=auto|ocr-model                 — needs python3 + explicit opt-in");
+    Ok(0)
+}
+
+fn which(tool: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success() || !o.stdout.is_empty())
+        .unwrap_or(false)
 }

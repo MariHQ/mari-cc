@@ -421,10 +421,8 @@ fn internal_tagged_refs(cfg: &Value) -> BTreeSet<String> {
         .as_object()
         .into_iter()
         .flatten()
-        .filter_map(|(target, entry)| {
-            (entry["status"].as_str() == Some("internal"))
-                .then(|| target.strip_prefix("./").unwrap_or(target).to_string())
-        })
+        .filter(|&(_, entry)| entry["status"].as_str() == Some("internal"))
+        .map(|(target, _)| target.strip_prefix("./").unwrap_or(target).to_string())
         .collect()
 }
 

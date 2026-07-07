@@ -18,6 +18,17 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
             return Ok(2);
         }
     }
+    // Concurrent-sync guard (§8.6): a second sync in this workspace exits
+    // cleanly rather than racing the catalog.
+    let _lock =
+        match workspace::SyncLock::acquire(&workspace::workspace_dir(&workspace::work_root())) {
+            Ok(Ok(lock)) => Some(lock),
+            Ok(Err(pid)) => {
+                eprintln!("✗ another sync is already running in this workspace (pid {pid}) — retry when it finishes");
+                return Ok(1);
+            }
+            Err(_) => None,
+        };
     // One-writer rule (§9): consumers read the replica; only the writer syncs.
     if cloud::enabled() && cloud::role() == "consumer" {
         eprintln!(
@@ -711,7 +722,7 @@ fn ingest_edges(
     if source_id == "git" || source_id == "localfiles" {
         let container = path
             .parent()
-            .map(|p| repo_rel(p))
+            .map(repo_rel)
             .filter(|p| !p.is_empty() && p != ".")
             .unwrap_or_else(|| "(repo-root)".into());
         insert_edge(

@@ -29,8 +29,12 @@ pub fn run(
     let ignored = ignored_rules(&cfg);
     let mut findings = Vec::new();
 
-    if !ignored.contains("community-missing-file") {
-        findings.extend(community_findings(&root));
+    if !ignored.contains("community-missing-file") || !ignored.contains("community-invalid-file") {
+        findings.extend(community_findings(
+            &root,
+            !ignored.contains("community-missing-file"),
+            !ignored.contains("community-invalid-file"),
+        ));
     }
     if !ignored.contains("link-broken") {
         let mut docs = markdown_files(&root);
@@ -100,33 +104,37 @@ fn ignored_rules(cfg: &serde_json::Value) -> BTreeSet<String> {
         .collect()
 }
 
-fn community_findings(root: &Path) -> Vec<Finding> {
+fn community_findings(root: &Path, check_missing: bool, check_invalid: bool) -> Vec<Finding> {
     let required = ["README.md", "LICENSE", "CONTRIBUTING.md"];
     let recommended = ["CODE_OF_CONDUCT.md", "SECURITY.md", "CHANGELOG.md"];
     let mut out = Vec::new();
     for file in required {
         if !root.join(file).exists() {
-            out.push(Finding {
-                rule_id: "community-missing-file",
-                severity: "error",
-                path: file.into(),
-                message: format!("required community-health file is missing: {file}"),
-                target: None,
-            });
-        } else {
+            if check_missing {
+                out.push(Finding {
+                    rule_id: "community-missing-file",
+                    severity: "error",
+                    path: file.into(),
+                    message: format!("required community-health file is missing: {file}"),
+                    target: None,
+                });
+            }
+        } else if check_invalid {
             out.extend(community_validity_findings(root, file, "error"));
         }
     }
     for file in recommended {
         if !root.join(file).exists() {
-            out.push(Finding {
-                rule_id: "community-missing-file",
-                severity: "warn",
-                path: file.into(),
-                message: format!("recommended community-health file is missing: {file}"),
-                target: None,
-            });
-        } else {
+            if check_missing {
+                out.push(Finding {
+                    rule_id: "community-missing-file",
+                    severity: "warn",
+                    path: file.into(),
+                    message: format!("recommended community-health file is missing: {file}"),
+                    target: None,
+                });
+            }
+        } else if check_invalid {
             out.extend(community_validity_findings(root, file, "warn"));
         }
     }
@@ -201,6 +209,7 @@ fn markdown_files(root: &Path) -> Vec<PathBuf> {
                         | "__fixtures__"
                         | "vendor"
                         | "vendored"
+                        | "skills"
                 ))
         })
         .build()
@@ -326,6 +335,12 @@ fn nav_findings(
 fn asset_findings(root: &Path, docs: &[PathBuf], ignored: &BTreeSet<String>) -> Vec<Finding> {
     let mut out = Vec::new();
     for doc in docs {
+        // Only section-validate files that are actually named as an archetype
+        // (SECURITY.md, RUNBOOK.md, …). A doc that merely mentions the topic
+        // — or a scaffolding template — is not that document.
+        if !assets::is_canonical_asset_file(doc) {
+            continue;
+        }
         let Ok(findings) = assets::findings_for_path(doc) else {
             continue;
         };
@@ -785,7 +800,7 @@ mod tests {
         std::fs::write(root.join("LICENSE"), "").unwrap();
         std::fs::write(root.join("CONTRIBUTING.md"), "# Contributing\n").unwrap();
 
-        let findings = community_findings(root);
+        let findings = community_findings(root, true, true);
 
         assert!(findings.iter().any(|f| {
             f.rule_id == "community-invalid-file" && f.path == "LICENSE" && f.severity == "error"
@@ -805,7 +820,7 @@ mod tests {
         )
         .unwrap();
 
-        let findings = community_findings(root);
+        let findings = community_findings(root, true, true);
 
         assert!(findings.iter().any(|f| {
             f.rule_id == "community-invalid-file" && f.path == "README.md" && f.severity == "error"
@@ -813,6 +828,30 @@ mod tests {
         assert!(findings.iter().any(|f| {
             f.rule_id == "community-invalid-file" && f.path == "SECURITY.md" && f.severity == "warn"
         }));
+    }
+
+    #[test]
+    fn community_check_rules_can_be_ignored_independently() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("README.md"), "").unwrap();
+        std::fs::write(root.join("LICENSE"), "").unwrap();
+
+        let invalid_only = community_findings(root, false, true);
+        assert!(invalid_only
+            .iter()
+            .any(|f| f.rule_id == "community-invalid-file"));
+        assert!(!invalid_only
+            .iter()
+            .any(|f| f.rule_id == "community-missing-file"));
+
+        let missing_only = community_findings(root, true, false);
+        assert!(missing_only
+            .iter()
+            .any(|f| f.rule_id == "community-missing-file"));
+        assert!(!missing_only
+            .iter()
+            .any(|f| f.rule_id == "community-invalid-file"));
     }
 
     #[test]

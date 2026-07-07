@@ -153,7 +153,7 @@ pub fn page_doc(base: &str, page: &Value) -> RemoteDoc {
         updated_at: page["version"]["when"].as_str().map(String::from),
         mime: "text/plain",
         kind: "page",
-        container: (!space.is_empty()).then(|| (space, "in_project")),
+        container: (!space.is_empty()).then_some((space, "in_project")),
         body,
         revision: page["version"]["number"].as_i64().unwrap_or(0).to_string(),
     }

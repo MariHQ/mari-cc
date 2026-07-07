@@ -143,10 +143,10 @@ fn list(json: bool) -> Result<i32> {
 }
 
 fn scaffold(id: &str, name: Option<&str>, force: bool) -> Result<i32> {
-    let platform = PLATFORMS
-        .iter()
-        .find(|p| p.id == id)
-        .ok_or_else(|| anyhow!("unknown platform: {id}"))?;
+    let Some(platform) = PLATFORMS.iter().find(|p| p.id == id) else {
+        eprintln!("unknown platform: {id}");
+        return Ok(2);
+    };
     if !platform.scaffoldable {
         return Err(anyhow!("{id} is detect-only and cannot be scaffolded"));
     }
@@ -325,7 +325,24 @@ mod tests {
 
     #[test]
     fn platform_scaffold_missing_id_is_usage_error() {
-        assert_eq!(run(&[String::from("scaffold")], false, None, false).unwrap(), 2);
+        assert_eq!(
+            run(&[String::from("scaffold")], false, None, false).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn platform_scaffold_unknown_id_is_usage_error() {
+        assert_eq!(
+            run(
+                &[String::from("scaffold"), String::from("totally-bogus")],
+                false,
+                None,
+                false
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

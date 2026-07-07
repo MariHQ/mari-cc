@@ -629,7 +629,7 @@ fn split_sentences(masked: &str, blocks: &[Block]) -> Vec<Sentence> {
             if bytes[term_start] == b'.'
                 && term_start > 0
                 && bytes[term_start - 1].is_ascii_digit()
-                && bytes.get(m.end()).map_or(false, |c| c.is_ascii_digit())
+                && bytes.get(m.end()).is_some_and(|c| c.is_ascii_digit())
             {
                 continue;
             }

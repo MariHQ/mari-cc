@@ -224,7 +224,10 @@ fn findings_for_archetype_at(
 }
 
 fn scaffold(typ: &str, title: Option<&str>, force: bool) -> Result<i32> {
-    let archetype = archetype(typ).ok_or_else(|| anyhow!("unknown asset type: {typ}"))?;
+    let Some(archetype) = archetype(typ) else {
+        eprintln!("unknown asset type: {typ}");
+        return Ok(2);
+    };
     let root = workspace::work_root();
     scaffold_at(&root, archetype, title, force)
 }
@@ -310,6 +313,20 @@ fn detect_type_at<'a>(root: &Path, path: &Path, text: &str) -> Option<&'a Archet
                     .unwrap_or(false)
             })
         })
+}
+
+/// True when the file's basename matches an archetype's canonical filename
+/// (e.g. SECURITY.md, RUNBOOK.md). The whole-project `check` sweep only
+/// section-validates such files, so a planning doc that merely mentions
+/// "security" is never mis-detected as a SECURITY.md.
+pub(crate) fn is_canonical_asset_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    ARCHETYPES
+        .iter()
+        .any(|a| a.file.eq_ignore_ascii_case(&lower) || a.file.eq_ignore_ascii_case(name))
 }
 
 fn archetype(id: &str) -> Option<&'static Archetype> {
@@ -447,6 +464,19 @@ mod tests {
         assert_eq!(run(&[String::from("detect")], false, false).unwrap(), 2);
         assert_eq!(run(&[String::from("check")], false, false).unwrap(), 2);
         assert_eq!(run(&[String::from("scaffold")], false, false).unwrap(), 2);
+    }
+
+    #[test]
+    fn scaffold_unknown_asset_type_is_usage_error() {
+        assert_eq!(
+            run(
+                &[String::from("scaffold"), String::from("totally-bogus")],
+                false,
+                false
+            )
+            .unwrap(),
+            2
+        );
     }
 
     #[test]

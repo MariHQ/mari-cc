@@ -24,13 +24,16 @@ pub struct OcrConfig {
     pub model: String,
     pub dpi: i64,
     pub auto_install: bool,
+    /// Explicit acknowledgement that the model tiers execute remote code
+    /// (`trust_remote_code=True`). Default false; gates provisioning (§7.2).
+    pub accept_remote_code: bool,
 }
 
 pub fn ocr_config(cfg: &Value) -> OcrConfig {
     let o = &cfg["ocr"];
     let model = o["model"].as_str().unwrap_or("").trim().to_string();
     OcrConfig {
-        backend: o["backend"].as_str().unwrap_or("auto").to_string(),
+        backend: o["backend"].as_str().unwrap_or("text").to_string(),
         model: if model.is_empty() {
             DEFAULT_MODEL.to_string()
         } else {
@@ -38,6 +41,7 @@ pub fn ocr_config(cfg: &Value) -> OcrConfig {
         },
         dpi: o["dpi"].as_i64().unwrap_or(200),
         auto_install: o["auto_install"].as_bool().unwrap_or(true),
+        accept_remote_code: o["accept_remote_code"].as_bool().unwrap_or(false),
     }
 }
 
@@ -80,6 +84,21 @@ pub fn ensure_toolchain(cfg: &OcrConfig) -> Result<PathBuf> {
     // always required here.
     let need_model = true;
     let _ = needs_model(&cfg.backend);
+
+    // SECURITY (§7.2): the model tiers run `baidu/Unlimited-OCR` with
+    // `trust_remote_code=True`, which executes arbitrary Python from the HF
+    // repo. This is opt-in twice: a non-default backend AND an explicit
+    // acknowledgement, so a user cannot reach remote-code execution by
+    // accident. The default `text` backend is pure Rust and never lands here.
+    if !cfg.accept_remote_code {
+        return Err(anyhow!(
+            "ocr.backend `{}` runs baidu/Unlimited-OCR with trust_remote_code=True \
+             (executes code from the model repo). To use it, acknowledge the risk: \
+             `mari config set ocr.accept_remote_code true`. The default `text` backend \
+             is pure Rust and needs no acknowledgement.",
+            cfg.backend
+        ));
+    }
 
     let provisioned = python.exists() && base_ok.exists() && (!need_model || model_ok.exists());
     if !provisioned {
@@ -408,7 +427,19 @@ mod tests {
             model: DEFAULT_MODEL.into(),
             dpi: 200,
             auto_install,
+            accept_remote_code: true,
         }
+    }
+
+    #[test]
+    fn model_backend_refuses_without_remote_code_opt_in() {
+        // The default `text` backend never reaches provisioning; the model
+        // tiers require an explicit acknowledgement (§7.2).
+        let mut c = cfg("ocr-model", true);
+        c.accept_remote_code = false;
+        let err = ensure_toolchain(&c).unwrap_err().to_string();
+        assert!(err.contains("trust_remote_code"), "{err}");
+        assert!(err.contains("accept_remote_code"), "{err}");
     }
 
     #[test]

@@ -24,6 +24,10 @@ pub fn surface(dir: Option<&str>, json: bool) -> Result<i32> {
     } else {
         root.join(start)
     };
+    if !start.exists() {
+        eprintln!("✗ surface target does not exist: {}", start.display());
+        return Ok(1);
+    }
     let mut items = collect_surface(&root, &start);
     items.sort_by(|a, b| {
         a.file
@@ -506,6 +510,13 @@ fn file_query(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_missing_target_returns_runtime_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
+        assert_eq!(surface(Some(&missing.to_string_lossy()), false).unwrap(), 1);
+    }
 
     #[test]
     fn extracts_rust_pub_items() {

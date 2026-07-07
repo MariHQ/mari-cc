@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 pub const CATALOG_FILE: &str = "catalog.duckdb";
 pub const SCHEMA_VERSION: &str = "1";
-pub const EMBEDDING_MODEL: &str = "jina-embeddings-v5-text-nano";
-pub const EMBEDDING_DIMS: &str = "0";
+pub const EMBEDDING_MODEL: &str = "qwen3-embedding-0.6b";
+pub const EMBEDDING_DIMS: &str = "1024";
 pub const CHUNKING_VERSION: &str = "line-v1";
 pub const EXTRACTOR_VERSION: &str = "plain-v1";
 
@@ -81,6 +81,22 @@ fn sync_age_days(last_sync: &str) -> Option<i64> {
     )
 }
 
+/// Idempotent schema migrations (SPEC §8.6): run ordered, version-gated
+/// upgrades so an older catalog is brought forward instead of erroring. Each
+/// step is a no-op when already applied. New migrations append here and bump
+/// SCHEMA_VERSION.
+fn migrate_schema(conn: &Connection) -> Result<()> {
+    let current: Option<String> = conn
+        .query_row("SELECT value FROM schema_meta WHERE key = 'schema.version'", [], |r| r.get(0))
+        .ok();
+    // Version 1 is the baseline; no upgrade steps exist yet. Future steps:
+    //   if version < 2 { ALTER TABLE …; }
+    // Guarded by CREATE … IF NOT EXISTS in ensure_schema, additive columns
+    // should use `ALTER TABLE … ADD COLUMN IF NOT EXISTS` inside a step.
+    let _ = current;
+    Ok(())
+}
+
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
@@ -136,7 +152,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE TABLE IF NOT EXISTS embeddings (
   chunk_id TEXT PRIMARY KEY,
-  model_id TEXT NOT NULL,
+  model_id TEXT NOT NULL CHECK (model_id = 'qwen3-embedding-0.6b'),
   dims INTEGER NOT NULL,
   vector_json TEXT NOT NULL,
   norm REAL NOT NULL,
@@ -259,7 +275,7 @@ SELECT
   0 AS start_byte,
   length(d.body) AS end_byte,
   1 AS start_line,
-  CAST(NULL AS INTEGER) AS end_line,
+  CAST(length(d.body) - length(replace(d.body, chr(10), '')) + 1 AS INTEGER) AS end_line,
   d.metadata_json
 FROM documents d
 UNION ALL
@@ -360,11 +376,15 @@ LEFT JOIN navigation_targets to_target
   ON to_target.target_type = e.to_type AND to_target.target_id = e.to_id;
 "#,
     )?;
+    migrate_schema(conn)?;
     set_meta(conn, "schema.version", SCHEMA_VERSION)?;
     set_meta_default(conn, "schema.created_at", &now())?;
     set_meta(conn, "schema.migrated_at", &now())?;
-    set_meta(conn, "embedding.model", EMBEDDING_MODEL)?;
-    set_meta(conn, "embedding.dims", EMBEDDING_DIMS)?;
+    // Identity is stamped on creation only; sync_vectors rewrites it when it
+    // actually writes vectors. Overwriting here would defeat the guard that
+    // detects a catalog embedded by a different model (§7.1).
+    set_meta_default(conn, "embedding.model", EMBEDDING_MODEL)?;
+    set_meta_default(conn, "embedding.dims", EMBEDDING_DIMS)?;
     set_meta(conn, "chunking.version", CHUNKING_VERSION)?;
     set_meta(conn, "extractor.version", EXTRACTOR_VERSION)?;
     Ok(())
@@ -683,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_records_zero_embedding_dims_until_vectors_exist() {
+    fn schema_stamps_embedding_identity_on_creation() {
         let conn = Connection::open_in_memory().unwrap();
         ensure_schema(&conn).unwrap();
 
@@ -694,7 +714,15 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(dims, "0");
+        assert_eq!(dims, super::EMBEDDING_DIMS);
+        let model: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'embedding.model'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, super::EMBEDDING_MODEL);
     }
 
     #[test]
@@ -723,7 +751,7 @@ mod tests {
         ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO documents (doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind, author_id, author_name, created_at, updated_at, observed_at, version, content_sha256, body, metadata_json)
-             VALUES ('doc1', 'localfiles', 'docs/a.md', 'localfiles:docs/a.md', 'A', NULL, 'docs/a.md', 'text/markdown', 'file', NULL, NULL, NULL, NULL, 'now', 'v', 'sha', '# A', '{}')",
+             VALUES ('doc1', 'localfiles', 'docs/a.md', 'localfiles:docs/a.md', 'A', NULL, 'docs/a.md', 'text/markdown', 'file', NULL, NULL, NULL, NULL, 'now', 'v', 'sha', '# A\nBody\nEnd', '{}')",
             [],
         )
         .unwrap();
@@ -772,6 +800,14 @@ mod tests {
             .unwrap();
         assert_eq!(targets, 4);
         assert_eq!(edge_ref, "localfiles:docs/a.md");
+        let doc_end_line: i64 = conn
+            .query_row(
+                "SELECT end_line FROM navigation_targets WHERE target_type = 'doc' AND target_id = 'doc1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(doc_end_line, 3);
         let (from_doc_id, from_ref, to_doc_id, to_ref): (String, String, String, String) = conn
             .query_row(
                 "SELECT from_doc_id, from_ref, to_doc_id, to_ref FROM graph_edges WHERE edge_id = 'edge2'",

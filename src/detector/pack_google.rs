@@ -198,7 +198,7 @@ fn no_exclamation(ctx: &Ctx, em: &mut Emitter) {
     let re = RE.get_or_init(|| regex::Regex::new(r"\w!").unwrap());
     helpers::scan(ctx, re, |off, len, _| {
         let bang = off + len - 1;
-        let after = ctx.masked[bang + 1..].as_bytes().first().copied();
+        let after = ctx.masked.as_bytes().get(bang + 1).copied();
         if after == Some(b'=') {
             return;
         }

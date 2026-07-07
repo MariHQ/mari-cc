@@ -69,10 +69,14 @@ fn catalog() -> Vec<Group> {
             capabilities: vec![
                 cap(
                     "track source refs",
-                    "mari track <source> add|remove|list [--list-key]",
+                    "mari track <source> <add|remove|list> [ref] [--list-key <key>]",
                     "implemented",
                 ),
-                cap("sync catalog sources", "mari sync [source]", "implemented"),
+                cap(
+                    "sync catalog sources",
+                    "mari sync [source] [--rebuild] [--since N]",
+                    "implemented",
+                ),
                 cap(
                     "hybrid keyword search",
                     "mari search <query>",
@@ -164,7 +168,11 @@ fn catalog() -> Vec<Group> {
                 cap("hooks", "mari hooks", "implemented"),
                 cap("post-edit hook entry", "mari hook run", "implemented"),
                 cap("edit-notify rules", "mari rules", "implemented"),
-                cap("nudges", "mari nudge", "implemented"),
+                cap(
+                    "nudges",
+                    "mari nudge <list|add|remove|check>",
+                    "implemented",
+                ),
                 cap(
                     "i18n structure checks",
                     "mari i18n / mari localize",
@@ -221,15 +229,25 @@ mod tests {
     use super::catalog;
 
     #[test]
-    fn sync_capability_is_not_limited_to_local_sources() {
+    fn track_and_sync_capabilities_match_spec_signatures() {
         let groups = catalog();
+        let track = groups
+            .iter()
+            .flat_map(|group| &group.capabilities)
+            .find(|cap| cap.capability == "track source refs")
+            .expect("track capability");
         let sync = groups
             .iter()
             .flat_map(|group| &group.capabilities)
             .find(|cap| cap.capability == "sync catalog sources")
             .expect("sync capability");
 
-        assert_eq!(sync.command, "mari sync [source]");
+        assert_eq!(
+            track.command,
+            "mari track <source> <add|remove|list> [ref] [--list-key <key>]"
+        );
+        assert_eq!(sync.command, "mari sync [source] [--rebuild] [--since N]");
+        assert_eq!(track.status, "implemented");
         assert_eq!(sync.status, "implemented");
     }
 
@@ -257,5 +275,18 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(commands.iter().all(|command| command.contains("[--force]")));
+    }
+
+    #[test]
+    fn nudge_capability_includes_ci_check() {
+        let groups = catalog();
+        let nudge = groups
+            .iter()
+            .flat_map(|group| &group.capabilities)
+            .find(|cap| cap.capability == "nudges")
+            .expect("nudge capability");
+
+        assert_eq!(nudge.command, "mari nudge <list|add|remove|check>");
+        assert_eq!(nudge.status, "implemented");
     }
 }
