@@ -93,10 +93,20 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
         return Ok(Vec::new());
     }
     let cfg = config::resolve(Some(&workspace::work_root()));
-    // The unified KV cache is partitioned across `n_seq_max` sequences, so the
-    // per-sequence slot is n_ctx / seq_cap. Keeping seq_cap modest guarantees
-    // each sequence gets at least PER_SEQ_CAP cells (16 * 1024 = 16384 = n_ctx).
-    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(16) as usize).clamp(1, 16);
+    // Memory is bounded by the per-decode token budget, NOT the batch size:
+    // llama.cpp's attention compute buffer scales with n_ubatch², so a large
+    // budget is what blows up RAM (16384 tokens ≈ multiple GB). We fix the
+    // budget (n_ctx = n_ubatch = TOKEN_BUDGET) and pick seq_cap so the unified
+    // KV cache — split across n_seq_max sequences — still leaves each sequence
+    // a full PER_SEQ_CAP-cell slot (TOKEN_BUDGET / PER_SEQ_CAP).
+    const PER_SEQ_CAP: usize = 1024;
+    // 2048-token decodes: the attention compute buffer is O(TOKEN_BUDGET²), so
+    // this keeps peak RSS ~1.5 GB (a 4096 budget peaked ~3.3 GB). Two 1024-token
+    // chunks pack per decode.
+    const TOKEN_BUDGET: usize = 2048;
+    let max_seqs = (TOKEN_BUDGET / PER_SEQ_CAP).max(1);
+    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(max_seqs as u64) as usize)
+        .clamp(1, max_seqs);
 
     crate::models::quiet_llama_logs();
     let path = ensure_model()?;
@@ -109,10 +119,9 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
     let model = LlamaModel::load_from_file(&backend, &path, &model_params)
         .map_err(|e| anyhow!("failed to load {MODEL_FILE}: {e}"))?;
 
-    // Pooled embeddings need the whole batch in one ubatch; budget the
-    // token count so every packed group fits a single decode.
-    const PER_SEQ_CAP: usize = 1024;
-    let token_budget = PER_SEQ_CAP * seq_cap;
+    // Pooled embeddings need each sequence wholly within one ubatch; the fixed
+    // TOKEN_BUDGET holds a full packed group and caps the compute buffer.
+    let token_budget = TOKEN_BUDGET;
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(std::num::NonZeroU32::new(token_budget as u32))
         .with_n_batch(token_budget as u32)
