@@ -321,8 +321,8 @@ pub fn run_over(paths: &[String], s: &DetectorSettings) -> Vec<FileResult> {
 
 pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     let s = settings(args.no_config, args.style.as_deref());
-    if args.models || args.slop_spans {
-        eprintln!("note: local ML tier is not available in this build (--models ignored)");
+    if args.slop_spans {
+        eprintln!("note: zero-shot slop-span extraction is not available in this build (--slop-spans ignored)");
     }
     let mut results: Vec<FileResult> = if args.stdin {
         use std::io::Read;
@@ -348,6 +348,22 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     }
     results.sort_by(|a, b| a.path.cmp(&b.path));
 
+    // Machine-likelihood blend (§12 step 5): compute per-file only when the
+    // model tier is requested with the score. One model load reused per file.
+    let machine: Vec<Option<f64>> = if args.models && args.score {
+        results
+            .iter()
+            .map(|r| super::super::attn::machine_likelihood(&r.text))
+            .collect()
+    } else {
+        if args.models && !args.score {
+            eprintln!(
+                "note: --models augments --score; add --score to see the machine-likelihood blend"
+            );
+        }
+        vec![None; results.len()]
+    };
+
     let has_error = results
         .iter()
         .flat_map(|r| &r.findings)
@@ -358,14 +374,14 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
         .any(|f| f.severity >= Severity::Warn);
 
     if args.json {
-        render::render_json(&results, args.score);
+        render::render_json(&results, args.score, &machine);
     } else if args.summary {
         render::render_summary(&results);
     } else {
         render::render_human(&results, args.quiet);
         if args.score {
-            for r in &results {
-                let sc = score::compute(&r.text, &r.findings, None);
+            for (i, r) in results.iter().enumerate() {
+                let sc = score::compute(&r.text, &r.findings, machine.get(i).copied().flatten());
                 render::render_score(&r.path, &sc);
             }
         }
@@ -384,7 +400,7 @@ pub fn audit(args: &[String], json: bool) -> Result<i32> {
     let s = settings(false, None);
     let results = run_over(args, &s);
     if json {
-        render::render_json(&results, false);
+        render::render_json(&results, false, &[]);
     } else {
         render::render_audit(&results);
     }

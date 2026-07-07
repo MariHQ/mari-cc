@@ -59,17 +59,19 @@ pub fn render_human(results: &[FileResult], quiet: bool) {
     }
 }
 
-pub fn render_json(results: &[FileResult], with_score: bool) {
+pub fn render_json(results: &[FileResult], with_score: bool, machine: &[Option<f64>]) {
     let files: Vec<serde_json::Value> = results
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
             let mut v = serde_json::json!({
                 "path": r.path,
                 "words": r.word_count,
                 "findings": r.findings,
             });
             if with_score {
-                let sc = super::score::compute(&r.text, &r.findings, None);
+                let m = machine.get(i).copied().flatten();
+                let sc = super::score::compute(&r.text, &r.findings, m);
                 v["score"] = serde_json::to_value(&sc).unwrap();
             }
             v

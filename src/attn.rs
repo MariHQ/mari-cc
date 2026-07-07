@@ -649,9 +649,134 @@ pub fn line_of_offset(text: &str, offset: usize) -> usize {
         + 1
 }
 
+/// Machine-likelihood `m ∈ [0,1]` for the slop score's model blend (SPEC §12
+/// step 5 / §17 Tier 1). Reuses the local attention model to compute the
+/// document's mean per-token cross-entropy (log-perplexity) and maps it: text
+/// the model finds highly predictable (low perplexity) reads more
+/// machine-generated → higher `m`. This is an explainable *signal*, never an
+/// assertion that text is AI-written (§13.4). Returns None (loudly) when the
+/// model is unavailable.
+/// Map mean bits/token to `m ∈ [0,1]`: human technical prose sits around
+/// 3.5–5.5 bits/token; heavily templated text is lower (more predictable →
+/// more machine-like). Logistic centered at 4.5 bits.
+fn squash_bits_to_likelihood(bits: f64) -> f64 {
+    (1.0 / (1.0 + ((bits - 4.5) * 1.1).exp())).clamp(0.0, 1.0)
+}
+
+pub fn machine_likelihood(text: &str) -> Option<f64> {
+    match perplexity_bits(text) {
+        Ok(Some(bits)) => Some(squash_bits_to_likelihood(bits)),
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!("note: machine-likelihood unavailable ({e:#})");
+            None
+        }
+    }
+}
+
+/// Mean cross-entropy in bits/token over the document, via the local model's
+/// next-token logits. None when the text is too short to score.
+fn perplexity_bits(text: &str) -> Result<Option<f64>> {
+    const MAX_TOKENS: usize = 1024;
+    let model_path = model_file()?;
+    let gpu_layers = config::resolve(Some(&workspace::work_root()))["attention"]["gpu_layers"]
+        .as_i64()
+        .unwrap_or(999) as i32;
+    unsafe {
+        ll::llama_backend_init();
+        let mut mparams = ll::llama_model_default_params();
+        mparams.n_gpu_layers = gpu_layers;
+        let cpath = CString::new(model_path.to_string_lossy().as_bytes())?;
+        let model = ll::llama_model_load_from_file(cpath.as_ptr(), mparams);
+        if model.is_null() {
+            return Err(anyhow!("failed to load attention model for perplexity"));
+        }
+        let vocab = ll::llama_model_get_vocab(model);
+        let n_vocab = ll::llama_vocab_n_tokens(vocab) as usize;
+        let tokens = tokenize(vocab, text)?.tokens;
+        if tokens.len() < 8 {
+            ll::llama_model_free(model);
+            return Ok(None);
+        }
+        let tokens: Vec<ll::llama_token> = tokens.into_iter().take(MAX_TOKENS).collect();
+        let n = tokens.len();
+
+        let mut cparams = ll::llama_context_default_params();
+        cparams.n_ctx = (n + 8) as u32;
+        cparams.n_batch = n as u32;
+        cparams.n_ubatch = n as u32;
+        let lctx = ll::llama_init_from_model(model, cparams);
+        if lctx.is_null() {
+            ll::llama_model_free(model);
+            return Err(anyhow!("failed to create perplexity context"));
+        }
+
+        // Decode the whole sequence, requesting logits at every position.
+        let batch = ll::llama_batch_init(n as i32, 0, 1);
+        for (i, &tok) in tokens.iter().enumerate() {
+            *batch.token.add(i) = tok;
+            *batch.pos.add(i) = i as i32;
+            *batch.n_seq_id.add(i) = 1;
+            *(*batch.seq_id.add(i)).add(0) = 0;
+            *batch.logits.add(i) = 1;
+        }
+        let mut b = batch;
+        b.n_tokens = n as i32;
+        let rc = ll::llama_decode(lctx, b);
+        if rc != 0 {
+            ll::llama_batch_free(batch);
+            ll::llama_free(lctx);
+            ll::llama_model_free(model);
+            return Err(anyhow!("perplexity decode failed (rc={rc})"));
+        }
+
+        // Cross-entropy of the actual next token given each position's logits.
+        let mut total_bits = 0.0f64;
+        let mut counted = 0usize;
+        for i in 0..n - 1 {
+            let logits = ll::llama_get_logits_ith(lctx, i as i32);
+            if logits.is_null() {
+                continue;
+            }
+            let slice = std::slice::from_raw_parts(logits, n_vocab);
+            // log-softmax at the target token, numerically stable.
+            let max = slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0f64;
+            for &l in slice {
+                sum += ((l - max) as f64).exp();
+            }
+            let target = tokens[i + 1] as usize;
+            if target >= n_vocab {
+                continue;
+            }
+            let log_p = (slice[target] - max) as f64 - sum.ln();
+            total_bits += -log_p / std::f64::consts::LN_2;
+            counted += 1;
+        }
+        ll::llama_batch_free(batch);
+        ll::llama_free(lctx);
+        ll::llama_model_free(model);
+        if counted == 0 {
+            return Ok(None);
+        }
+        Ok(Some(total_bits / counted as f64))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn machine_likelihood_squash_is_monotone_and_bounded() {
+        // Lower perplexity (more predictable) → higher machine-likelihood.
+        let low = squash_bits_to_likelihood(2.0);
+        let mid = squash_bits_to_likelihood(4.5);
+        let high = squash_bits_to_likelihood(8.0);
+        assert!(low > mid && mid > high);
+        assert!((0.0..=1.0).contains(&low) && (0.0..=1.0).contains(&high));
+        assert!((mid - 0.5).abs() < 1e-9); // centered at 4.5 bits
+    }
 
     #[test]
     fn sink_norm_masks_outlier_columns() {
