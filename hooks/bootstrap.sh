@@ -1,24 +1,35 @@
 #!/usr/bin/env bash
-# SessionStart hook: ensure the `mari` binary the plugin wraps is installed.
-# One-time — once `mari` is present this exits immediately. Never breaks the
-# session: it always exits 0, even on failure.
+# SessionStart hook: keep the `mari` binary the plugin wraps installed and in
+# sync with the plugin version. Installs it when missing, and re-installs when
+# the plugin has been updated to a newer version than the binary — so updating
+# the plugin in Claude Code (`/plugin marketplace update mari`) also updates the
+# binary on the next session. Never breaks the session: always exits 0.
 {
-  command -v mari >/dev/null 2>&1 && exit 0
-
-  # Prebuilt binary is macOS arm64. On anything else, leave it to the user to
-  # `cargo install --git https://github.com/MariHQ/mari-cc --locked`.
+  # Prebuilt binary is macOS arm64; other platforms build from source.
   [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ] || exit 0
 
   BINDIR="$HOME/.local/bin"
-  [ -x "$BINDIR/mari" ] && exit 0   # already installed, just not on PATH yet
+  MARI="$(command -v mari 2>/dev/null || true)"
+  [ -n "$MARI" ] || { [ -x "$BINDIR/mari" ] && MARI="$BINDIR/mari"; }
 
-  url="https://github.com/MariHQ/mari-cc/releases/latest/download/mari-macos-arm64.gz"
+  # Version the plugin expects (from its manifest) vs the installed binary's.
+  want="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+          "${CLAUDE_PLUGIN_ROOT:-}/.claude-plugin/plugin.json" 2>/dev/null | head -1)"
+  have=""
+  [ -n "$MARI" ] && have="$("$MARI" --version 2>/dev/null | awk '{print $2}')"
+
+  if [ -n "$MARI" ]; then
+    # Installed. Update only on a definite version mismatch (avoid re-download loops
+    # when either version can't be read).
+    [ -z "$want" ] || [ -z "$have" ] || [ "$have" = "$want" ] && exit 0
+  fi
+
   tmp="$(mktemp -d)" || exit 0
+  url="https://github.com/MariHQ/mari-cc/releases/latest/download/mari-macos-arm64.gz"
   if curl -fsSL "$url" -o "$tmp/m.gz" 2>/dev/null && gunzip -c "$tmp/m.gz" > "$tmp/mari" 2>/dev/null; then
     mkdir -p "$BINDIR"
     install -m 0755 "$tmp/mari" "$BINDIR/mari" 2>/dev/null || true
     xattr -dr com.apple.quarantine "$BINDIR/mari" 2>/dev/null || true
-    # Put ~/.local/bin on PATH for future shells if it isn't already.
     case ":$PATH:" in
       *":$BINDIR:"*) ;;
       *)
@@ -29,7 +40,11 @@
         done
         ;;
     esac
-    echo "Installed mari → $BINDIR/mari (run 'mari sync' in a repo to index it)"
+    if [ -n "$have" ] && [ -n "$want" ]; then
+      echo "Updated mari $have → $want"
+    else
+      echo "Installed mari → $BINDIR/mari"
+    fi
   fi
   rm -rf "$tmp"
 } 2>/dev/null
