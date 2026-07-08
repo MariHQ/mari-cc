@@ -555,6 +555,68 @@ pub fn is_text_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Source-code file types. These are NOT indexed by default — documents only —
+/// and are pulled in only when code indexing is opted in (`mari sync --code`
+/// or `localfiles.include_code = true`).
+pub fn is_code_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "mjs"
+                    | "cjs"
+                    | "py"
+                    | "pyi"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "kts"
+                    | "scala"
+                    | "sc"
+                    | "c"
+                    | "h"
+                    | "cc"
+                    | "cpp"
+                    | "cxx"
+                    | "hpp"
+                    | "hh"
+                    | "cs"
+                    | "rb"
+                    | "php"
+                    | "swift"
+                    | "mm"
+                    | "sh"
+                    | "bash"
+                    | "zsh"
+                    | "fish"
+                    | "sql"
+                    | "pl"
+                    | "pm"
+                    | "lua"
+                    | "dart"
+                    | "ex"
+                    | "exs"
+                    | "erl"
+                    | "hrl"
+                    | "hs"
+                    | "clj"
+                    | "cljs"
+                    | "cljc"
+                    | "groovy"
+                    | "gradle"
+                    | "vue"
+                    | "svelte"
+                    | "proto"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub fn repo_rel(path: &Path) -> String {
     let root = workspace::work_root();
     path.strip_prefix(&root)

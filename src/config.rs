@@ -48,7 +48,7 @@ pub fn defaults() -> Value {
         "hubspot": { "include": [] },
         "microsoft": { "drives": [], "mail": [], "teams": [] },
         "linear": { "teams": [], "projects": [] },
-        "localfiles": { "paths": [] },
+        "localfiles": { "paths": [], "include_code": false },
         "ocr": { "backend": "text", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true, "accept_remote_code": false },
         "cloud": { "enabled": false, "backend": "s3", "bucket": "", "prefix": "", "region": "" },
         // Storage / read layer (§4.4/§8.8): the catalog IS a set of Iceberg

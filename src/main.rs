@@ -137,6 +137,9 @@ enum Cmd {
         rebuild: bool,
         #[arg(long)]
         since: Option<i64>,
+        /// Also embed source code (default: documents only)
+        #[arg(long)]
+        code: bool,
     },
     /// Hybrid search over the knowledge base
     Search {
@@ -553,7 +556,8 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             source,
             rebuild,
             since,
-        } => index::sync::run(source.as_deref(), rebuild, since),
+            code,
+        } => index::sync::run(source.as_deref(), rebuild, since, code),
         Cmd::Search {
             query,
             full,

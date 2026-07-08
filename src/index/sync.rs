@@ -11,12 +11,21 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i32> {
+pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>, code: bool) -> Result<i32> {
     if let Some(s) = source {
         if !known_source(s) {
             eprintln!("✗ unknown source: {s}");
             return Ok(2);
         }
+    }
+    // Documents only by default; code files are opted in via `--code` or the
+    // persistent `localfiles.include_code` config key.
+    let include_code = code
+        || config::resolve(Some(&workspace::work_root()))["localfiles"]["include_code"]
+            .as_bool()
+            .unwrap_or(false);
+    if include_code {
+        println!("including source code in this sync (localfiles.include_code / --code)");
     }
     // Concurrent-sync guard (§8.6): a second sync in this workspace exits
     // cleanly rather than racing the catalog.
@@ -52,7 +61,7 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
             "git" => {
                 let repos = git_paths();
                 let (seen, changed, deleted, chunks) =
-                    sync_paths(&conn, "git", repos.clone(), rebuild, cutoff)?;
+                    sync_paths(&conn, "git", repos.clone(), rebuild, cutoff, include_code)?;
                 // Commit history: one document per commit (§6.4).
                 let hist = crate::connectors::gitlog::sync(&conn, &repos, rebuild)?;
                 summary.updated += changed + hist.changed;
@@ -76,7 +85,7 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
                     continue;
                 }
                 let (seen, changed, deleted, chunks) =
-                    sync_paths(&conn, "localfiles", paths, rebuild, cutoff)?;
+                    sync_paths(&conn, "localfiles", paths, rebuild, cutoff, include_code)?;
                 summary.updated += changed;
                 summary.removed += deleted;
                 summary.chunks_embedded += chunks;
@@ -353,6 +362,7 @@ fn sync_paths(
     roots: Vec<PathBuf>,
     rebuild: bool,
     cutoff: Option<SystemTime>,
+    include_code: bool,
 ) -> Result<(usize, usize, usize, usize)> {
     if rebuild && cutoff.is_none() {
         conn.execute("DELETE FROM embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE doc_id IN (SELECT doc_id FROM documents WHERE source_id = ?1))", [source_id])?;
@@ -371,7 +381,7 @@ fn sync_paths(
         )?;
         conn.execute("DELETE FROM documents WHERE source_id = ?1", [source_id])?;
     }
-    let files = collect_files(roots, source_id == "localfiles");
+    let files = collect_files(roots, source_id == "localfiles", include_code);
     let eligible_files = eligible_files(&files, cutoff);
     let current_external_ids = files
         .iter()
@@ -464,10 +474,13 @@ fn is_pdf(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_files(roots: Vec<PathBuf>, include_pdf: bool) -> Vec<PathBuf> {
-    // localfiles also carries PDFs and Office formats (§6.12/§8.5).
+fn collect_files(roots: Vec<PathBuf>, include_pdf: bool, include_code: bool) -> Vec<PathBuf> {
+    // Documents only by default. localfiles also carries PDFs and Office formats
+    // (§6.12/§8.5); source code is pulled in only when opted in.
     let keep = |p: &Path| {
-        is_text_path(p) || (include_pdf && (is_pdf(p) || crate::office::is_office_path(p)))
+        is_text_path(p)
+            || (include_code && crate::index::is_code_path(p))
+            || (include_pdf && (is_pdf(p) || crate::office::is_office_path(p)))
     };
     let mut out = Vec::new();
     for root in roots {
