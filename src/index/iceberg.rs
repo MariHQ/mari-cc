@@ -28,7 +28,10 @@ pub fn warehouse_uri(global: bool) -> String {
     let cfg = config::resolve(Some(&workspace::work_root()));
     let backend = cfg["storage"]["backend"].as_str().unwrap_or("local");
     if backend == "s3" {
-        let base = cfg["storage"]["path"].as_str().unwrap_or("").trim_end_matches('/');
+        let base = cfg["storage"]["path"]
+            .as_str()
+            .unwrap_or("")
+            .trim_end_matches('/');
         let scope: String = if global {
             "_global".to_string()
         } else {
@@ -36,7 +39,9 @@ pub fn warehouse_uri(global: bool) -> String {
         };
         return format!("{base}/{scope}");
     }
-    local_warehouse(&index::catalog_path(global)).to_string_lossy().to_string()
+    local_warehouse(&index::catalog_path(global))
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Local warehouse dir that sits beside a catalog file (`…/catalog.duckdb` →
@@ -82,7 +87,10 @@ fn is_remote(uri: &str) -> bool {
 /// the same Iceberg metadata/Parquet pages are served locally.
 fn cache_dir() -> PathBuf {
     let cfg = config::resolve(Some(&workspace::work_root()));
-    match cfg["storage"]["cache_dir"].as_str().filter(|s| !s.is_empty()) {
+    match cfg["storage"]["cache_dir"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
         Some(dir) => PathBuf::from(dir),
         None => config::mari_home().join("cache").join("httpfs"),
     }
@@ -189,7 +197,11 @@ pub fn open_read(uri: &str) -> Result<Option<Connection>> {
     }
     let conn = Connection::open_in_memory()?;
     load_extensions(&conn, &read_uri)?;
-    let moved_arg = if moved { ", allow_moved_paths = true" } else { "" };
+    let moved_arg = if moved {
+        ", allow_moved_paths = true"
+    } else {
+        ""
+    };
     for table in index::CATALOG_TABLES {
         // A table may be absent if it was never published (e.g. a fresh catalog
         // that only wrote schema_meta). Present tables become views; missing ones
@@ -288,7 +300,10 @@ pub fn upload_vectors_if_s3(global: bool) -> Result<()> {
     let base = local.to_string_lossy().to_string();
     let wh = wh.trim_end_matches('/');
     for uri in local_store.list_uris(&base)? {
-        let rel = uri.strip_prefix(&base).unwrap_or(&uri).trim_start_matches('/');
+        let rel = uri
+            .strip_prefix(&base)
+            .unwrap_or(&uri)
+            .trim_start_matches('/');
         let remote_uri = format!("{wh}/vectors.lance/{rel}");
         // Idempotent: already-uploaded (immutable) files are skipped.
         remote.put_if_absent(&remote_uri, local_store.get(&uri)?.unwrap_or_default())?;
@@ -332,7 +347,9 @@ fn table_shape_ddl(schema_conn: &Connection, table: &str) -> Result<String> {
          WHERE table_name = ? ORDER BY ordinal_position",
     )?;
     let cols: Vec<(String, String)> = stmt
-        .query_map([table], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .query_map([table], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
         .collect::<std::result::Result<_, _>>()?;
     let body = cols
         .iter()

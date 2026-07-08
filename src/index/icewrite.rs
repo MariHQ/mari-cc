@@ -107,7 +107,12 @@ impl TableDef {
 
 macro_rules! f {
     ($id:expr, $name:literal, $ty:literal) => {
-        IceField { id: $id, name: $name, ty: $ty, required: false }
+        IceField {
+            id: $id,
+            name: $name,
+            ty: $ty,
+            required: false,
+        }
     };
 }
 
@@ -116,68 +121,142 @@ macro_rules! f {
 // staging layer. Types: TEXT→string, INTEGER→long, REAL→double (§8.7).
 const SCHEMA_META: &[IceField] = &[f!(1, "key", "string"), f!(2, "value", "string")];
 const SOURCES: &[IceField] = &[
-    f!(1, "source_id", "string"), f!(2, "provider", "string"), f!(3, "scope", "string"),
-    f!(4, "connector_version", "string"), f!(5, "auth_provider", "string"),
-    f!(6, "list_keys_json", "string"), f!(7, "config_hash", "string"),
-    f!(8, "last_sync_at", "string"), f!(9, "last_success_at", "string"), f!(10, "last_error", "string"),
+    f!(1, "source_id", "string"),
+    f!(2, "provider", "string"),
+    f!(3, "scope", "string"),
+    f!(4, "connector_version", "string"),
+    f!(5, "auth_provider", "string"),
+    f!(6, "list_keys_json", "string"),
+    f!(7, "config_hash", "string"),
+    f!(8, "last_sync_at", "string"),
+    f!(9, "last_success_at", "string"),
+    f!(10, "last_error", "string"),
 ];
 const DOCUMENTS: &[IceField] = &[
-    f!(1, "doc_id", "string"), f!(2, "source_id", "string"), f!(3, "external_id", "string"),
-    f!(4, "canonical_ref", "string"), f!(5, "title", "string"), f!(6, "url", "string"),
-    f!(7, "path", "string"), f!(8, "mime_type", "string"), f!(9, "kind", "string"),
-    f!(10, "author_id", "string"), f!(11, "author_name", "string"), f!(12, "created_at", "string"),
-    f!(13, "updated_at", "string"), f!(14, "observed_at", "string"), f!(15, "version", "string"),
-    f!(16, "content_sha256", "string"), f!(17, "body", "string"), f!(18, "metadata_json", "string"),
+    f!(1, "doc_id", "string"),
+    f!(2, "source_id", "string"),
+    f!(3, "external_id", "string"),
+    f!(4, "canonical_ref", "string"),
+    f!(5, "title", "string"),
+    f!(6, "url", "string"),
+    f!(7, "path", "string"),
+    f!(8, "mime_type", "string"),
+    f!(9, "kind", "string"),
+    f!(10, "author_id", "string"),
+    f!(11, "author_name", "string"),
+    f!(12, "created_at", "string"),
+    f!(13, "updated_at", "string"),
+    f!(14, "observed_at", "string"),
+    f!(15, "version", "string"),
+    f!(16, "content_sha256", "string"),
+    f!(17, "body", "string"),
+    f!(18, "metadata_json", "string"),
 ];
 const CHUNKS: &[IceField] = &[
-    f!(1, "chunk_id", "string"), f!(2, "doc_id", "string"), f!(3, "chunk_index", "long"),
-    f!(4, "heading_path", "string"), f!(5, "section_anchor", "string"), f!(6, "start_byte", "long"),
-    f!(7, "end_byte", "long"), f!(8, "start_line", "long"), f!(9, "end_line", "long"),
-    f!(10, "token_count", "long"), f!(11, "text", "string"), f!(12, "text_sha256", "string"),
+    f!(1, "chunk_id", "string"),
+    f!(2, "doc_id", "string"),
+    f!(3, "chunk_index", "long"),
+    f!(4, "heading_path", "string"),
+    f!(5, "section_anchor", "string"),
+    f!(6, "start_byte", "long"),
+    f!(7, "end_byte", "long"),
+    f!(8, "start_line", "long"),
+    f!(9, "end_line", "long"),
+    f!(10, "token_count", "long"),
+    f!(11, "text", "string"),
+    f!(12, "text_sha256", "string"),
     f!(13, "metadata_json", "string"),
 ];
 const EMBEDDINGS: &[IceField] = &[
-    f!(1, "chunk_id", "string"), f!(2, "model_id", "string"), f!(3, "dims", "long"),
-    f!(4, "vector_json", "string"), f!(5, "norm", "double"), f!(6, "embedded_at", "string"),
+    f!(1, "chunk_id", "string"),
+    f!(2, "model_id", "string"),
+    f!(3, "dims", "long"),
+    f!(4, "vector_json", "string"),
+    f!(5, "norm", "double"),
+    f!(6, "embedded_at", "string"),
 ];
 const SPANS: &[IceField] = &[
-    f!(1, "span_id", "string"), f!(2, "doc_id", "string"), f!(3, "chunk_id", "string"),
-    f!(4, "span_kind", "string"), f!(5, "label", "string"), f!(6, "start_byte", "long"),
-    f!(7, "end_byte", "long"), f!(8, "start_line", "long"), f!(9, "end_line", "long"),
-    f!(10, "stable_hash", "string"), f!(11, "metadata_json", "string"),
+    f!(1, "span_id", "string"),
+    f!(2, "doc_id", "string"),
+    f!(3, "chunk_id", "string"),
+    f!(4, "span_kind", "string"),
+    f!(5, "label", "string"),
+    f!(6, "start_byte", "long"),
+    f!(7, "end_byte", "long"),
+    f!(8, "start_line", "long"),
+    f!(9, "end_line", "long"),
+    f!(10, "stable_hash", "string"),
+    f!(11, "metadata_json", "string"),
 ];
 const SYMBOLS: &[IceField] = &[
-    f!(1, "symbol_id", "string"), f!(2, "doc_id", "string"), f!(3, "span_id", "string"),
-    f!(4, "language", "string"), f!(5, "symbol_kind", "string"), f!(6, "name", "string"),
-    f!(7, "qualified_name", "string"), f!(8, "signature", "string"), f!(9, "start_byte", "long"),
-    f!(10, "end_byte", "long"), f!(11, "start_line", "long"), f!(12, "end_line", "long"),
+    f!(1, "symbol_id", "string"),
+    f!(2, "doc_id", "string"),
+    f!(3, "span_id", "string"),
+    f!(4, "language", "string"),
+    f!(5, "symbol_kind", "string"),
+    f!(6, "name", "string"),
+    f!(7, "qualified_name", "string"),
+    f!(8, "signature", "string"),
+    f!(9, "start_byte", "long"),
+    f!(10, "end_byte", "long"),
+    f!(11, "start_line", "long"),
+    f!(12, "end_line", "long"),
     f!(13, "metadata_json", "string"),
 ];
 const EDGES: &[IceField] = &[
-    f!(1, "edge_id", "string"), f!(2, "from_type", "string"), f!(3, "from_id", "string"),
-    f!(4, "to_type", "string"), f!(5, "to_id", "string"), f!(6, "rel", "string"),
-    f!(7, "confidence", "double"), f!(8, "evidence_span_id", "string"), f!(9, "created_by", "string"),
-    f!(10, "created_at", "string"), f!(11, "metadata_json", "string"),
+    f!(1, "edge_id", "string"),
+    f!(2, "from_type", "string"),
+    f!(3, "from_id", "string"),
+    f!(4, "to_type", "string"),
+    f!(5, "to_id", "string"),
+    f!(6, "rel", "string"),
+    f!(7, "confidence", "double"),
+    f!(8, "evidence_span_id", "string"),
+    f!(9, "created_by", "string"),
+    f!(10, "created_at", "string"),
+    f!(11, "metadata_json", "string"),
 ];
 const LINEAGE_EDGES: &[IceField] = &[
-    f!(1, "lineage_id", "string"), f!(2, "from_span_id", "string"), f!(3, "to_span_id", "string"),
-    f!(4, "rel", "string"), f!(5, "status", "string"), f!(6, "confidence", "double"),
-    f!(7, "confirmed_by", "string"), f!(8, "confirmed_at", "string"), f!(9, "last_checked_at", "string"),
+    f!(1, "lineage_id", "string"),
+    f!(2, "from_span_id", "string"),
+    f!(3, "to_span_id", "string"),
+    f!(4, "rel", "string"),
+    f!(5, "status", "string"),
+    f!(6, "confidence", "double"),
+    f!(7, "confirmed_by", "string"),
+    f!(8, "confirmed_at", "string"),
+    f!(9, "last_checked_at", "string"),
     f!(10, "metadata_json", "string"),
 ];
 const FACTS: &[IceField] = &[
-    f!(1, "fact_id", "string"), f!(2, "claim", "string"), f!(3, "source_ref", "string"),
-    f!(4, "source_span_id", "string"), f!(5, "status", "string"), f!(6, "created_by", "string"),
-    f!(7, "created_at", "string"), f!(8, "metadata_json", "string"),
+    f!(1, "fact_id", "string"),
+    f!(2, "claim", "string"),
+    f!(3, "source_ref", "string"),
+    f!(4, "source_span_id", "string"),
+    f!(5, "status", "string"),
+    f!(6, "created_by", "string"),
+    f!(7, "created_at", "string"),
+    f!(8, "metadata_json", "string"),
 ];
 const TAGS: &[IceField] = &[
-    f!(1, "target_type", "string"), f!(2, "target_id", "string"), f!(3, "status", "string"),
-    f!(4, "note", "string"), f!(5, "by", "string"), f!(6, "at", "string"), f!(7, "metadata_json", "string"),
+    f!(1, "target_type", "string"),
+    f!(2, "target_id", "string"),
+    f!(3, "status", "string"),
+    f!(4, "note", "string"),
+    f!(5, "by", "string"),
+    f!(6, "at", "string"),
+    f!(7, "metadata_json", "string"),
 ];
 const SYNC_EVENTS: &[IceField] = &[
-    f!(1, "event_id", "string"), f!(2, "source_id", "string"), f!(3, "started_at", "string"),
-    f!(4, "finished_at", "string"), f!(5, "status", "string"), f!(6, "docs_seen", "long"),
-    f!(7, "docs_changed", "long"), f!(8, "docs_deleted", "long"), f!(9, "error", "string"),
+    f!(1, "event_id", "string"),
+    f!(2, "source_id", "string"),
+    f!(3, "started_at", "string"),
+    f!(4, "finished_at", "string"),
+    f!(5, "status", "string"),
+    f!(6, "docs_seen", "long"),
+    f!(7, "docs_changed", "long"),
+    f!(8, "docs_deleted", "long"),
+    f!(9, "error", "string"),
     f!(10, "metadata_json", "string"),
 ];
 
@@ -186,7 +265,12 @@ const SYNC_EVENTS: &[IceField] = &[
 const P_NONE: &[PartField] = &[];
 macro_rules! pf {
     ($src:literal, $t:expr, $name:literal) => {
-        PartField { source: $src, transform: $t, name: $name, field_id: 1000 }
+        PartField {
+            source: $src,
+            transform: $t,
+            name: $name,
+            field_id: 1000,
+        }
     };
 }
 const P_DOCUMENTS: &[PartField] = &[pf!("source_id", Transform::Identity, "source_id")];
@@ -199,18 +283,90 @@ const P_SYNC: &[PartField] = &[pf!("started_at", Transform::Month, "started_at_m
 /// key, and partition spec (§8.7). `tags` has a composite key; all others a
 /// single id column.
 pub const CATALOG: &[TableDef] = &[
-    TableDef { name: "schema_meta", fields: SCHEMA_META, key: &["key"], partition: P_NONE, sort: &["key"] },
-    TableDef { name: "sources", fields: SOURCES, key: &["source_id"], partition: P_NONE, sort: &["source_id"] },
-    TableDef { name: "documents", fields: DOCUMENTS, key: &["doc_id"], partition: P_DOCUMENTS, sort: &["doc_id"] },
-    TableDef { name: "chunks", fields: CHUNKS, key: &["chunk_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "chunk_index"] },
-    TableDef { name: "embeddings", fields: EMBEDDINGS, key: &["chunk_id"], partition: P_NONE, sort: &["chunk_id"] },
-    TableDef { name: "spans", fields: SPANS, key: &["span_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "start_byte"] },
-    TableDef { name: "symbols", fields: SYMBOLS, key: &["symbol_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "qualified_name"] },
-    TableDef { name: "edges", fields: EDGES, key: &["edge_id"], partition: P_EDGES, sort: &["from_id", "rel"] },
-    TableDef { name: "lineage_edges", fields: LINEAGE_EDGES, key: &["lineage_id"], partition: P_NONE, sort: &["from_span_id"] },
-    TableDef { name: "facts", fields: FACTS, key: &["fact_id"], partition: P_NONE, sort: &["fact_id"] },
-    TableDef { name: "tags", fields: TAGS, key: &["target_type", "target_id"], partition: P_TAGS, sort: &["target_id"] },
-    TableDef { name: "sync_events", fields: SYNC_EVENTS, key: &["event_id"], partition: P_SYNC, sort: &["started_at"] },
+    TableDef {
+        name: "schema_meta",
+        fields: SCHEMA_META,
+        key: &["key"],
+        partition: P_NONE,
+        sort: &["key"],
+    },
+    TableDef {
+        name: "sources",
+        fields: SOURCES,
+        key: &["source_id"],
+        partition: P_NONE,
+        sort: &["source_id"],
+    },
+    TableDef {
+        name: "documents",
+        fields: DOCUMENTS,
+        key: &["doc_id"],
+        partition: P_DOCUMENTS,
+        sort: &["doc_id"],
+    },
+    TableDef {
+        name: "chunks",
+        fields: CHUNKS,
+        key: &["chunk_id"],
+        partition: P_DOC_BUCKET,
+        sort: &["doc_id", "chunk_index"],
+    },
+    TableDef {
+        name: "embeddings",
+        fields: EMBEDDINGS,
+        key: &["chunk_id"],
+        partition: P_NONE,
+        sort: &["chunk_id"],
+    },
+    TableDef {
+        name: "spans",
+        fields: SPANS,
+        key: &["span_id"],
+        partition: P_DOC_BUCKET,
+        sort: &["doc_id", "start_byte"],
+    },
+    TableDef {
+        name: "symbols",
+        fields: SYMBOLS,
+        key: &["symbol_id"],
+        partition: P_DOC_BUCKET,
+        sort: &["doc_id", "qualified_name"],
+    },
+    TableDef {
+        name: "edges",
+        fields: EDGES,
+        key: &["edge_id"],
+        partition: P_EDGES,
+        sort: &["from_id", "rel"],
+    },
+    TableDef {
+        name: "lineage_edges",
+        fields: LINEAGE_EDGES,
+        key: &["lineage_id"],
+        partition: P_NONE,
+        sort: &["from_span_id"],
+    },
+    TableDef {
+        name: "facts",
+        fields: FACTS,
+        key: &["fact_id"],
+        partition: P_NONE,
+        sort: &["fact_id"],
+    },
+    TableDef {
+        name: "tags",
+        fields: TAGS,
+        key: &["target_type", "target_id"],
+        partition: P_TAGS,
+        sort: &["target_id"],
+    },
+    TableDef {
+        name: "sync_events",
+        fields: SYNC_EVENTS,
+        key: &["event_id"],
+        partition: P_SYNC,
+        sort: &["started_at"],
+    },
 ];
 
 #[allow(dead_code)] // public lookup used by tests and the future compaction path
@@ -274,10 +430,18 @@ fn partition_groups(
         let mut key = String::new();
         for (pf, &ci) in part.iter().zip(&src_col) {
             let arr = batch.column(ci).as_any().downcast_ref::<StringArray>();
-            let src = arr.and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_string()) });
+            let src = arr.and_then(|a| {
+                if a.is_null(i) {
+                    None
+                } else {
+                    Some(a.value(i).to_string())
+                }
+            });
             let scalar = match pf.transform {
                 Transform::Identity => src.clone().map(PartScalar::Str),
-                Transform::Bucket => src.as_deref().map(|s| PartScalar::Int(bucket_of(s, bucket_n))),
+                Transform::Bucket => src
+                    .as_deref()
+                    .map(|s| PartScalar::Int(bucket_of(s, bucket_n))),
                 Transform::Month => src.as_deref().and_then(month_of).map(PartScalar::Int),
             };
             key.push_str(&match &scalar {
@@ -289,7 +453,10 @@ fn partition_groups(
         }
         groups
             .entry(key)
-            .or_insert_with(|| PartGroup { cells, rows: Vec::new() })
+            .or_insert_with(|| PartGroup {
+                cells,
+                rows: Vec::new(),
+            })
             .rows
             .push(i as u32);
     }
@@ -319,7 +486,11 @@ fn partition_avro_value(cells: &[(PartField, Option<PartScalar>)]) -> Av {
 fn partition_avro_fields(part: &[PartField]) -> String {
     part.iter()
         .map(|p| {
-            let ty = if p.transform == Transform::Identity { "string" } else { "int" };
+            let ty = if p.transform == Transform::Identity {
+                "string"
+            } else {
+                "int"
+            };
             format!(
                 r#"{{"name":"{}","type":["null","{ty}"],"default":null,"field-id":{}}}"#,
                 p.name, p.field_id
@@ -332,11 +503,19 @@ fn partition_avro_fields(part: &[PartField]) -> String {
 /// The metadata.json `partition-specs` entry (`spec-id` 1) for a partitioned
 /// table; `bucket[N]`/`identity`/`month` transforms over the source column's
 /// field-id.
-fn partition_spec_json(part: &[PartField], fields: &[IceField], bucket_n: u32) -> serde_json::Value {
+fn partition_spec_json(
+    part: &[PartField],
+    fields: &[IceField],
+    bucket_n: u32,
+) -> serde_json::Value {
     let pfields: Vec<serde_json::Value> = part
         .iter()
         .map(|p| {
-            let source_id = fields.iter().find(|f| f.name == p.source).map(|f| f.id).unwrap_or(1);
+            let source_id = fields
+                .iter()
+                .find(|f| f.name == p.source)
+                .map(|f| f.id)
+                .unwrap_or(1);
             let transform = match p.transform {
                 Transform::Identity => "identity".to_string(),
                 Transform::Bucket => format!("bucket[{bucket_n}]"),
@@ -512,8 +691,8 @@ fn manifest_bytes(
 struct ManifestRec {
     path: String,
     len: u64,
-    content: i32,   // 0 = data manifest, 1 = delete manifest
-    spec_id: i32,   // partition spec the manifest's files belong to
+    content: i32, // 0 = data manifest, 1 = delete manifest
+    spec_id: i32, // partition spec the manifest's files belong to
     seq: i64,
     snapshot_id: i64,
     added_files: i32,
@@ -671,7 +850,11 @@ fn sort_orders(sort: &[&str], fields: &[IceField]) -> (Vec<serde_json::Value>, i
     let sfields: Vec<serde_json::Value> = sort
         .iter()
         .map(|name| {
-            let id = fields.iter().find(|f| f.name == *name).map(|f| f.id).unwrap_or(1);
+            let id = fields
+                .iter()
+                .find(|f| f.name == *name)
+                .map(|f| f.id)
+                .unwrap_or(1);
             serde_json::json!({
                 "source-id": id, "transform": "identity",
                 "direction": "asc", "null-order": "nulls-first",
@@ -723,8 +906,7 @@ pub fn commit(
     let (prev_version, prev_meta) = load_current(store, &meta_dir)?;
     let version = prev_version + 1;
     let seq = version as i64;
-    let snapshot_id =
-        snapshot_id_from((now_ms as u64) ^ (version.wrapping_mul(0x100_0000_01b3)));
+    let snapshot_id = snapshot_id_from((now_ms as u64) ^ (version.wrapping_mul(0x100_0000_01b3)));
     let data_spec_id = if part.is_empty() { 0 } else { 1 };
 
     let mut new_manifests: Vec<ManifestRec> = Vec::new();
@@ -733,7 +915,15 @@ pub fn commit(
     // Data files, one per partition (§8.7), collected into one data manifest.
     if let Some(batch) = added {
         let files = write_partitioned_data(
-            store, &data_dir, fields, part, bucket_n, batch, seq, snapshot_id, "add",
+            store,
+            &data_dir,
+            fields,
+            part,
+            bucket_n,
+            batch,
+            seq,
+            snapshot_id,
+            "add",
         )?;
         if !files.is_empty() {
             let man_uri = format!("{meta_dir}/{snapshot_id:x}-m{mno}.avro");
@@ -802,7 +992,9 @@ pub fn commit(
         .and_then(|m| m["table-uuid"].as_str().map(str::to_string))
         .unwrap_or_else(|| uuid_like(snapshot_id));
     let last_col_id = fields.iter().map(|f| f.id).max().unwrap_or(1);
-    let parent = prev_meta.as_ref().and_then(|m| m["current-snapshot-id"].as_i64());
+    let parent = prev_meta
+        .as_ref()
+        .and_then(|m| m["current-snapshot-id"].as_i64());
     let mut snapshots = prev_meta
         .as_ref()
         .and_then(|m| m["snapshots"].as_array().cloned())
@@ -922,7 +1114,15 @@ pub fn rewrite_table(
 
     // Fresh per-partition data files with all live rows (no delete files).
     let files = write_partitioned_data(
-        store, &data_dir, fields, part, bucket_n, batch, seq, snapshot_id, "compact",
+        store,
+        &data_dir,
+        fields,
+        part,
+        bucket_n,
+        batch,
+        seq,
+        snapshot_id,
+        "compact",
     )?;
     let mut keep: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
 
@@ -1057,8 +1257,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let table = dir.path().join("documents");
         let fields = vec![
-            IceField { id: 1, name: "id", ty: "long", required: true },
-            IceField { id: 2, name: "name", ty: "string", required: false },
+            IceField {
+                id: 1,
+                name: "id",
+                ty: "long",
+                required: true,
+            },
+            IceField {
+                id: 2,
+                name: "name",
+                ty: "string",
+                required: false,
+            },
         ];
         let schema = arrow_schema(&fields);
         let batch = RecordBatch::try_new(
@@ -1110,8 +1320,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let table = dir.path().join("documents");
         let fields = vec![
-            IceField { id: 1, name: "id", ty: "long", required: true },
-            IceField { id: 2, name: "name", ty: "string", required: false },
+            IceField {
+                id: 1,
+                name: "id",
+                ty: "long",
+                required: true,
+            },
+            IceField {
+                id: 2,
+                name: "name",
+                ty: "string",
+                required: false,
+            },
         ];
         let schema = arrow_schema(&fields);
         let mk = |ids: Vec<i64>, names: Vec<&str>| {
@@ -1126,16 +1346,21 @@ mod tests {
         };
 
         // Snapshot 1: rows 1,2,3.
-        create_table(&table, &fields, &mk(vec![1, 2, 3], vec!["a", "b", "c"]), 1_700_000_000_000)
-            .unwrap();
+        create_table(
+            &table,
+            &fields,
+            &mk(vec![1, 2, 3], vec!["a", "b", "c"]),
+            1_700_000_000_000,
+        )
+        .unwrap();
         // Snapshot 2: append row 4.
         commit(
             &Store::Local,
             &table.to_string_lossy(),
             &fields,
             P_NONE,
-             &[],
-             16,
+            &[],
+            16,
             Some(&mk(vec![4], vec!["d"])),
             None,
             1_700_000_001_000,
@@ -1145,22 +1370,31 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         crate::index::iceberg::install_iceberg(&conn).unwrap();
         let uri = table.to_string_lossy().to_string();
-        assert_eq!(scan_count(&conn, &uri), 4, "append snapshot: 3 + 1 = 4 rows");
+        assert_eq!(
+            scan_count(&conn, &uri),
+            4,
+            "append snapshot: 3 + 1 = 4 rows"
+        );
 
         // Snapshot 3: equality-delete id = 2. Delete file carries just the key
         // column (id) with its Iceberg field-id.
-        let key = IceField { id: 1, name: "id", ty: "long", required: true };
+        let key = IceField {
+            id: 1,
+            name: "id",
+            ty: "long",
+            required: true,
+        };
         let key_schema = arrow_schema(std::slice::from_ref(&key));
-        let del = RecordBatch::try_new(key_schema, vec![Arc::new(Int64Array::from(vec![2i64]))])
-            .unwrap();
+        let del =
+            RecordBatch::try_new(key_schema, vec![Arc::new(Int64Array::from(vec![2i64]))]).unwrap();
         let keys = [key.clone()];
         commit(
             &Store::Local,
             &table.to_string_lossy(),
             &fields,
             P_NONE,
-             &[],
-             16,
+            &[],
+            16,
             None,
             Some((&keys[..], &del)),
             1_700_000_002_000,

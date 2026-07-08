@@ -44,8 +44,8 @@ impl Store {
             if bucket.is_empty() {
                 return Err(anyhow!("invalid s3 warehouse uri: {warehouse}"));
             }
-            let mut builder = object_store::aws::AmazonS3Builder::from_env()
-                .with_bucket_name(&bucket);
+            let mut builder =
+                object_store::aws::AmazonS3Builder::from_env().with_bucket_name(&bucket);
             if !region.is_empty() {
                 builder = builder.with_region(region);
             }
@@ -75,7 +75,9 @@ impl Store {
                 .map(|t| t.to_string())
                 .collect(),
             Store::S3 { bucket, client } => {
-                let prefix = warehouse.strip_prefix(&format!("s3://{bucket}/")).unwrap_or("");
+                let prefix = warehouse
+                    .strip_prefix(&format!("s3://{bucket}/"))
+                    .unwrap_or("");
                 let root = object_store::path::Path::from(prefix);
                 let keys: Vec<String> = runtime().block_on(async {
                     let mut out = Vec::new();
@@ -107,28 +109,30 @@ impl Store {
         let Store::S3 { bucket, client } = self else {
             return Ok(());
         };
-        let prefix = warehouse.strip_prefix(&format!("s3://{bucket}/")).unwrap_or("");
+        let prefix = warehouse
+            .strip_prefix(&format!("s3://{bucket}/"))
+            .unwrap_or("");
         let root = object_store::path::Path::from(prefix);
-        runtime().block_on(async {
-            let mut stream = client.list(Some(&root));
-            let mut gets = Vec::new();
-            while let Some(meta) = stream.next().await {
-                let meta = meta?;
-                let key = meta.location.to_string();
-                let rel = key
-                    .strip_prefix(&format!("{prefix}/"))
-                    .unwrap_or(&key)
-                    .to_string();
-                let local = format!("{local_dir}/{rel}");
-                let always = rel.ends_with("version-hint.text");
-                if !always && Path::new(&local).exists() {
-                    continue;
+        runtime()
+            .block_on(async {
+                let mut stream = client.list(Some(&root));
+                let mut gets = Vec::new();
+                while let Some(meta) = stream.next().await {
+                    let meta = meta?;
+                    let key = meta.location.to_string();
+                    let rel = key
+                        .strip_prefix(&format!("{prefix}/"))
+                        .unwrap_or(&key)
+                        .to_string();
+                    let local = format!("{local_dir}/{rel}");
+                    let always = rel.ends_with("version-hint.text");
+                    if !always && Path::new(&local).exists() {
+                        continue;
+                    }
+                    gets.push((meta.location, local));
                 }
-                gets.push((meta.location, local));
-            }
-            // Fetch in parallel — the metadata chain is otherwise latency-bound.
-            let fetches = gets.into_iter().map(|(loc, local)| {
-                async move {
+                // Fetch in parallel — the metadata chain is otherwise latency-bound.
+                let fetches = gets.into_iter().map(|(loc, local)| async move {
                     let bytes = client.get(&loc).await?.bytes().await?;
                     if let Some(p) = Path::new(&local).parent() {
                         std::fs::create_dir_all(p).ok();
@@ -136,12 +140,11 @@ impl Store {
                     std::fs::write(&local, &bytes)
                         .with_context(|| format!("writing mirror file {local}"))?;
                     Ok::<(), anyhow::Error>(())
-                }
-            });
-            futures::future::try_join_all(fetches).await?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .with_context(|| format!("mirroring {warehouse} to {local_dir}"))
+                });
+                futures::future::try_join_all(fetches).await?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .with_context(|| format!("mirroring {warehouse} to {local_dir}"))
     }
 
     /// Full URIs of every object/file under `prefix_uri` (a table dir). Used by
@@ -167,7 +170,9 @@ impl Store {
                 Ok(out)
             }
             Store::S3 { bucket, client } => {
-                let prefix = prefix_uri.strip_prefix(&format!("s3://{bucket}/")).unwrap_or("");
+                let prefix = prefix_uri
+                    .strip_prefix(&format!("s3://{bucket}/"))
+                    .unwrap_or("");
                 let root = object_store::path::Path::from(prefix);
                 let uris = runtime().block_on(async {
                     let mut out = Vec::new();
@@ -185,9 +190,7 @@ impl Store {
     /// Delete the object/file at `uri`.
     pub fn delete(&self, uri: &str) -> Result<()> {
         match self {
-            Store::Local => {
-                std::fs::remove_file(uri).with_context(|| format!("deleting {uri}"))
-            }
+            Store::Local => std::fs::remove_file(uri).with_context(|| format!("deleting {uri}")),
             Store::S3 { bucket, client } => {
                 let path = Self::s3_key(bucket, uri)?;
                 runtime()
@@ -221,7 +224,8 @@ impl Store {
             Store::S3 { bucket, client } => {
                 let path = Self::s3_key(bucket, uri)?;
                 let payload: object_store::PutPayload = bytes.into();
-                runtime().block_on(client.put(&path, payload))
+                runtime()
+                    .block_on(client.put(&path, payload))
                     .with_context(|| format!("s3 put {uri}"))?;
                 Ok(())
             }
@@ -239,10 +243,15 @@ impl Store {
                 if let Some(parent) = p.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                match std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
+                match std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(p)
+                {
                     Ok(mut f) => {
                         use std::io::Write;
-                        f.write_all(&bytes).with_context(|| format!("writing {uri}"))?;
+                        f.write_all(&bytes)
+                            .with_context(|| format!("writing {uri}"))?;
                         Ok(true)
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
@@ -253,12 +262,17 @@ impl Store {
                 use object_store::{PutMode, PutOptions};
                 let path = Self::s3_key(bucket, uri)?;
                 let payload: object_store::PutPayload = bytes.into();
-                let opts = PutOptions { mode: PutMode::Create, ..Default::default() };
+                let opts = PutOptions {
+                    mode: PutMode::Create,
+                    ..Default::default()
+                };
                 let res = runtime().block_on(client.put_opts(&path, payload, opts));
                 match res {
                     Ok(_) => Ok(true),
                     Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
-                    Err(e) => Err(anyhow::Error::from(e)).with_context(|| format!("s3 create {uri}")),
+                    Err(e) => {
+                        Err(anyhow::Error::from(e)).with_context(|| format!("s3 create {uri}"))
+                    }
                 }
             }
         }
@@ -285,5 +299,4 @@ impl Store {
             }
         }
     }
-
 }

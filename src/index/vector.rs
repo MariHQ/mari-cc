@@ -110,7 +110,9 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
     // chunks pack per decode.
     const TOKEN_BUDGET: usize = 2048;
     let max_seqs = (TOKEN_BUDGET / PER_SEQ_CAP).max(1);
-    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(max_seqs as u64) as usize)
+    let seq_cap = (cfg["embedding"]["batch_size"]
+        .as_u64()
+        .unwrap_or(max_seqs as u64) as usize)
         .clamp(1, max_seqs);
 
     crate::models::quiet_llama_logs();

@@ -811,7 +811,10 @@ fn extract_catalog_candidates(
     ];
     paths.sort();
     paths.dedup();
-    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| index::warehouse_published_at(p)).collect();
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|p| index::warehouse_published_at(p))
+        .collect();
     if paths.is_empty() {
         return Ok(None);
     }

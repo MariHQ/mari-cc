@@ -127,9 +127,8 @@ pub fn hydrate(conn: &Connection, warehouse: &str) -> Result<()> {
 
 /// Names of base tables present in the staging connection.
 fn staging_tables(conn: &Connection) -> Result<std::collections::HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'")?;
     let names = stmt
         .query_map([], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok())
@@ -183,8 +182,14 @@ fn order_by(sort: &[&str]) -> String {
 
 /// Run `sql` and assemble the rows into an Arrow `RecordBatch` shaped by
 /// `fields`. Returns `None` when the query yields zero rows (nothing to write).
-fn query_to_batch(conn: &Connection, sql: &str, fields: &[IceField]) -> Result<Option<RecordBatch>> {
-    let mut stmt = conn.prepare(sql).with_context(|| format!("preparing diff query: {sql}"))?;
+fn query_to_batch(
+    conn: &Connection,
+    sql: &str,
+    fields: &[IceField],
+) -> Result<Option<RecordBatch>> {
+    let mut stmt = conn
+        .prepare(sql)
+        .with_context(|| format!("preparing diff query: {sql}"))?;
     let mut rows = stmt.query([])?;
 
     // Column-major builders, one per field.
@@ -302,7 +307,14 @@ pub fn compact(warehouse: &str, _retain: usize) -> Result<CompactStats> {
                 .unwrap_or_else(|| RecordBatch::new_empty(arrow_schema(def.fields)));
 
             match icewrite::rewrite_table(
-                &store, &table_uri, def.fields, def.partition, def.sort, bucket_n(), &batch, ts,
+                &store,
+                &table_uri,
+                def.fields,
+                def.partition,
+                def.sort,
+                bucket_n(),
+                &batch,
+                ts,
             ) {
                 Ok(keep) => {
                     let keep: std::collections::HashSet<String> = keep.into_iter().collect();
@@ -336,7 +348,13 @@ pub fn compact(warehouse: &str, _retain: usize) -> Result<CompactStats> {
     Ok(stats)
 }
 
-fn publish_table(conn: &Connection, store: &Store, warehouse: &str, def: &TableDef, ts: i64) -> Result<()> {
+fn publish_table(
+    conn: &Connection,
+    store: &Store,
+    warehouse: &str,
+    def: &TableDef,
+    ts: i64,
+) -> Result<()> {
     let loc = table_uri(warehouse, def.name);
     let hash = row_hash_expr(def.fields);
     let sel = cast_select(def.fields);
@@ -392,17 +410,28 @@ fn publish_table(conn: &Connection, store: &Store, warehouse: &str, def: &TableD
     // manifests forward) and we retry the same delta on top. Conflicts are rare.
     for _ in 0..16 {
         match icewrite::commit(
-            store, &loc, def.fields, def.partition, def.sort, bucket_n(),
-            added.as_ref(), del_arg, ts,
+            store,
+            &loc,
+            def.fields,
+            def.partition,
+            def.sort,
+            bucket_n(),
+            added.as_ref(),
+            del_arg,
+            ts,
         ) {
             Ok(()) => return Ok(()),
             Err(e) if icewrite::is_commit_conflict(&e) => continue,
             Err(e) => {
-                return Err(e).with_context(|| format!("committing iceberg snapshot for {}", def.name))
+                return Err(e)
+                    .with_context(|| format!("committing iceberg snapshot for {}", def.name))
             }
         }
     }
-    anyhow::bail!("iceberg commit for {} did not converge after retries", def.name);
+    anyhow::bail!(
+        "iceberg commit for {} did not converge after retries",
+        def.name
+    );
 }
 
 #[cfg(test)]
@@ -421,7 +450,7 @@ mod tests {
         let c = Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&c).unwrap();
         hydrate(&c, &wh).unwrap(); // empty warehouse → empty baselines
-        // Docs from two sources; chunks across several doc_ids (→ several buckets).
+                                   // Docs from two sources; chunks across several doc_ids (→ several buckets).
         c.execute_batch(
             "INSERT INTO documents VALUES \
              ('dA','git','a','git:a','A',NULL,'a','text/markdown','file',NULL,NULL,NULL,NULL,'t','1','h','b','{}'),\
@@ -437,28 +466,44 @@ mod tests {
         publish(&c, &wh).unwrap();
 
         // documents: identity(source_id) → one data file per source.
-        let doc_files = std::fs::read_dir(format!("{wh}/documents/data")).unwrap().count();
+        let doc_files = std::fs::read_dir(format!("{wh}/documents/data"))
+            .unwrap()
+            .count();
         assert_eq!(doc_files, 2, "documents split into git + slack partitions");
         // chunks: bucket(doc_id) over 4 distinct doc_ids → ≥2 partition files.
-        let chunk_files = std::fs::read_dir(format!("{wh}/chunks/data")).unwrap().count();
-        assert!(chunk_files >= 2, "chunks split across buckets (got {chunk_files})");
+        let chunk_files = std::fs::read_dir(format!("{wh}/chunks/data"))
+            .unwrap()
+            .count();
+        assert!(
+            chunk_files >= 2,
+            "chunks split across buckets (got {chunk_files})"
+        );
 
         let r = Connection::open_in_memory().unwrap();
         super::iceberg::install_iceberg(&r).unwrap();
         let scan = |sql: &str| -> i64 {
-            r.query_row(sql, [], |x| x.get(0)).map_err(|e| format!("{sql}: {e}")).unwrap()
+            r.query_row(sql, [], |x| x.get(0))
+                .map_err(|e| format!("{sql}: {e}"))
+                .unwrap()
         };
         // No predicate → all rows.
-        assert_eq!(scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/chunks')")), 8);
+        assert_eq!(
+            scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/chunks')")),
+            8
+        );
         // Identity-partition predicate returns exactly the matching rows.
         assert_eq!(
-            scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/documents') WHERE source_id='slack'")),
+            scan(&format!(
+                "SELECT count(*) FROM iceberg_scan('{wh}/documents') WHERE source_id='slack'"
+            )),
             1,
             "identity partition prune keeps the slack doc"
         );
         // Bucket-partition predicate on doc_id must not drop rows (2 chunks per doc_id d0..d3).
         assert_eq!(
-            scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/chunks') WHERE doc_id='d2'")),
+            scan(&format!(
+                "SELECT count(*) FROM iceberg_scan('{wh}/chunks') WHERE doc_id='d2'"
+            )),
             2,
             "bucket partition prune keeps both chunks of d2"
         );
@@ -490,15 +535,25 @@ mod tests {
         .unwrap();
         // Only publish the documents table (others absent in this minimal test).
         let store = Store::open(&wh, "").unwrap();
-        publish_table(&c1, &store, &wh, super::super::icewrite::table_def("documents").unwrap(), now_ms())
-            .unwrap();
+        publish_table(
+            &c1,
+            &store,
+            &wh,
+            super::super::icewrite::table_def("documents").unwrap(),
+            now_ms(),
+        )
+        .unwrap();
 
         // Reader sees 2 docs.
         let r = Connection::open_in_memory().unwrap();
         super::iceberg::install_iceberg(&r).unwrap();
         let loc = format!("{wh}/documents");
         let count: i64 = r
-            .query_row(&format!("SELECT count(*) FROM iceberg_scan('{loc}')"), [], |x| x.get(0))
+            .query_row(
+                &format!("SELECT count(*) FROM iceberg_scan('{loc}')"),
+                [],
+                |x| x.get(0),
+            )
             .unwrap();
         assert_eq!(count, 2, "first publish: 2 docs");
 
@@ -506,7 +561,9 @@ mod tests {
         let c2 = Connection::open_in_memory().unwrap();
         c2.execute_batch(ddl).unwrap();
         hydrate(&c2, &wh).unwrap();
-        let hydrated: i64 = c2.query_row("SELECT count(*) FROM documents", [], |x| x.get(0)).unwrap();
+        let hydrated: i64 = c2
+            .query_row("SELECT count(*) FROM documents", [], |x| x.get(0))
+            .unwrap();
         assert_eq!(hydrated, 2, "hydrate pulled 2 docs from snapshot");
         c2.execute_batch(
             "UPDATE documents SET body='body2v2', content_sha256='h2v2' WHERE doc_id='d2';
@@ -515,15 +572,23 @@ mod tests {
         )
         .unwrap();
         let store2 = Store::open(&wh, "").unwrap();
-        publish_table(&c2, &store2, &wh, super::super::icewrite::table_def("documents").unwrap(), now_ms() + 1000)
-            .unwrap();
+        publish_table(
+            &c2,
+            &store2,
+            &wh,
+            super::super::icewrite::table_def("documents").unwrap(),
+            now_ms() + 1000,
+        )
+        .unwrap();
 
         // Fresh reader: d1 gone, d2 updated, d3 present → {d2,d3}.
         let r2 = Connection::open_in_memory().unwrap();
         super::iceberg::install_iceberg(&r2).unwrap();
         let ids: Vec<String> = {
             let mut stmt = r2
-                .prepare(&format!("SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"))
+                .prepare(&format!(
+                    "SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"
+                ))
                 .unwrap();
             let v = stmt
                 .query_map([], |x| x.get::<_, String>(0))
@@ -532,7 +597,11 @@ mod tests {
                 .collect::<Vec<_>>();
             v
         };
-        assert_eq!(ids, vec!["d2".to_string(), "d3".to_string()], "upsert+delete applied");
+        assert_eq!(
+            ids,
+            vec!["d2".to_string(), "d3".to_string()],
+            "upsert+delete applied"
+        );
         let body: String = r2
             .query_row(
                 &format!("SELECT body FROM iceberg_scan('{loc}') WHERE doc_id='d2'"),
@@ -580,7 +649,10 @@ mod tests {
         ).unwrap();
         publish(&c2, &wh).unwrap();
 
-        assert!(parquet_count(dir.path().join("wh").as_path()) >= 2, "accumulated ≥2 data files");
+        assert!(
+            parquet_count(dir.path().join("wh").as_path()) >= 2,
+            "accumulated ≥2 data files"
+        );
 
         // Compact: collapse to one clean data file, drop delete files + old snapshots.
         let stats = compact(&wh, 1).unwrap();
@@ -604,14 +676,28 @@ mod tests {
         super::iceberg::install_iceberg(&r).unwrap();
         let ids: Vec<String> = {
             let mut stmt = r
-                .prepare(&format!("SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"))
+                .prepare(&format!(
+                    "SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"
+                ))
                 .unwrap();
-            let v = stmt.query_map([], |x| x.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+            let v = stmt
+                .query_map([], |x| x.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
             v
         };
-        assert_eq!(ids, vec!["d2".to_string(), "d3".to_string()], "live rows preserved");
+        assert_eq!(
+            ids,
+            vec!["d2".to_string(), "d3".to_string()],
+            "live rows preserved"
+        );
         let body: String = r
-            .query_row(&format!("SELECT body FROM iceberg_scan('{loc}') WHERE doc_id='d2'"), [], |x| x.get(0))
+            .query_row(
+                &format!("SELECT body FROM iceberg_scan('{loc}') WHERE doc_id='d2'"),
+                [],
+                |x| x.get(0),
+            )
             .unwrap();
         assert_eq!(body, "b2v2", "updated value preserved through compaction");
     }
@@ -632,7 +718,11 @@ mod tests {
         let c0 = Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&c0).unwrap();
         hydrate(&c0, &wh).unwrap();
-        c0.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dA", "git"))).unwrap();
+        c0.execute_batch(&format!(
+            "INSERT INTO documents VALUES {};",
+            row("dA", "git")
+        ))
+        .unwrap();
         publish(&c0, &wh).unwrap();
 
         // Two writers both hydrate the dA snapshot.
@@ -644,8 +734,16 @@ mod tests {
         hydrate(&cb, &wh).unwrap();
 
         // Disjoint edits: A adds dB, B adds dC.
-        ca.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dB", "git"))).unwrap();
-        cb.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dC", "slack"))).unwrap();
+        ca.execute_batch(&format!(
+            "INSERT INTO documents VALUES {};",
+            row("dB", "git")
+        ))
+        .unwrap();
+        cb.execute_batch(&format!(
+            "INSERT INTO documents VALUES {};",
+            row("dC", "slack")
+        ))
+        .unwrap();
 
         // A commits first; B commits against the now-stale snapshot.
         publish(&ca, &wh).unwrap();
@@ -656,9 +754,15 @@ mod tests {
         let loc = format!("{wh}/documents");
         let ids: Vec<String> = {
             let mut stmt = r
-                .prepare(&format!("SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"))
+                .prepare(&format!(
+                    "SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"
+                ))
                 .unwrap();
-            let v = stmt.query_map([], |x| x.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+            let v = stmt
+                .query_map([], |x| x.get::<_, String>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
             v
         };
         assert_eq!(

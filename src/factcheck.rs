@@ -292,7 +292,10 @@ fn load_kb_facts() -> Result<Vec<Fact>> {
     ];
     paths.sort();
     paths.dedup();
-    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| index::warehouse_published_at(p)).collect();
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|p| index::warehouse_published_at(p))
+        .collect();
     load_kb_facts_from_paths(&paths)
 }
 

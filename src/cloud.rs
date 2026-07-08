@@ -171,7 +171,11 @@ fn sync(compact: bool, no_push: bool, retain: Option<usize>) -> Result<i32> {
     // compaction aborts cleanly if a concurrent writer advanced a table.
     let cfg = config::resolve(Some(&workspace::work_root()));
     let retain = retain
-        .or_else(|| cfg["storage"]["retain_snapshots"].as_u64().map(|n| n as usize))
+        .or_else(|| {
+            cfg["storage"]["retain_snapshots"]
+                .as_u64()
+                .map(|n| n as usize)
+        })
         .unwrap_or(1)
         .max(1);
 
@@ -203,7 +207,10 @@ fn upload_warehouse(local_dir: &str, remote_warehouse: &str, region: &str) -> Re
     let remote = Store::open(remote_warehouse, region)?;
     let mut n = 0;
     for uri in local.list_uris(local_dir)? {
-        let rel = uri.strip_prefix(local_dir).unwrap_or(&uri).trim_start_matches('/');
+        let rel = uri
+            .strip_prefix(local_dir)
+            .unwrap_or(&uri)
+            .trim_start_matches('/');
         let bytes = local.get(&uri)?.unwrap_or_default();
         remote.put(&format!("{remote_warehouse}/{rel}"), bytes)?;
         n += 1;
@@ -288,7 +295,11 @@ mod tests {
         assert_eq!(
             {
                 let (b, p) = ("bkt", "");
-                if p.is_empty() { format!("s3://{b}") } else { format!("s3://{b}/{p}") }
+                if p.is_empty() {
+                    format!("s3://{b}")
+                } else {
+                    format!("s3://{b}/{p}")
+                }
             },
             "s3://bkt"
         );
