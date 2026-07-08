@@ -5,3 +5,5 @@
 # Cargo install state
 /.crates.toml
 /.crates2.json
+
+/dist/
