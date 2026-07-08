@@ -18,10 +18,10 @@ regex = "1"
 fancy-regex = "0.14"
 globset = "0.4"
 ignore = "0.4"
-# Dynamically linked against a shipped libduckdb.dylib (see vendor/duckdb + .cargo/config.toml).
-# NOT `bundled`: that statically compiles the ~100MB DuckDB amalgamation into the binary.
-# The pre-generated bindings target DuckDB v1.5.4, so the shipped dylib must match exactly.
-duckdb = { version = "1", default-features = false, features = ["vtab-arrow"] }
+# `bundled`: statically compile the DuckDB amalgamation into the binary so the
+# release is a single self-contained executable (no shipped .dylib, and it builds
+# from a clean checkout — no vendored lib required). Costs build time.
+duckdb = { version = "1", features = ["bundled", "vtab-arrow"] }
 pulldown-cmark = "0.12"
 aho-corasick = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -34,7 +34,8 @@ ureq = { version = "2", features = ["json", "tls"] }
 url = "2"
 percent-encoding = "2"
 pdf-extract = "0.12.0"
-llama-cpp-2 = { version = "0.1.151", features = ["dynamic-link"] }
+# Default (static): llama.cpp + ggml are baked into the binary as static archives.
+llama-cpp-2 = "0.1.151"
 lance = "8.0.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 arrow-array = "58"
@@ -52,9 +53,7 @@ object_store = { version = "0.13", features = ["aws"] }
 # Iceberg bucket() partition transform hashes with 32-bit x86 murmur3, seed 0.
 murmur3 = "0.5"
 futures = "0.3.32"
-# dynamic-link builds llama.cpp + ggml as .dylibs (BUILD_SHARED_LIBS=ON) instead of
-# static archives baked into the binary. Versions always match (the sys crate builds them).
-llama-cpp-sys-2 = { version = "0.1.151", features = ["dynamic-link"] }
+llama-cpp-sys-2 = "0.1.151"
 harper-core = "=2.0.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.41.0"

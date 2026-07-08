@@ -2,8 +2,6 @@
 .claude/
 /target/
 
-# Build outputs and vendored native libs (not source-controlled)
-/bin/
-/vendor/
+# Cargo install state
 /.crates.toml
 /.crates2.json

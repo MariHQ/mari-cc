@@ -6,7 +6,7 @@
   "author": {
     "name": "Mari"
   },
-  "homepage": "https://github.com/mari-project/mari",
+  "homepage": "https://github.com/MariHQ/mari-cc",
   "keywords": [
     "knowledge",
     "search",
@@ -15,5 +15,5 @@
     "factcheck",
     "documentation"
   ],
-  "repository": "https://github.com/mari-project/mari"
+  "repository": "https://github.com/MariHQ/mari-cc"
 }
