@@ -18,7 +18,10 @@ regex = "1"
 fancy-regex = "0.14"
 globset = "0.4"
 ignore = "0.4"
-duckdb = { version = "1", features = ["bundled", "vtab-arrow"] }
+# Dynamically linked against a shipped libduckdb.dylib (see vendor/duckdb + .cargo/config.toml).
+# NOT `bundled`: that statically compiles the ~100MB DuckDB amalgamation into the binary.
+# The pre-generated bindings target DuckDB v1.5.4, so the shipped dylib must match exactly.
+duckdb = { version = "1", default-features = false, features = ["vtab-arrow"] }
 pulldown-cmark = "0.12"
 aho-corasick = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -31,13 +34,27 @@ ureq = { version = "2", features = ["json", "tls"] }
 url = "2"
 percent-encoding = "2"
 pdf-extract = "0.12.0"
-llama-cpp-2 = "0.1.151"
+llama-cpp-2 = { version = "0.1.151", features = ["dynamic-link"] }
 lance = "8.0.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 arrow-array = "58"
 arrow-schema = "58"
+arrow-select = "58"
+# Manual Iceberg writer (§8.8): Parquet data/delete files written directly from
+# Arrow batches with Iceberg field-ids stamped into the schema. DuckDB is never
+# in the write path. `apache-avro` writes the Iceberg manifest + manifest-list
+# files; table metadata.json + version-hint.text are plain serde_json/text.
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd"] }
+apache-avro = "0.17"
+# Object-store writer for the s3 warehouse (§9). Local fs and s3 go through one
+# trait; DuckDB stays read-only. `aws` pulls the S3 backend + credential chain.
+object_store = { version = "0.13", features = ["aws"] }
+# Iceberg bucket() partition transform hashes with 32-bit x86 murmur3, seed 0.
+murmur3 = "0.5"
 futures = "0.3.32"
-llama-cpp-sys-2 = "0.1.151"
+# dynamic-link builds llama.cpp + ggml as .dylibs (BUILD_SHARED_LIBS=ON) instead of
+# static archives baked into the binary. Versions always match (the sys crate builds them).
+llama-cpp-sys-2 = { version = "0.1.151", features = ["dynamic-link"] }
 harper-core = "=2.0.0"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.41.0"
@@ -46,4 +63,7 @@ quick-xml = "0.41.0"
 tempfile = "3"
 
 [profile.release]
-lto = true
+# Thin LTO gives ~full-fat runtime perf at a fraction of the link time.
+# Full `lto = true` re-optimizes the entire graph (llama.cpp + duckdb + lance)
+# on every release build, which dominated build time.
+lto = "thin"

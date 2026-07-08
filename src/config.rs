@@ -51,6 +51,25 @@ pub fn defaults() -> Value {
         "localfiles": { "paths": [] },
         "ocr": { "backend": "text", "model": "baidu/Unlimited-OCR", "dpi": 200, "auto_install": true, "accept_remote_code": false },
         "cloud": { "enabled": false, "backend": "s3", "bucket": "", "prefix": "", "region": "" },
+        // Storage / read layer (§4.4/§8.8): the catalog IS a set of Iceberg
+        // tables that every read and write goes through — there is no
+        // catalog.duckdb master. `backend` is "local" (default: an `iceberg/`
+        // dir in the workspace) or "s3" (remote reads/writes for the cloud
+        // service). `path` is the s3://bucket/prefix base when backend=s3;
+        // `region` feeds the duckdb s3 secret (else the AWS credential chain).
+        // `cache_dir`/`cache_size` locate and bound the cache_httpfs + Lance
+        // on-disk read cache; `retain_snapshots` is how many snapshots
+        // compaction keeps (1 = current only); `bucket_chunks` is the Iceberg
+        // bucket() partition count for chunks/spans/symbols (§8.7).
+        "storage": {
+            "backend": "local", "path": "", "region": "",
+            "cache_dir": "", "cache_size": "",
+            "retain_snapshots": 1, "bucket_chunks": 16
+        },
+        // Shared knowledge base (§4.4/§8.8) — HTTP-federated read-only scope. v2:
+        // v1 ships storage.backend = local | s3 only, but the config surface is
+        // reserved now so the v1 path doesn't foreclose it.
+        "knowledge_base": { "enabled": false, "uri": "", "projects": [] },
         "detector": {
             "styleGuide": "microsoft",
             "ignoreRules": [], "ignoreFiles": [], "ignoreValues": {},

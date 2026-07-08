@@ -42,13 +42,18 @@ pub fn model_spec() -> models::ModelSpec {
     }
 }
 
+/// Where this machine **writes** the Lance vectors: inside the local warehouse
+/// dir (`<warehouse>/vectors.lance`, §8.8), so they are uploaded to s3 and
+/// mirrored down with the rest of the warehouse.
 pub fn dataset_path(global: bool) -> PathBuf {
-    let dir = if global {
-        workspace::global_workspace_dir()
-    } else {
-        workspace::workspace_dir(&workspace::work_root())
-    };
-    dir.join("vectors.lance")
+    super::iceberg::local_warehouse_dir(global).join("vectors.lance")
+}
+
+/// Where **reads** (search) find the vectors: the local warehouse for a local
+/// backend, or the mirrored copy of the s3 warehouse (populated by the catalog
+/// read mirror, §8.8) for the s3 backend.
+pub fn dataset_read_path(global: bool) -> PathBuf {
+    super::iceberg::warehouse_local_read_dir(global).join("vectors.lance")
 }
 
 /// Resolve the embedding model: use the on-disk GGUF if present; else, when
@@ -105,7 +110,9 @@ pub fn embed_texts(texts: &[String], is_query: bool) -> Result<Vec<Vec<f32>>> {
     // chunks pack per decode.
     const TOKEN_BUDGET: usize = 2048;
     let max_seqs = (TOKEN_BUDGET / PER_SEQ_CAP).max(1);
-    let seq_cap = (cfg["embedding"]["batch_size"].as_u64().unwrap_or(max_seqs as u64) as usize)
+    let seq_cap = (cfg["embedding"]["batch_size"]
+        .as_u64()
+        .unwrap_or(max_seqs as u64) as usize)
         .clamp(1, max_seqs);
 
     crate::models::quiet_llama_logs();
@@ -313,11 +320,16 @@ pub fn write_dataset(global: bool, rows: &[(String, String, Vec<f32>)]) -> Resul
     Ok(())
 }
 
-/// Read the whole dataset back as (chunk_id, content_hash, vector) rows.
+/// Read the whole dataset back as (chunk_id, content_hash, vector) rows. Uses the
+/// writer-local vectors (incremental sync reads what this machine wrote).
 pub fn read_dataset(global: bool) -> Result<Vec<(String, String, Vec<f32>)>> {
+    read_dataset_at(&dataset_path(global))
+}
+
+/// Read the Lance dataset at an explicit path.
+pub fn read_dataset_at(uri: &std::path::Path) -> Result<Vec<(String, String, Vec<f32>)>> {
     use arrow_array::{cast::AsArray, types::Float32Type};
     use futures::TryStreamExt;
-    let uri = dataset_path(global);
     if !uri.exists() {
         return Ok(Vec::new());
     }
@@ -367,7 +379,8 @@ pub fn read_dataset(global: bool) -> Result<Vec<(String, String, Vec<f32>)>> {
 
 /// Vectors only (chunk_id, vector), for ranking/neighbours.
 pub fn read_vectors(global: bool) -> Result<Vec<(String, Vec<f32>)>> {
-    Ok(read_dataset(global)?
+    // Search reads from the read path (the s3 mirror when cloud-backed).
+    Ok(read_dataset_at(&dataset_read_path(global))?
         .into_iter()
         .map(|(id, _, v)| (id, v))
         .collect())
@@ -454,10 +467,12 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
 /// Verify the catalog's recorded embedding identity + dims match this build.
 fn check_dataset_identity(global: bool) -> Result<()> {
     let db = crate::index::catalog_path(global);
-    if !db.exists() {
+    // Read-only: this is a query-time guard on the read path. Opening
+    // read-write here would take DuckDB's exclusive lock and conflict with any
+    // other mari process (search or sync) touching the same catalog.
+    let Some(conn) = crate::index::open_readonly_path(&db)? else {
         return Ok(());
-    }
-    let conn = duckdb::Connection::open(&db)?;
+    };
     let model: Option<String> = conn
         .query_row(
             "SELECT value FROM schema_meta WHERE key = 'embedding.model'",
@@ -502,8 +517,10 @@ pub fn doc_neighbours(
         return None;
     }
     // Map chunk_id → doc_id via the catalog, then mean-pool per doc.
+    // Read-only open: this is a read path (lineage neighbours) and must not take
+    // DuckDB's exclusive lock (see check_dataset_identity).
     let db = crate::index::catalog_path(global);
-    let conn = duckdb::Connection::open(&db).ok()?;
+    let conn = crate::index::open_readonly_path(&db).ok()??;
     let mut stmt = conn.prepare("SELECT chunk_id, doc_id FROM chunks").ok()?;
     let chunk_doc: std::collections::HashMap<String, String> = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -566,7 +583,7 @@ pub fn rank_many(
     phrasings: &[String],
     pool: usize,
 ) -> Option<Vec<Vec<(String, f64)>>> {
-    if phrasings.is_empty() || !dataset_path(global).exists() {
+    if phrasings.is_empty() || !dataset_read_path(global).exists() {
         return None;
     }
     // Embedding-identity / dimension guard (§7.1): a dataset written by a

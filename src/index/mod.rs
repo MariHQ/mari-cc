@@ -1,7 +1,29 @@
 //! DuckDB catalog, SQL surface, search, and sync (SPEC §7/§8).
+pub mod iceberg;
+pub mod icepub;
+pub mod icestore;
+pub mod icewrite;
 pub mod search;
 pub mod sync;
 pub mod vector;
+
+/// Base catalog tables published to Iceberg (§8.8). Order matters only for
+/// readability; publish/read treat them independently. `embeddings` is included
+/// for completeness though vectors live in Lance.
+pub const CATALOG_TABLES: [&str; 12] = [
+    "schema_meta",
+    "sources",
+    "documents",
+    "chunks",
+    "embeddings",
+    "spans",
+    "symbols",
+    "edges",
+    "lineage_edges",
+    "facts",
+    "tags",
+    "sync_events",
+];
 
 use crate::{cloud, config, workspace};
 use anyhow::Result;
@@ -24,43 +46,83 @@ pub fn catalog_path(global: bool) -> PathBuf {
     }
 }
 
+/// Open a **writable staging** catalog: an in-memory DuckDB hydrated from the
+/// current Iceberg snapshot (§8.8). There is no `catalog.duckdb` master and no
+/// file lock — writers mutate this in-memory copy with the existing SQL, then
+/// [`publish_catalog`] commits the changed rows back to the Iceberg warehouse
+/// through the manual writer (DuckDB is never in the write path). Because it is
+/// in-memory, mutations are lost unless `publish_catalog` is called before the
+/// connection is dropped.
 pub fn open_catalog(global: bool) -> Result<Connection> {
-    let path = catalog_path(global);
-    workspace::ensure_dir(path.parent().unwrap())?;
-    let conn = Connection::open(&path)?;
+    let conn = Connection::open_in_memory()?;
     ensure_schema(&conn)?;
+    icepub::hydrate(&conn, &iceberg::warehouse_uri(global))?;
     Ok(conn)
 }
 
-/// Open the catalog **read-only**. DuckDB permits many concurrent read-only
-/// connections to one database file, so read commands (search, audit, sql,
-/// hooks) opened this way no longer exclusively lock the catalog and no longer
-/// fail with "Conflicting lock is held" when another mari process is reading.
-/// Read-only opens cannot run DDL, so the schema is assumed to already exist;
-/// if the catalog is missing (never synced) this returns `Ok(None)` and the
-/// caller degrades gracefully rather than erroring.
+/// Commit a staging catalog's changes to the Iceberg warehouse for `global`:
+/// per table, diff against the current snapshot and append data + equality
+/// deletes for only the changed rows (§8.8). Idempotent; a no-op per table when
+/// nothing changed.
+pub fn publish_catalog(conn: &Connection, global: bool) -> Result<()> {
+    icepub::publish(conn, &iceberg::warehouse_uri(global))
+}
+
+/// The Iceberg warehouse URI backing an explicit catalog-file path (the two
+/// well-known repo/global catalogs honor the s3 backend; any other path maps to
+/// a sibling `iceberg/` dir). Lets path-based writers (tag/fact mirroring,
+/// lineage) address the same warehouse the scope-based API uses.
+pub fn warehouse_for_path(path: &Path) -> String {
+    iceberg::warehouse_for_catalog(path)
+}
+
+/// True once the warehouse behind `path` has any published table.
+pub fn warehouse_published_at(path: &Path) -> bool {
+    icepub::warehouse_published(&warehouse_for_path(path))
+}
+
+/// Open a writable staging catalog for the warehouse behind an explicit path:
+/// an in-memory DuckDB hydrated from that snapshot. Commit with
+/// [`publish_to_path`]; mutations are otherwise lost on drop.
+pub fn open_catalog_at(path: &Path) -> Result<Connection> {
+    let conn = Connection::open_in_memory()?;
+    ensure_schema(&conn)?;
+    icepub::hydrate(&conn, &warehouse_for_path(path))?;
+    Ok(conn)
+}
+
+/// Commit a staging catalog opened with [`open_catalog_at`] back to the
+/// warehouse behind `path`.
+pub fn publish_to_path(conn: &Connection, path: &Path) -> Result<()> {
+    icepub::publish(conn, &warehouse_for_path(path))
+}
+
+/// Open the published catalog **read-only** for a scope. Reads run through
+/// `duckdb-iceberg` against the Iceberg snapshot (local dir or `s3://`), so any
+/// number of concurrent readers — local or remote — see a consistent snapshot
+/// with no file lock. `Ok(None)` when nothing has been published yet.
 pub fn open_catalog_readonly(global: bool) -> Result<Option<Connection>> {
-    open_readonly_path(&catalog_path(global))
+    iceberg::open_read_scope(global)
 }
 
-/// Read-only open of a specific catalog file. `Ok(None)` when the file does not
-/// exist yet; a lock/config error still surfaces as `Err`.
+/// Read-only open for an explicit catalog-file path. The path selects the
+/// Iceberg warehouse (repo/global honor the s3 backend; other paths map to a
+/// sibling `iceberg/` dir). `Ok(None)` when unpublished.
 pub fn open_readonly_path(path: &Path) -> Result<Option<Connection>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let config = duckdb::Config::default().access_mode(duckdb::AccessMode::ReadOnly)?;
-    let conn = Connection::open_with_flags(path, config)?;
-    Ok(Some(conn))
+    iceberg::open_read(&iceberg::warehouse_for_catalog(path))
 }
 
-/// Catalog open for a read command: read-only (concurrent-reader safe) when the
-/// catalog already exists, falling back to a read-write open that creates the
-/// schema on first run.
+/// Catalog open for a read command: the published Iceberg snapshot when it
+/// exists, else an in-memory empty catalog so the command runs and returns
+/// nothing (no file, no lock) until the first sync publishes.
 pub fn open_catalog_read(global: bool) -> Result<Connection> {
     match open_catalog_readonly(global)? {
         Some(conn) => Ok(conn),
-        None => open_catalog(global),
+        None => {
+            let conn = Connection::open_in_memory()?;
+            ensure_schema(&conn)?;
+            Ok(conn)
+        }
     }
 }
 
@@ -288,6 +350,29 @@ CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_type, to_id, rel);
 CREATE INDEX IF NOT EXISTS idx_lineage_from ON lineage_edges(from_span_id, status);
 CREATE INDEX IF NOT EXISTS idx_lineage_to ON lineage_edges(to_span_id, status);
 CREATE INDEX IF NOT EXISTS idx_tags_status ON tags(status);
+"#,
+    )?;
+    conn.execute_batch(VIEW_DDL)?;
+    migrate_schema(conn)?;
+    set_meta(conn, "schema.version", SCHEMA_VERSION)?;
+    set_meta_default(conn, "schema.created_at", &now())?;
+    set_meta(conn, "schema.migrated_at", &now())?;
+    // Identity is stamped on creation only; sync_vectors rewrites it when it
+    // actually writes vectors. Overwriting here would defeat the guard that
+    // detects a catalog embedded by a different model (§7.1).
+    set_meta_default(conn, "embedding.model", EMBEDDING_MODEL)?;
+    set_meta_default(conn, "embedding.dims", EMBEDDING_DIMS)?;
+    set_meta(conn, "chunking.version", CHUNKING_VERSION)?;
+    set_meta(conn, "extractor.version", EXTRACTOR_VERSION)?;
+    Ok(())
+}
+
+/// Derived views over the catalog base tables. Kept in a shared const so both
+/// the writable DuckDB catalog (`ensure_schema`) and the read-only Iceberg
+/// connection (`iceberg::open_read`, where the base tables are `iceberg_scan`
+/// views) build identical view definitions. Referenced base-table names resolve
+/// to whichever form exists in the target connection.
+pub const VIEW_DDL: &str = r#"
 CREATE OR REPLACE VIEW navigation_targets AS
 SELECT
   'doc' AS target_type,
@@ -407,21 +492,7 @@ LEFT JOIN navigation_targets from_target
   ON from_target.target_type = e.from_type AND from_target.target_id = e.from_id
 LEFT JOIN navigation_targets to_target
   ON to_target.target_type = e.to_type AND to_target.target_id = e.to_id;
-"#,
-    )?;
-    migrate_schema(conn)?;
-    set_meta(conn, "schema.version", SCHEMA_VERSION)?;
-    set_meta_default(conn, "schema.created_at", &now())?;
-    set_meta(conn, "schema.migrated_at", &now())?;
-    // Identity is stamped on creation only; sync_vectors rewrites it when it
-    // actually writes vectors. Overwriting here would defeat the guard that
-    // detects a catalog embedded by a different model (§7.1).
-    set_meta_default(conn, "embedding.model", EMBEDDING_MODEL)?;
-    set_meta_default(conn, "embedding.dims", EMBEDDING_DIMS)?;
-    set_meta(conn, "chunking.version", CHUNKING_VERSION)?;
-    set_meta(conn, "extractor.version", EXTRACTOR_VERSION)?;
-    Ok(())
-}
+"#;
 
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute("DELETE FROM schema_meta WHERE key = ?1", [key])?;

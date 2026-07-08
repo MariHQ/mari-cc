@@ -222,11 +222,11 @@ fn mirror_tag_to_catalog_paths(
     entry: Option<&Value>,
 ) -> Result<()> {
     for path in paths {
-        if !path.exists() {
+        // Tagging a not-yet-built catalog is a no-op (same as before).
+        if !index::warehouse_published_at(path) {
             continue;
         }
-        let conn = duckdb::Connection::open(path)?;
-        index::ensure_schema(&conn)?;
+        let conn = index::open_catalog_at(path)?;
         for doc_id in catalog_doc_ids_for_target(&conn, target)? {
             conn.execute(
                 "DELETE FROM tags WHERE target_type = 'doc' AND target_id = ?1",
@@ -251,6 +251,7 @@ fn mirror_tag_to_catalog_paths(
                 ],
             )?;
         }
+        index::publish_to_path(&conn, path)?;
     }
     Ok(())
 }
@@ -651,17 +652,17 @@ fn mirror_fact_to_catalog_paths(
     let fact_id = index::hash_hex(&format!("fact:{claim}:{}", source_ref.unwrap_or("")));
     let metadata = json!({"source": "FACTS.md"}).to_string();
     for path in paths {
-        if !path.exists() {
+        if !index::warehouse_published_at(path) {
             continue;
         }
-        let conn = duckdb::Connection::open(path)?;
-        index::ensure_schema(&conn)?;
+        let conn = index::open_catalog_at(path)?;
         conn.execute("DELETE FROM facts WHERE fact_id = ?1", [&fact_id])?;
         conn.execute(
             "INSERT INTO facts (fact_id, claim, source_ref, source_span_id, status, created_by, created_at, metadata_json)
              VALUES (?1, ?2, ?3, NULL, 'accepted', ?4, ?5, ?6)",
             duckdb::params![fact_id, claim, source_ref, created_by, created_at, metadata],
         )?;
+        index::publish_to_path(&conn, path)?;
     }
     Ok(())
 }
@@ -810,7 +811,10 @@ fn extract_catalog_candidates(
     ];
     paths.sort();
     paths.dedup();
-    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .filter(|p| index::warehouse_published_at(p))
+        .collect();
     if paths.is_empty() {
         return Ok(None);
     }
@@ -1288,7 +1292,10 @@ fn catalog_paths(root: &Path) -> Vec<PathBuf> {
     ];
     paths.sort();
     paths.dedup();
-    paths.into_iter().filter(|p| p.exists()).collect()
+    // Each path names an Iceberg warehouse (sibling `iceberg/` dir), not a file
+    // on disk — there is no catalog.duckdb anymore (§8.8). The mirror helpers
+    // resolve each path to its warehouse and skip any that is unpublished.
+    paths
 }
 
 fn catalog_contradiction_findings(root: &Path) -> Result<Vec<KbFinding>> {
@@ -1820,7 +1827,7 @@ mod tests {
     fn tag_mirror_updates_existing_catalog_docs() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         index::ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO documents (
@@ -1832,6 +1839,7 @@ mod tests {
             [],
         )
         .unwrap();
+        index::publish_to_path(&conn, &catalog).unwrap();
         drop(conn);
 
         let entry = json!({
@@ -1842,7 +1850,7 @@ mod tests {
         });
         mirror_tag_to_catalog_paths(std::slice::from_ref(&catalog), "docs/api.md", Some(&entry))
             .unwrap();
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
         let status: String = conn
             .query_row(
                 "SELECT status FROM tags WHERE target_type = 'doc' AND target_id = 'doc1'",
@@ -1854,7 +1862,7 @@ mod tests {
         drop(conn);
 
         mirror_tag_to_catalog_paths(std::slice::from_ref(&catalog), "docs/api.md", None).unwrap();
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
             .unwrap();
@@ -1865,8 +1873,9 @@ mod tests {
     fn facts_mirror_writes_accepted_catalog_fact() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         index::ensure_schema(&conn).unwrap();
+        index::publish_to_path(&conn, &catalog).unwrap();
         drop(conn);
 
         mirror_fact_to_catalog_paths(
@@ -1878,7 +1887,7 @@ mod tests {
         )
         .unwrap();
 
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
         let row: (String, String, String, String) = conn
             .query_row(
                 "SELECT claim, source_ref, status, created_by FROM facts",
@@ -1896,7 +1905,7 @@ mod tests {
     fn audit_kb_reads_needs_review_from_catalog_tags() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         index::ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO documents (
@@ -1916,6 +1925,7 @@ mod tests {
             ],
         )
         .unwrap();
+        index::publish_to_path(&conn, &catalog).unwrap();
         drop(conn);
 
         let mut seen = HashSet::new();
@@ -2041,7 +2051,7 @@ mod tests {
     fn glossary_harvest_reads_catalog_document_bodies() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&path).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO documents (
@@ -2054,6 +2064,7 @@ mod tests {
             [],
         )
         .unwrap();
+        index::publish_to_path(&conn, &path).unwrap();
         drop(conn);
 
         let seen = catalog_glossary_harvest_seen(&[path]).unwrap();
@@ -2112,7 +2123,7 @@ mod tests {
     fn catalog_fact_candidates_honor_filters() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&path).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT INTO documents (
@@ -2154,6 +2165,7 @@ mod tests {
             ],
         )
         .unwrap();
+        index::publish_to_path(&conn, &path).unwrap();
         drop(conn);
 
         let got = extract_catalog_candidates_from_paths(
@@ -2251,7 +2263,7 @@ mod tests {
     fn audit_kb_flags_catalog_contradiction_candidates() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.duckdb");
-        let conn = duckdb::Connection::open(&path).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&conn).unwrap();
         for (doc_id, canonical_ref, body) in [
             ("doc1", "git:docs/a.md", "Latency dropped 40% after launch."),
@@ -2267,6 +2279,7 @@ mod tests {
             )
             .unwrap();
         }
+        index::publish_to_path(&conn, &path).unwrap();
         drop(conn);
 
         let findings = catalog_contradiction_findings_from_paths(&[path]).unwrap();

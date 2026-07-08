@@ -254,7 +254,7 @@ enum Cmd {
         #[arg(long)]
         global: bool,
     },
-    /// Team sharing: init | connect | role
+    /// Team sharing: init | connect | role | sync
     Cloud {
         args: Vec<String>,
         #[arg(long)]
@@ -267,6 +267,15 @@ enum Cmd {
         region: Option<String>,
         #[arg(long)]
         force: bool,
+        /// `cloud sync`: compact the warehouse (expire snapshots, apply deletes, remove orphans)
+        #[arg(long)]
+        compact: bool,
+        /// `cloud sync`: compact in place without pushing
+        #[arg(long = "no-push")]
+        no_push: bool,
+        /// `cloud sync`: snapshots to retain (default from storage.retain_snapshots)
+        #[arg(long)]
+        retain: Option<usize>,
     },
     /// Fetch the latest cloud index into the replica
     Pull,
@@ -633,6 +642,9 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             prefix,
             region,
             force,
+            compact,
+            no_push,
+            retain,
         } => cloud::run(
             &args,
             backend.as_deref(),
@@ -640,6 +652,9 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             prefix.as_deref(),
             region.as_deref(),
             force,
+            compact,
+            no_push,
+            retain,
         ),
         Cmd::Pull => cloud::pull(),
         Cmd::Tag {

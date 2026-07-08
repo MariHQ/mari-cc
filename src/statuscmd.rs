@@ -140,13 +140,18 @@ fn status_catalog_paths(root: &Path) -> Vec<PathBuf> {
     ];
     paths.sort();
     paths.dedup();
-    paths.into_iter().filter(|p| p.exists()).collect()
+    // Keep both well-known catalog paths; the reader resolves each to its Iceberg
+    // warehouse and skips any that is unpublished (there is no catalog.duckdb file
+    // to stat anymore, §8.8).
+    paths
 }
 
 fn catalog_status_from_paths(paths: &[PathBuf]) -> CatalogStatus {
     let mut status = CatalogStatus::default();
     for path in paths {
-        let Ok(conn) = duckdb::Connection::open(path) else {
+        // Read-only over the published Iceberg snapshot; None when nothing has
+        // been synced for this scope yet.
+        let Ok(Some(conn)) = index::open_readonly_path(path) else {
             continue;
         };
         if let Ok(mut stmt) =
@@ -391,8 +396,8 @@ mod tests {
     #[test]
     fn catalog_status_aggregates_repo_and_global_catalogs() {
         let dir = tempfile::tempdir().unwrap();
-        let local = dir.path().join("local.duckdb");
-        let global = dir.path().join("global.duckdb");
+        let local = dir.path().join("local").join("catalog.duckdb");
+        let global = dir.path().join("global").join("catalog.duckdb");
         write_catalog(
             &local,
             &[
@@ -436,7 +441,7 @@ mod tests {
             "2026-01-01T00:00:00Z",
             index::EMBEDDING_MODEL,
         );
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = index::open_catalog_at(&catalog).unwrap();
         conn.execute(
             "UPDATE tags SET metadata_json = ?1 WHERE target_id = 'docs/api.md'",
             duckdb::params![
@@ -444,6 +449,7 @@ mod tests {
             ],
         )
         .unwrap();
+        index::publish_to_path(&conn, &catalog).unwrap();
 
         let status = catalog_status_from_paths(&[catalog]);
 
@@ -460,7 +466,7 @@ mod tests {
             "2026-01-01T00:00:00Z",
             index::EMBEDDING_MODEL,
         );
-        let conn = duckdb::Connection::open(&catalog).unwrap();
+        let conn = index::open_catalog_at(&catalog).unwrap();
         let err = conn
             .execute(
                 "INSERT INTO embeddings (chunk_id, model_id, dims, vector_json, norm, embedded_at)
@@ -476,6 +482,7 @@ mod tests {
             duckdb::params![index::EMBEDDING_MODEL],
         )
         .unwrap();
+        index::publish_to_path(&conn, &catalog).unwrap();
 
         let status = catalog_status_from_paths(&[catalog]);
 
@@ -544,7 +551,7 @@ mod tests {
         last_sync: &str,
         model: &str,
     ) {
-        let conn = duckdb::Connection::open(path).unwrap();
+        let conn = duckdb::Connection::open_in_memory().unwrap();
         index::ensure_schema(&conn).unwrap();
         conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('last_sync', ?1)",
@@ -576,5 +583,6 @@ mod tests {
             )
             .unwrap();
         }
+        index::publish_to_path(&conn, path).unwrap();
     }
 }

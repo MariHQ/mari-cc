@@ -30,13 +30,9 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
         }
         Err(_) => None,
     };
-    // One-writer rule (§9): consumers read the replica; only the writer syncs.
-    if cloud::enabled() && cloud::role() == "consumer" {
-        eprintln!(
-            "✗ this machine is a cloud consumer — run `mari pull` to refresh the replica,              or `mari cloud role writer` if this machine should own the shared catalog"
-        );
-        return Ok(1);
-    }
+    // No one-writer rule: concurrent syncs from multiple machines are safe —
+    // each publish commits with an optimistic CAS on the snapshot pointer and
+    // replays its diff against the advanced snapshot on conflict (§8.8/§9).
     if rebuild {
         if let Some(msg) = cloud::forbid_rebuild() {
             eprintln!("✗ {msg}");
@@ -132,6 +128,9 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
         }
         mirror_tags(&conn)?;
         set_meta(&conn, "last_sync", &now())?;
+        // Commit this source's changes to the Iceberg warehouse (§8.8). The
+        // staging conn is in-memory, so nothing persists until this runs.
+        super::publish_catalog(&conn, source_catalog_global(s))?;
     }
     // Vector embedding pass (§7.1): the local embedding model over every
     // chunk missing a vector; loud on failure, never silent.
@@ -144,7 +143,15 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
     }
     let mut embedded_vectors = 0usize;
     for g in catalogs_touched {
-        match open_catalog(g).and_then(|conn| super::vector::sync_vectors(&conn, g, rebuild)) {
+        match open_catalog(g).and_then(|conn| {
+            let n = super::vector::sync_vectors(&conn, g, rebuild)?;
+            // Persist embeddings-related catalog rows to Iceberg (§8.8), then
+            // upload the Lance vectors to the s3 warehouse so remote consumers get
+            // hybrid (not keyword-only) search. No-op for a local backend.
+            super::publish_catalog(&conn, g)?;
+            super::iceberg::upload_vectors_if_s3(g)?;
+            Ok(n)
+        }) {
             Ok(n) => embedded_vectors += n,
             Err(e) => {
                 let msg = e.to_string();

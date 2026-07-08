@@ -34,11 +34,13 @@ fn open() -> Result<Connection> {
     open_at(&index::catalog_path(false))
 }
 
+/// A writable staging catalog hydrated from the warehouse behind `db` (§8.8).
+/// Mutating subcommands must call `index::publish_to_path(&conn, db)` to commit.
 fn open_at(db: &Path) -> Result<Connection> {
-    if !db.exists() {
+    if !index::warehouse_published_at(db) {
         return Err(anyhow!("no catalog yet — run `mari sync` first"));
     }
-    Ok(Connection::open(db)?)
+    index::open_catalog_at(db)
 }
 
 /// Resolve `path[#symbol]` to a span in the catalog. Bare paths resolve to
@@ -134,6 +136,7 @@ fn add(src: &str, dst: &str, by: &str, note: Option<&str>) -> Result<i32> {
             serde_json::json!({"by": by, "note": note}).to_string(),
         ],
     )?;
+    index::publish_to_path(&conn, &index::catalog_path(false))?;
     println!(
         "✓ lineage {} [{status}] {from_desc} ↔ {to_desc}",
         &lineage_id[..8]
@@ -162,6 +165,7 @@ fn set_status(id_prefix: Option<&String>, status: &str) -> Result<i32> {
         eprintln!("✗ no lineage edge matches `{prefix}`");
         return Ok(1);
     }
+    index::publish_to_path(&conn, &index::catalog_path(false))?;
     println!("✓ {n} edge(s) → {status}");
     Ok(0)
 }
@@ -305,6 +309,9 @@ fn refine(doc_ref: Option<&str>, by: &str) -> Result<i32> {
                 proposed += 1;
             }
         }
+    }
+    if proposed > 0 {
+        index::publish_to_path(&conn, &index::catalog_path(false))?;
     }
     println!(
         "✓ proposed {proposed} lineage edge(s) from embedding neighbours — review with `mari lineage list`, then confirm/reject"
