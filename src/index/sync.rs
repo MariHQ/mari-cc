@@ -33,7 +33,7 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
     // One-writer rule (§9): consumers read the replica; only the writer syncs.
     if cloud::enabled() && cloud::role() == "consumer" {
         eprintln!(
-            "✗ this machine is a cloud consumer — run `mari pull` to refresh the replica,              or `mari cloud role writer` if this machine should own the shared catalog"
+            "✗ this machine is a cloud consumer — run `mari cloud pull` to refresh the shared warehouse, or `mari cloud role writer` if this machine should own it"
         );
         return Ok(1);
     }

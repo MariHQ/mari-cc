@@ -6624,6 +6624,7 @@ dependencies = [
  "apache-avro",
  "arrow-array",
  "arrow-schema",
+ "arrow-select",
  "chrono",
  "clap",
  "dirs 5.0.1",
@@ -6637,6 +6638,7 @@ dependencies = [
  "lance",
  "llama-cpp-2",
  "llama-cpp-sys-2",
+ "murmur3",
  "object_store",
  "owo-colors",
  "parquet",
@@ -6835,6 +6837,12 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
+
+[[package]]
+name = "murmur3"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9252111cf132ba0929b6f8e030cac2a24b507f3a4d6db6fb2896f27b354c714b"
 
 [[package]]
 name = "naga"

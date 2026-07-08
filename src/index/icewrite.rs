@@ -14,7 +14,7 @@ use super::icestore::Store;
 use anyhow::{Context, Result};
 use apache_avro::types::Value as Av;
 use apache_avro::{Schema as AvSchema, Writer as AvWriter};
-use arrow_array::RecordBatch;
+use arrow_array::{Array, ArrayRef, RecordBatch, StringArray, UInt32Array};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use std::collections::HashMap;
 use std::path::Path;
@@ -48,12 +48,51 @@ impl IceField {
     }
 }
 
+/// An Iceberg partition transform (§8.7). `Bucket` uses `storage.bucket_chunks`.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Transform {
+    Identity,
+    Bucket,
+    Month,
+}
+
+/// One partition field: which source column, the transform, the partition-field
+/// name, and its Iceberg partition field-id (≥1000).
+#[derive(Clone, Copy)]
+pub struct PartField {
+    pub source: &'static str,
+    pub transform: Transform,
+    pub name: &'static str,
+    pub field_id: i32,
+}
+
+/// Iceberg `bucket(N)` value for a string: `(murmur3_x86_32(utf8, seed 0) &
+/// 0x7fffffff) % N`. Must match DuckDB's recomputation exactly, or partition
+/// pruning would drop live rows (verified against Iceberg's reference vectors).
+pub fn bucket_of(value: &str, n: u32) -> i32 {
+    let hash = murmur3::murmur3_32(&mut std::io::Cursor::new(value.as_bytes()), 0).unwrap_or(0);
+    ((hash & 0x7fff_ffff) % n.max(1)) as i32
+}
+
+/// Iceberg `month` value for an RFC3339 timestamp string: months since 1970-01.
+pub fn month_of(rfc3339: &str) -> Option<i32> {
+    use chrono::Datelike;
+    let dt = chrono::DateTime::parse_from_rfc3339(rfc3339).ok()?;
+    Some((dt.year() - 1970) * 12 + (dt.month() as i32 - 1))
+}
+
 /// A catalog table's Iceberg shape: its name, ordered fields (with stable
-/// field-ids), and the logical merge key (§8.7) used for equality deletes.
+/// field-ids), the logical merge key (§8.7) used for equality deletes, and its
+/// partition spec (§8.7). Partitioned data uses spec-id 1; equality deletes are
+/// written global under the unpartitioned spec-id 0.
 pub struct TableDef {
     pub name: &'static str,
     pub fields: &'static [IceField],
     pub key: &'static [&'static str],
+    pub partition: &'static [PartField],
+    /// Write sort order (§8.7) — columns each data file is sorted by, so
+    /// per-partition Parquet row-group stats prune tightly.
+    pub sort: &'static [&'static str],
 }
 
 impl TableDef {
@@ -142,21 +181,36 @@ const SYNC_EVENTS: &[IceField] = &[
     f!(10, "metadata_json", "string"),
 ];
 
-/// All 12 published catalog tables (§8.8), each with its Iceberg fields + merge
-/// key. `tags` has a composite key; all others a single id column.
+// Partition specs (§8.7). Partition field-ids start at 1000. `bucket` uses
+// storage.bucket_chunks; identity/month carry the source column through.
+const P_NONE: &[PartField] = &[];
+macro_rules! pf {
+    ($src:literal, $t:expr, $name:literal) => {
+        PartField { source: $src, transform: $t, name: $name, field_id: 1000 }
+    };
+}
+const P_DOCUMENTS: &[PartField] = &[pf!("source_id", Transform::Identity, "source_id")];
+const P_DOC_BUCKET: &[PartField] = &[pf!("doc_id", Transform::Bucket, "doc_id_bucket")];
+const P_EDGES: &[PartField] = &[pf!("from_type", Transform::Identity, "from_type")];
+const P_TAGS: &[PartField] = &[pf!("target_type", Transform::Identity, "target_type")];
+const P_SYNC: &[PartField] = &[pf!("started_at", Transform::Month, "started_at_month")];
+
+/// All 12 published catalog tables (§8.8), each with its Iceberg fields, merge
+/// key, and partition spec (§8.7). `tags` has a composite key; all others a
+/// single id column.
 pub const CATALOG: &[TableDef] = &[
-    TableDef { name: "schema_meta", fields: SCHEMA_META, key: &["key"] },
-    TableDef { name: "sources", fields: SOURCES, key: &["source_id"] },
-    TableDef { name: "documents", fields: DOCUMENTS, key: &["doc_id"] },
-    TableDef { name: "chunks", fields: CHUNKS, key: &["chunk_id"] },
-    TableDef { name: "embeddings", fields: EMBEDDINGS, key: &["chunk_id"] },
-    TableDef { name: "spans", fields: SPANS, key: &["span_id"] },
-    TableDef { name: "symbols", fields: SYMBOLS, key: &["symbol_id"] },
-    TableDef { name: "edges", fields: EDGES, key: &["edge_id"] },
-    TableDef { name: "lineage_edges", fields: LINEAGE_EDGES, key: &["lineage_id"] },
-    TableDef { name: "facts", fields: FACTS, key: &["fact_id"] },
-    TableDef { name: "tags", fields: TAGS, key: &["target_type", "target_id"] },
-    TableDef { name: "sync_events", fields: SYNC_EVENTS, key: &["event_id"] },
+    TableDef { name: "schema_meta", fields: SCHEMA_META, key: &["key"], partition: P_NONE, sort: &["key"] },
+    TableDef { name: "sources", fields: SOURCES, key: &["source_id"], partition: P_NONE, sort: &["source_id"] },
+    TableDef { name: "documents", fields: DOCUMENTS, key: &["doc_id"], partition: P_DOCUMENTS, sort: &["doc_id"] },
+    TableDef { name: "chunks", fields: CHUNKS, key: &["chunk_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "chunk_index"] },
+    TableDef { name: "embeddings", fields: EMBEDDINGS, key: &["chunk_id"], partition: P_NONE, sort: &["chunk_id"] },
+    TableDef { name: "spans", fields: SPANS, key: &["span_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "start_byte"] },
+    TableDef { name: "symbols", fields: SYMBOLS, key: &["symbol_id"], partition: P_DOC_BUCKET, sort: &["doc_id", "qualified_name"] },
+    TableDef { name: "edges", fields: EDGES, key: &["edge_id"], partition: P_EDGES, sort: &["from_id", "rel"] },
+    TableDef { name: "lineage_edges", fields: LINEAGE_EDGES, key: &["lineage_id"], partition: P_NONE, sort: &["from_span_id"] },
+    TableDef { name: "facts", fields: FACTS, key: &["fact_id"], partition: P_NONE, sort: &["fact_id"] },
+    TableDef { name: "tags", fields: TAGS, key: &["target_type", "target_id"], partition: P_TAGS, sort: &["target_id"] },
+    TableDef { name: "sync_events", fields: SYNC_EVENTS, key: &["event_id"], partition: P_SYNC, sort: &["started_at"] },
 ];
 
 #[allow(dead_code)] // public lookup used by tests and the future compaction path
@@ -177,6 +231,135 @@ pub fn arrow_schema(fields: &[IceField]) -> Arc<ArrowSchema> {
         })
         .collect();
     Arc::new(ArrowSchema::new(cols))
+}
+
+/// A computed partition value for one field.
+#[derive(Clone)]
+enum PartScalar {
+    Str(String),
+    Int(i32),
+}
+
+/// One partition group: the field values (Avro-ready) and the row indices of the
+/// added batch that fall in it. Iceberg requires all rows in a data file to share
+/// one partition value, so each group becomes its own data file.
+struct PartGroup {
+    cells: Vec<(PartField, Option<PartScalar>)>,
+    rows: Vec<u32>,
+}
+
+/// Group a batch's rows by partition value (§8.7). Unpartitioned → one group
+/// covering all rows with an empty partition tuple. `bucket_n` is
+/// `storage.bucket_chunks`.
+fn partition_groups(
+    batch: &RecordBatch,
+    fields: &[IceField],
+    part: &[PartField],
+    bucket_n: u32,
+) -> Vec<PartGroup> {
+    if part.is_empty() {
+        return vec![PartGroup {
+            cells: Vec::new(),
+            rows: (0..batch.num_rows() as u32).collect(),
+        }];
+    }
+    // Column index for each partition field's source column.
+    let src_col: Vec<usize> = part
+        .iter()
+        .map(|p| fields.iter().position(|f| f.name == p.source).unwrap())
+        .collect();
+    let mut groups: HashMap<String, PartGroup> = HashMap::new();
+    for i in 0..batch.num_rows() {
+        let mut cells = Vec::with_capacity(part.len());
+        let mut key = String::new();
+        for (pf, &ci) in part.iter().zip(&src_col) {
+            let arr = batch.column(ci).as_any().downcast_ref::<StringArray>();
+            let src = arr.and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_string()) });
+            let scalar = match pf.transform {
+                Transform::Identity => src.clone().map(PartScalar::Str),
+                Transform::Bucket => src.as_deref().map(|s| PartScalar::Int(bucket_of(s, bucket_n))),
+                Transform::Month => src.as_deref().and_then(month_of).map(PartScalar::Int),
+            };
+            key.push_str(&match &scalar {
+                None => "∅|".to_string(),
+                Some(PartScalar::Str(s)) => format!("s:{s}|"),
+                Some(PartScalar::Int(n)) => format!("i:{n}|"),
+            });
+            cells.push((*pf, scalar));
+        }
+        groups
+            .entry(key)
+            .or_insert_with(|| PartGroup { cells, rows: Vec::new() })
+            .rows
+            .push(i as u32);
+    }
+    groups.into_values().collect()
+}
+
+/// The Avro `partition` value for a group (a record of one field per partition
+/// field). Empty record when unpartitioned.
+fn partition_avro_value(cells: &[(PartField, Option<PartScalar>)]) -> Av {
+    Av::Record(
+        cells
+            .iter()
+            .map(|(pf, v)| {
+                let av = match v {
+                    None => Av::Union(0, Box::new(Av::Null)),
+                    Some(PartScalar::Str(s)) => Av::Union(1, Box::new(Av::String(s.clone()))),
+                    Some(PartScalar::Int(n)) => Av::Union(1, Box::new(Av::Int(*n))),
+                };
+                (pf.name.to_string(), av)
+            })
+            .collect(),
+    )
+}
+
+/// The Avro record fields (JSON, comma-separated) for a partition spec's
+/// `partition` struct — empty for unpartitioned.
+fn partition_avro_fields(part: &[PartField]) -> String {
+    part.iter()
+        .map(|p| {
+            let ty = if p.transform == Transform::Identity { "string" } else { "int" };
+            format!(
+                r#"{{"name":"{}","type":["null","{ty}"],"default":null,"field-id":{}}}"#,
+                p.name, p.field_id
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The metadata.json `partition-specs` entry (`spec-id` 1) for a partitioned
+/// table; `bucket[N]`/`identity`/`month` transforms over the source column's
+/// field-id.
+fn partition_spec_json(part: &[PartField], fields: &[IceField], bucket_n: u32) -> serde_json::Value {
+    let pfields: Vec<serde_json::Value> = part
+        .iter()
+        .map(|p| {
+            let source_id = fields.iter().find(|f| f.name == p.source).map(|f| f.id).unwrap_or(1);
+            let transform = match p.transform {
+                Transform::Identity => "identity".to_string(),
+                Transform::Bucket => format!("bucket[{bucket_n}]"),
+                Transform::Month => "month".to_string(),
+            };
+            serde_json::json!({
+                "name": p.name, "transform": transform,
+                "source-id": source_id, "field-id": p.field_id,
+            })
+        })
+        .collect();
+    serde_json::json!({ "spec-id": 1, "fields": pfields })
+}
+
+/// Slice a batch to the given row indices (for per-partition data files).
+fn take_rows(batch: &RecordBatch, rows: &[u32]) -> Result<RecordBatch> {
+    let idx = UInt32Array::from(rows.to_vec());
+    let cols: Vec<ArrayRef> = batch
+        .columns()
+        .iter()
+        .map(|c| arrow_select::take::take(c, &idx, None))
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(RecordBatch::try_new(batch.schema(), cols)?)
 }
 
 /// Encode a Parquet data file in memory and return `(bytes, record_count)`. The
@@ -201,31 +384,31 @@ fn parquet_bytes(batch: &RecordBatch) -> Result<(Vec<u8>, i64)> {
 /// one snapshot's contribution). Minimal but valid: the fields DuckDB's reader
 /// consumes, plus `equality_ids` so the same schema serves data and
 /// equality-delete manifests. Unpartitioned (`partition` is an empty struct).
-fn manifest_entry_schema() -> AvSchema {
-    AvSchema::parse_str(
-        r#"{
+fn manifest_entry_schema(part_fields: &str) -> AvSchema {
+    let schema = format!(
+        r#"{{
       "type": "record", "name": "manifest_entry",
       "fields": [
-        {"name": "status", "type": "int", "field-id": 0},
-        {"name": "snapshot_id", "type": ["null","long"], "default": null, "field-id": 1},
-        {"name": "sequence_number", "type": ["null","long"], "default": null, "field-id": 3},
-        {"name": "file_sequence_number", "type": ["null","long"], "default": null, "field-id": 4},
-        {"name": "data_file", "type": {
+        {{"name": "status", "type": "int", "field-id": 0}},
+        {{"name": "snapshot_id", "type": ["null","long"], "default": null, "field-id": 1}},
+        {{"name": "sequence_number", "type": ["null","long"], "default": null, "field-id": 3}},
+        {{"name": "file_sequence_number", "type": ["null","long"], "default": null, "field-id": 4}},
+        {{"name": "data_file", "type": {{
           "type": "record", "name": "r2",
           "fields": [
-            {"name": "content", "type": "int", "field-id": 134},
-            {"name": "file_path", "type": "string", "field-id": 100},
-            {"name": "file_format", "type": "string", "field-id": 101},
-            {"name": "partition", "type": {"type":"record","name":"r102","fields":[]}, "field-id": 102},
-            {"name": "record_count", "type": "long", "field-id": 103},
-            {"name": "file_size_in_bytes", "type": "long", "field-id": 104},
-            {"name": "equality_ids", "type": ["null",{"type":"array","items":"int","element-id":136}], "default": null, "field-id": 135}
+            {{"name": "content", "type": "int", "field-id": 134}},
+            {{"name": "file_path", "type": "string", "field-id": 100}},
+            {{"name": "file_format", "type": "string", "field-id": 101}},
+            {{"name": "partition", "type": {{"type":"record","name":"r102","fields":[{part_fields}]}}, "field-id": 102}},
+            {{"name": "record_count", "type": "long", "field-id": 103}},
+            {{"name": "file_size_in_bytes", "type": "long", "field-id": 104}},
+            {{"name": "equality_ids", "type": ["null",{{"type":"array","items":"int","element-id":136}}], "default": null, "field-id": 135}}
           ]
-        }, "field-id": 2}
+        }}, "field-id": 2}}
       ]
-    }"#,
-    )
-    .expect("static manifest_entry avro schema")
+    }}"#
+    );
+    AvSchema::parse_str(&schema).expect("manifest_entry avro schema")
 }
 
 /// 0 = data manifest/file, 1 = delete manifest, 2 = equality-delete file content.
@@ -276,13 +459,22 @@ struct AddFile {
     file_size: i64,
     /// For equality-delete files: the field-ids the delete matches on.
     equality_ids: Option<Vec<i32>>,
+    /// The file's partition value (a record matching this manifest's partition
+    /// spec; empty record when unpartitioned).
+    partition: Av,
 }
 
 /// Encode a manifest file whose entries are all ADDED files of one `content`
-/// kind (data OR delete — Iceberg keeps them in separate manifests). Returns
-/// `(bytes, total_record_count)`; the caller writes it to the store.
-fn manifest_bytes(snapshot_id: i64, seq: i64, files: &[AddFile]) -> Result<(Vec<u8>, i64)> {
-    let schema = manifest_entry_schema();
+/// kind (data OR delete — Iceberg keeps them in separate manifests). All files
+/// share one partition spec, whose `partition` struct fields are `part_fields`
+/// (empty for unpartitioned). Returns `(bytes, total_record_count)`.
+fn manifest_bytes(
+    snapshot_id: i64,
+    seq: i64,
+    files: &[AddFile],
+    part_fields: &str,
+) -> Result<(Vec<u8>, i64)> {
+    let schema = manifest_entry_schema(part_fields);
     let mut w = AvWriter::new(&schema, Vec::new());
     let mut total_rows = 0i64;
     for f in files {
@@ -298,7 +490,7 @@ fn manifest_bytes(snapshot_id: i64, seq: i64, files: &[AddFile]) -> Result<(Vec<
             ("content".into(), Av::Int(f.content as i32)),
             ("file_path".into(), Av::String(f.path.clone())),
             ("file_format".into(), Av::String("PARQUET".into())),
-            ("partition".into(), Av::Record(vec![])),
+            ("partition".into(), f.partition.clone()),
             ("record_count".into(), Av::Long(f.record_count)),
             ("file_size_in_bytes".into(), Av::Long(f.file_size)),
             ("equality_ids".into(), equality_ids),
@@ -320,7 +512,8 @@ fn manifest_bytes(snapshot_id: i64, seq: i64, files: &[AddFile]) -> Result<(Vec<
 struct ManifestRec {
     path: String,
     len: u64,
-    content: i32, // 0 = data manifest, 1 = delete manifest
+    content: i32,   // 0 = data manifest, 1 = delete manifest
+    spec_id: i32,   // partition spec the manifest's files belong to
     seq: i64,
     snapshot_id: i64,
     added_files: i32,
@@ -331,7 +524,7 @@ fn manifest_list_value(r: &ManifestRec) -> Av {
     Av::Record(vec![
         ("manifest_path".into(), Av::String(r.path.clone())),
         ("manifest_length".into(), Av::Long(r.len as i64)),
-        ("partition_spec_id".into(), Av::Int(0)),
+        ("partition_spec_id".into(), Av::Int(r.spec_id)),
         ("content".into(), Av::Int(r.content)),
         ("sequence_number".into(), Av::Long(r.seq)),
         ("min_sequence_number".into(), Av::Long(r.seq)),
@@ -427,14 +620,98 @@ fn current_manifest_list(meta: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// Write one Parquet data file per partition group of `batch` and return an
+/// `AddFile` for each (files already put to the store). Empty groups are skipped.
+#[allow(clippy::too_many_arguments)]
+fn write_partitioned_data(
+    store: &Store,
+    data_dir: &str,
+    fields: &[IceField],
+    part: &[PartField],
+    bucket_n: u32,
+    batch: &RecordBatch,
+    seq: i64,
+    snapshot_id: i64,
+    tag: &str,
+) -> Result<Vec<AddFile>> {
+    let mut out = Vec::new();
+    for (gi, g) in partition_groups(batch, fields, part, bucket_n)
+        .into_iter()
+        .enumerate()
+    {
+        if g.rows.is_empty() {
+            continue;
+        }
+        let sub = take_rows(batch, &g.rows)?;
+        let (bytes, rows) = parquet_bytes(&sub)?;
+        let size = bytes.len() as i64;
+        let uri = format!("{data_dir}/data-{tag}-{seq}-{snapshot_id:x}-p{gi}.parquet");
+        store.put(&uri, bytes)?;
+        out.push(AddFile {
+            content: FileContent::Data,
+            path: uri,
+            record_count: rows,
+            file_size: size,
+            equality_ids: None,
+            partition: partition_avro_value(&g.cells),
+        });
+    }
+    Ok(out)
+}
+
+/// `(sort-orders, default-sort-order-id)` for metadata.json (§8.7). Order 0 is
+/// unsorted; a table with a sort key adds order 1 (ascending, nulls-first) as the
+/// default. Rows are physically sorted at extraction time (`ORDER BY`), so this
+/// declaration is truthful.
+fn sort_orders(sort: &[&str], fields: &[IceField]) -> (Vec<serde_json::Value>, i32) {
+    let mut orders = vec![serde_json::json!({ "order-id": 0, "fields": [] })];
+    if sort.is_empty() {
+        return (orders, 0);
+    }
+    let sfields: Vec<serde_json::Value> = sort
+        .iter()
+        .map(|name| {
+            let id = fields.iter().find(|f| f.name == *name).map(|f| f.id).unwrap_or(1);
+            serde_json::json!({
+                "source-id": id, "transform": "identity",
+                "direction": "asc", "null-order": "nulls-first",
+            })
+        })
+        .collect();
+    orders.push(serde_json::json!({ "order-id": 1, "fields": sfields }));
+    (orders, 1)
+}
+
+/// `(partition-specs, default-spec-id, last-partition-id)` for metadata.json.
+/// spec 0 is always the unpartitioned spec (equality deletes live there); a
+/// partitioned table adds spec 1 as the default.
+fn specs_and_default(
+    part: &[PartField],
+    fields: &[IceField],
+    bucket_n: u32,
+) -> (Vec<serde_json::Value>, i32, i32) {
+    let mut specs = vec![serde_json::json!({ "spec-id": 0, "fields": [] })];
+    if part.is_empty() {
+        (specs, 0, 999)
+    } else {
+        specs.push(partition_spec_json(part, fields, bucket_n));
+        let last = part.iter().map(|p| p.field_id).max().unwrap_or(999);
+        (specs, 1, last)
+    }
+}
+
 /// A single append commit: add `added` data rows and/or an `delete` equality
 /// delete (key field + the key values to remove), producing a new snapshot that
 /// carries every prior live manifest forward (§8.8). DuckDB never writes here.
 /// This is the one write primitive; `create_table` is the fresh-table case.
+#[allow(clippy::too_many_arguments)]
 pub fn commit(
     store: &Store,
     table_uri: &str,
     fields: &[IceField],
+    part: &[PartField],
+    sort: &[&str],
+    bucket_n: u32,
     added: Option<&RecordBatch>,
     delete: Option<(&[IceField], &RecordBatch)>,
     now_ms: i64,
@@ -448,40 +725,38 @@ pub fn commit(
     let seq = version as i64;
     let snapshot_id =
         snapshot_id_from((now_ms as u64) ^ (version.wrapping_mul(0x100_0000_01b3)));
+    let data_spec_id = if part.is_empty() { 0 } else { 1 };
 
     let mut new_manifests: Vec<ManifestRec> = Vec::new();
     let mut mno = 0;
 
-    // Data file (if any rows were added this commit).
+    // Data files, one per partition (§8.7), collected into one data manifest.
     if let Some(batch) = added {
-        let data_uri = format!("{data_dir}/data-{seq}-{snapshot_id:x}.parquet");
-        let (bytes, rows) = parquet_bytes(batch)?;
-        let size = bytes.len() as i64;
-        store.put(&data_uri, bytes)?;
-        let man_uri = format!("{meta_dir}/{snapshot_id:x}-m{mno}.avro");
-        let files = [AddFile {
-            content: FileContent::Data,
-            path: data_uri,
-            record_count: rows,
-            file_size: size,
-            equality_ids: None,
-        }];
-        let (man, total) = manifest_bytes(snapshot_id, seq, &files)?;
-        let len = man.len() as u64;
-        store.put(&man_uri, man)?;
-        new_manifests.push(ManifestRec {
-            path: man_uri,
-            len,
-            content: 0,
-            seq,
-            snapshot_id,
-            added_files: 1,
-            added_rows: total,
-        });
-        mno += 1;
+        let files = write_partitioned_data(
+            store, &data_dir, fields, part, bucket_n, batch, seq, snapshot_id, "add",
+        )?;
+        if !files.is_empty() {
+            let man_uri = format!("{meta_dir}/{snapshot_id:x}-m{mno}.avro");
+            let (man, total) =
+                manifest_bytes(snapshot_id, seq, &files, &partition_avro_fields(part))?;
+            let len = man.len() as u64;
+            store.put(&man_uri, man)?;
+            new_manifests.push(ManifestRec {
+                path: man_uri,
+                len,
+                content: 0,
+                spec_id: data_spec_id,
+                seq,
+                snapshot_id,
+                added_files: files.len() as i32,
+                added_rows: total,
+            });
+            mno += 1;
+        }
     }
 
-    // Equality-delete file (if this commit removes/updates rows).
+    // Equality-delete file (global — unpartitioned spec 0 — so it applies across
+    // partitions to every older data file with a matching key).
     if let Some((keys, dbatch)) = delete {
         let del_uri = format!("{data_dir}/delete-{seq}-{snapshot_id:x}.parquet");
         let (bytes, rows) = parquet_bytes(dbatch)?;
@@ -494,14 +769,16 @@ pub fn commit(
             record_count: rows,
             file_size: size,
             equality_ids: Some(keys.iter().map(|k| k.id).collect()),
+            partition: Av::Record(vec![]),
         }];
-        let (man, total) = manifest_bytes(snapshot_id, seq, &files)?;
+        let (man, total) = manifest_bytes(snapshot_id, seq, &files, "")?;
         let len = man.len() as u64;
         store.put(&man_uri, man)?;
         new_manifests.push(ManifestRec {
             path: man_uri,
             len,
-            content: 1, // delete manifest
+            content: 1, // delete manifest, unpartitioned
+            spec_id: 0,
             seq,
             snapshot_id,
             added_files: 1,
@@ -557,6 +834,9 @@ pub fn commit(
         .unwrap_or_default();
     snapshot_log.push(serde_json::json!({ "timestamp-ms": now_ms, "snapshot-id": snapshot_id }));
 
+    let (partition_specs, default_spec_id, last_partition_id) =
+        specs_and_default(part, fields, bucket_n);
+    let (sort_orders_json, default_sort_id) = sort_orders(sort, fields);
     let metadata = serde_json::json!({
         "format-version": 2,
         "table-uuid": table_uuid,
@@ -566,11 +846,11 @@ pub fn commit(
         "last-column-id": last_col_id,
         "current-schema-id": 0,
         "schemas": [ schema_json(fields) ],
-        "default-spec-id": 0,
-        "partition-specs": [ { "spec-id": 0, "fields": [] } ],
-        "last-partition-id": 999,
-        "default-sort-order-id": 0,
-        "sort-orders": [ { "order-id": 0, "fields": [] } ],
+        "default-spec-id": default_spec_id,
+        "partition-specs": partition_specs,
+        "last-partition-id": last_partition_id,
+        "default-sort-order-id": default_sort_id,
+        "sort-orders": sort_orders_json,
         "properties": {},
         "current-snapshot-id": snapshot_id,
         "refs": { "main": { "snapshot-id": snapshot_id, "type": "branch" } },
@@ -600,10 +880,14 @@ pub fn commit(
 /// under the table (orphan removal). `version-hint` is bumped so readers move to
 /// the clean snapshot atomically; the old snapshot's files are only removed after
 /// the swap.
+#[allow(clippy::too_many_arguments)]
 pub fn rewrite_table(
     store: &Store,
     table_uri: &str,
     fields: &[IceField],
+    part: &[PartField],
+    sort: &[&str],
+    bucket_n: u32,
     batch: &RecordBatch,
     now_ms: i64,
 ) -> Result<Vec<String>> {
@@ -616,23 +900,16 @@ pub fn rewrite_table(
     let seq = version as i64;
     let snapshot_id =
         snapshot_id_from((now_ms as u64) ^ (version.wrapping_mul(0x51_7c_c1_b7_27_22_0a_95)));
+    let data_spec_id = if part.is_empty() { 0 } else { 1 };
 
-    // Single fresh data file with all live rows.
-    let data_uri = format!("{data_dir}/data-compact-{version}-{snapshot_id:x}.parquet");
-    let (bytes, rows) = parquet_bytes(batch)?;
-    let size = bytes.len() as i64;
-    store.put(&data_uri, bytes)?;
+    // Fresh per-partition data files with all live rows (no delete files).
+    let files = write_partitioned_data(
+        store, &data_dir, fields, part, bucket_n, batch, seq, snapshot_id, "compact",
+    )?;
+    let mut keep: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
 
-    // Manifest referencing only that data file.
     let man_uri = format!("{meta_dir}/{snapshot_id:x}-compact-m0.avro");
-    let files = [AddFile {
-        content: FileContent::Data,
-        path: data_uri.clone(),
-        record_count: rows,
-        file_size: size,
-        equality_ids: None,
-    }];
-    let (man, total) = manifest_bytes(snapshot_id, seq, &files)?;
+    let (man, total) = manifest_bytes(snapshot_id, seq, &files, &partition_avro_fields(part))?;
     let man_len = man.len() as u64;
     store.put(&man_uri, man)?;
 
@@ -644,9 +921,10 @@ pub fn rewrite_table(
             path: man_uri.clone(),
             len: man_len,
             content: 0,
+            spec_id: data_spec_id,
             seq,
             snapshot_id,
-            added_files: 1,
+            added_files: files.len() as i32,
             added_rows: total,
         }],
     )?;
@@ -658,6 +936,9 @@ pub fn rewrite_table(
         .and_then(|m| m["table-uuid"].as_str().map(str::to_string))
         .unwrap_or_else(|| uuid_like(snapshot_id));
     let last_col_id = fields.iter().map(|f| f.id).max().unwrap_or(1);
+    let (partition_specs, default_spec_id, last_partition_id) =
+        specs_and_default(part, fields, bucket_n);
+    let (sort_orders_json, default_sort_id) = sort_orders(sort, fields);
     let metadata = serde_json::json!({
         "format-version": 2,
         "table-uuid": table_uuid,
@@ -667,11 +948,11 @@ pub fn rewrite_table(
         "last-column-id": last_col_id,
         "current-schema-id": 0,
         "schemas": [ schema_json(fields) ],
-        "default-spec-id": 0,
-        "partition-specs": [ { "spec-id": 0, "fields": [] } ],
-        "last-partition-id": 999,
-        "default-sort-order-id": 0,
-        "sort-orders": [ { "order-id": 0, "fields": [] } ],
+        "default-spec-id": default_spec_id,
+        "partition-specs": partition_specs,
+        "last-partition-id": last_partition_id,
+        "default-sort-order-id": default_sort_id,
+        "sort-orders": sort_orders_json,
         "properties": { "mari.compacted": "true" },
         "current-snapshot-id": snapshot_id,
         "refs": { "main": { "snapshot-id": snapshot_id, "type": "branch" } },
@@ -692,11 +973,12 @@ pub fn rewrite_table(
     let hint_uri = format!("{meta_dir}/version-hint.text");
     store.put(&hint_uri, version.to_string().into_bytes())?;
 
-    Ok(vec![data_uri, man_uri, list_uri, meta_uri, hint_uri])
+    keep.extend([man_uri, list_uri, meta_uri, hint_uri]);
+    Ok(keep)
 }
 
-/// Fresh-table convenience: the first snapshot holding exactly `batch` at a local
-/// path. Used by the writer round-trip tests.
+/// Fresh-table convenience: the first (unpartitioned) snapshot holding exactly
+/// `batch` at a local path. Used by the writer round-trip tests.
 #[allow(dead_code)]
 pub fn create_table(
     table_dir: &Path,
@@ -708,6 +990,9 @@ pub fn create_table(
         &Store::Local,
         &table_dir.to_string_lossy(),
         fields,
+        P_NONE,
+        &[],
+        16,
         Some(batch),
         None,
         now_ms,
@@ -734,6 +1019,16 @@ mod tests {
     use super::*;
     use arrow_array::{Int64Array, StringArray};
     use duckdb::Connection;
+
+    #[test]
+    fn murmur3_matches_iceberg_reference() {
+        // Iceberg spec Appendix B: murmur3_x86_32 of UTF-8 "iceberg" (seed 0).
+        let h = murmur3::murmur3_32(&mut std::io::Cursor::new(b"iceberg"), 0).unwrap();
+        assert_eq!(h, 1210000089, "murmur3 must match Iceberg's reference hash");
+        // Derived bucket must be deterministic and in range.
+        assert_eq!(bucket_of("iceberg", 16), (1210000089i64 % 16) as i32);
+        assert!((0..16).contains(&bucket_of("anything", 16)));
+    }
 
     #[test]
     fn duckdb_reads_hand_written_iceberg_table() {
@@ -816,6 +1111,9 @@ mod tests {
             &Store::Local,
             &table.to_string_lossy(),
             &fields,
+            P_NONE,
+             &[],
+             16,
             Some(&mk(vec![4], vec!["d"])),
             None,
             1_700_000_001_000,
@@ -838,6 +1136,9 @@ mod tests {
             &Store::Local,
             &table.to_string_lossy(),
             &fields,
+            P_NONE,
+             &[],
+             16,
             None,
             Some((&keys[..], &del)),
             1_700_000_002_000,

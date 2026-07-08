@@ -39,6 +39,7 @@ lance = "8.0.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 arrow-array = "58"
 arrow-schema = "58"
+arrow-select = "58"
 # Manual Iceberg writer (§8.8): Parquet data/delete files written directly from
 # Arrow batches with Iceberg field-ids stamped into the schema. DuckDB is never
 # in the write path. `apache-avro` writes the Iceberg manifest + manifest-list
@@ -48,6 +49,8 @@ apache-avro = "0.17"
 # Object-store writer for the s3 warehouse (§9). Local fs and s3 go through one
 # trait; DuckDB stays read-only. `aws` pulls the S3 backend + credential chain.
 object_store = { version = "0.13", features = ["aws"] }
+# Iceberg bucket() partition transform hashes with 32-bit x86 murmur3, seed 0.
+murmur3 = "0.5"
 futures = "0.3.32"
 # dynamic-link builds llama.cpp + ggml as .dylibs (BUILD_SHARED_LIBS=ON) instead of
 # static archives baked into the binary. Versions always match (the sys crate builds them).

@@ -32,6 +32,14 @@ fn table_names() -> Vec<&'static str> {
     CATALOG.iter().map(|d| d.name).collect()
 }
 
+/// Iceberg `bucket()` partition count (`storage.bucket_chunks`, default 16).
+fn bucket_n() -> u32 {
+    config::resolve(Some(&workspace::work_root()))["storage"]["bucket_chunks"]
+        .as_u64()
+        .unwrap_or(16)
+        .clamp(1, 4096) as u32
+}
+
 /// Store + region for a warehouse (region from `storage.region`).
 fn store_for(warehouse: &str) -> Result<Store> {
     let region = config::resolve(Some(&workspace::work_root()))["storage"]["region"]
@@ -114,6 +122,17 @@ fn cast_select(fields: &[IceField]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// `ORDER BY "c1", "c2"` for a table's write sort order (§8.7), or empty. Rows
+/// come out of DuckDB pre-sorted; partition grouping preserves order, so each
+/// per-partition data file is written sorted.
+fn order_by(sort: &[&str]) -> String {
+    if sort.is_empty() {
+        return String::new();
+    }
+    let cols: Vec<String> = sort.iter().map(|c| format!("\"{c}\"")).collect();
+    format!(" ORDER BY {}", cols.join(", "))
 }
 
 /// Run `sql` and assemble the rows into an Arrow `RecordBatch` shaped by
@@ -217,13 +236,19 @@ pub fn compact(warehouse: &str, _retain: usize) -> Result<CompactStats> {
             continue;
         }
         let table_uri = table_uri(warehouse, def.name);
-        // Extract the live rows; an empty table still gets a clean empty snapshot.
-        let sql = format!("SELECT {} FROM {}", cast_select(def.fields), def.name);
+        // Extract the live rows (sorted per §8.7); an empty table still gets a
+        // clean empty snapshot.
+        let sql = format!(
+            "SELECT {} FROM {}{}",
+            cast_select(def.fields),
+            def.name,
+            order_by(def.sort)
+        );
         let batch = query_to_batch(&conn, &sql, def.fields)?
             .unwrap_or_else(|| RecordBatch::new_empty(arrow_schema(def.fields)));
 
         let keep: std::collections::HashSet<String> =
-            icewrite::rewrite_table(&store, &table_uri, def.fields, &batch, ts)?
+            icewrite::rewrite_table(&store, &table_uri, def.fields, def.partition, def.sort, bucket_n(), &batch, ts)?
                 .into_iter()
                 .collect();
 
@@ -253,13 +278,14 @@ fn publish_table(
 
     // Added or changed rows: staging rows whose full-row hash is not present in
     // the snapshot. For an unpublished table, that is every row.
+    let ord = order_by(def.sort);
     let add_sql = if published {
         format!(
-            "SELECT {sel} FROM {name} WHERE {hash} NOT IN (SELECT {hash} FROM iceberg_scan('{loc}'))",
+            "SELECT {sel} FROM {name} WHERE {hash} NOT IN (SELECT {hash} FROM iceberg_scan('{loc}')){ord}",
             name = def.name
         )
     } else {
-        format!("SELECT {sel} FROM {name}", name = def.name)
+        format!("SELECT {sel} FROM {name}{ord}", name = def.name)
     };
     let added = query_to_batch(conn, &add_sql, def.fields)?;
 
@@ -284,7 +310,7 @@ fn publish_table(
         return Ok(()); // nothing changed — no new snapshot
     }
     let del_arg = deleted.as_ref().map(|b| (&key_fields[..], b));
-    icewrite::commit(store, &loc, def.fields, added.as_ref(), del_arg, ts)
+    icewrite::commit(store, &loc, def.fields, def.partition, def.sort, bucket_n(), added.as_ref(), del_arg, ts)
         .with_context(|| format!("committing iceberg snapshot for {}", def.name))?;
     Ok(())
 }
@@ -292,6 +318,60 @@ fn publish_table(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Partitioning (§8.7): `documents` by identity(source_id), `chunks` by
+    /// bucket(doc_id). Proves data is physically split into partition files AND
+    /// that a `WHERE` predicate on the partition column returns the correct rows
+    /// (partition pruning must not drop live rows).
+    #[test]
+    fn partitioned_layout_and_predicate_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let wh = dir.path().join("wh").to_string_lossy().to_string();
+
+        let c = Connection::open_in_memory().unwrap();
+        crate::index::ensure_schema(&c).unwrap();
+        // Docs from two sources; chunks across several doc_ids (→ several buckets).
+        c.execute_batch(
+            "INSERT INTO documents VALUES \
+             ('dA','git','a','git:a','A',NULL,'a','text/markdown','file',NULL,NULL,NULL,NULL,'t','1','h','b','{}'),\
+             ('dB','slack','b','slack:b','B',NULL,'b','text/markdown','doc',NULL,NULL,NULL,NULL,'t','1','h','b','{}');",
+        ).unwrap();
+        for i in 0..8 {
+            c.execute(
+                "INSERT INTO chunks VALUES (?1, ?2, ?3, 'h', NULL, 0, 1, 1, 1, 1, 'txt', 's', '{}')",
+                duckdb::params![format!("c{i}"), format!("d{}", i % 4), i as i64],
+            )
+            .unwrap();
+        }
+        publish(&c, &wh).unwrap();
+
+        // documents: identity(source_id) → one data file per source.
+        let doc_files = std::fs::read_dir(format!("{wh}/documents/data")).unwrap().count();
+        assert_eq!(doc_files, 2, "documents split into git + slack partitions");
+        // chunks: bucket(doc_id) over 4 distinct doc_ids → ≥2 partition files.
+        let chunk_files = std::fs::read_dir(format!("{wh}/chunks/data")).unwrap().count();
+        assert!(chunk_files >= 2, "chunks split across buckets (got {chunk_files})");
+
+        let r = Connection::open_in_memory().unwrap();
+        super::iceberg::install_iceberg(&r).unwrap();
+        let scan = |sql: &str| -> i64 {
+            r.query_row(sql, [], |x| x.get(0)).map_err(|e| format!("{sql}: {e}")).unwrap()
+        };
+        // No predicate → all rows.
+        assert_eq!(scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/chunks')")), 8);
+        // Identity-partition predicate returns exactly the matching rows.
+        assert_eq!(
+            scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/documents') WHERE source_id='slack'")),
+            1,
+            "identity partition prune keeps the slack doc"
+        );
+        // Bucket-partition predicate on doc_id must not drop rows (2 chunks per doc_id d0..d3).
+        assert_eq!(
+            scan(&format!("SELECT count(*) FROM iceberg_scan('{wh}/chunks') WHERE doc_id='d2'")),
+            2,
+            "bucket partition prune keeps both chunks of d2"
+        );
+    }
 
     /// Full staging→publish→hydrate→publish round trip, proving incremental
     /// equality-delete upserts survive a reader. Uses two independent in-memory

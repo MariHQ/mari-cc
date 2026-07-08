@@ -241,6 +241,22 @@ pub fn open_read_scope(global: bool) -> Result<Option<Connection>> {
     open_read(&warehouse_uri(global))
 }
 
+/// Proactively refresh the local read-mirror of a scope's s3 warehouse (used by
+/// `mari cloud pull` and throttled auto-pull). No-op for a local backend.
+pub fn refresh_mirror(global: bool) -> Result<()> {
+    let wh = warehouse_uri(global);
+    if is_s3(&wh) {
+        read_warehouse(&wh)?; // mirrors as a side effect
+    }
+    Ok(())
+}
+
+/// Local warehouse directory for a scope, regardless of the configured backend
+/// (used by `mari cloud init` to find data to upload to s3).
+pub fn local_warehouse_dir(global: bool) -> PathBuf {
+    local_warehouse(&index::catalog_path(global))
+}
+
 fn table_uri(uri: &str, table: &str) -> String {
     format!("{}/{table}", uri.trim_end_matches('/'))
 }
