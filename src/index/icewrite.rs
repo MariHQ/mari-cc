@@ -858,19 +858,37 @@ pub fn commit(
         "snapshot-log": snapshot_log,
         "metadata-log": []
     });
-    store.put(
+    // Compare-and-swap: exactly one writer can create v{version}.metadata.json.
+    // If another writer already committed this version, report a conflict so the
+    // caller re-reads the advanced snapshot and replays its diff (§9).
+    let won = store.put_if_absent(
         &format!("{meta_dir}/v{version}.metadata.json"),
         serde_json::to_vec_pretty(&metadata)?,
     )?;
+    if !won {
+        return Err(commit_conflict(version));
+    }
 
     // Pointer swap. On a local fs a single write of a tiny file is effectively
     // atomic for readers; on s3 a put is atomic per key. Readers resolve the new
-    // snapshot only once the hint names it.
+    // snapshot only once the hint names it. The manifests/data of a losing
+    // attempt are orphaned and reclaimed by compaction.
     store.put(
         &format!("{meta_dir}/version-hint.text"),
         version.to_string().into_bytes(),
     )?;
     Ok(())
+}
+
+/// The sentinel error a `commit` returns when it lost the compare-and-swap race
+/// for a snapshot version. Callers retry against the advanced snapshot.
+fn commit_conflict(version: u64) -> anyhow::Error {
+    anyhow::anyhow!("iceberg-commit-conflict at v{version}")
+}
+
+/// True when `err` is a lost-CAS commit conflict (retryable, §9).
+pub fn is_commit_conflict(err: &anyhow::Error) -> bool {
+    err.to_string().contains("iceberg-commit-conflict")
 }
 
 /// Compaction rewrite (§8.8): replace the table with a **single fresh snapshot**
@@ -968,7 +986,11 @@ pub fn rewrite_table(
         "metadata-log": []
     });
     let meta_uri = format!("{meta_dir}/v{version}.metadata.json");
-    store.put(&meta_uri, serde_json::to_vec_pretty(&metadata)?)?;
+    if !store.put_if_absent(&meta_uri, serde_json::to_vec_pretty(&metadata)?)? {
+        // A concurrent commit advanced the table; abort so compaction doesn't
+        // drop that writer's data. Re-run compaction when the table is quiescent.
+        return Err(commit_conflict(version));
+    }
 
     let hint_uri = format!("{meta_dir}/version-hint.text");
     store.put(&hint_uri, version.to_string().into_bytes())?;

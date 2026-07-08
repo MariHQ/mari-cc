@@ -62,33 +62,79 @@ pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// The name of a table's hydrate-baseline snapshot in the staging connection.
+fn base_table(name: &str) -> String {
+    format!("__base_{name}")
+}
+
 /// Hydrate the staging tables from the published snapshot: `INSERT … SELECT * FROM
-/// iceberg_scan(...)` for every table that exists in the warehouse. A no-op for
-/// an unpublished warehouse. The iceberg extension is loaded read-only.
+/// iceberg_scan(...)` for every table that exists in the warehouse. Also records
+/// a per-table `__base` (key + row-hash) of exactly what was hydrated, so publish
+/// commits only **this writer's delta** — the difference between staging and the
+/// baseline — never the difference against a concurrently-advanced snapshot. That
+/// is what makes concurrent writers safe (§9): each commits its own delta and
+/// carried-forward manifests merge the others' data.
 pub fn hydrate(conn: &Connection, warehouse: &str) -> Result<()> {
     let store = store_for(warehouse)?;
     let published = store.published_tables(warehouse, &table_names());
-    if published.is_empty() {
-        return Ok(());
+    if !published.is_empty() {
+        iceberg::load_extensions(conn, warehouse)?;
+        // `ensure_schema` pre-seeds schema_meta with defaults; clear them so the
+        // published rows load without a primary-key collision. Every other table
+        // is empty at hydrate time, so a plain INSERT is correct.
+        conn.execute_batch("DELETE FROM schema_meta;").ok();
+        for def in CATALOG {
+            if !published.iter().any(|t| t == def.name) {
+                continue;
+            }
+            let loc = table_uri(warehouse, def.name);
+            conn.execute_batch(&format!(
+                "INSERT INTO {} SELECT * FROM iceberg_scan('{}');",
+                def.name, loc
+            ))
+            .with_context(|| format!("hydrating {} from {}", def.name, loc))?;
+        }
     }
-    iceberg::load_extensions(conn, warehouse)?;
-    // `ensure_schema` pre-seeds schema_meta with defaults; clear them so the
-    // published rows load without a primary-key collision. Every other table is
-    // empty at hydrate time, so a plain INSERT is correct (and avoids DuckDB's
-    // "conflict target required" error on tables with multiple UNIQUE keys).
-    conn.execute_batch("DELETE FROM schema_meta;").ok();
+    // Snapshot the baseline (key columns + full-row hash) for every table that
+    // exists in staging, so the publish diff is "staging vs what I hydrated", not
+    // "staging vs live remote". Empty for an unpublished table (→ every staging
+    // row is an add). Tables absent from the staging schema are skipped.
+    let existing = staging_tables(conn)?;
     for def in CATALOG {
-        if !published.iter().any(|t| t == def.name) {
+        if !existing.contains(def.name) {
             continue;
         }
-        let loc = table_uri(warehouse, def.name);
+        // For a published table the staging rows == the just-loaded warehouse
+        // rows, so they are the baseline. For an unpublished table the baseline is
+        // EMPTY — otherwise `ensure_schema`'s seeded schema_meta defaults (added
+        // before hydrate) would look "already published" and never get written.
+        let filter = if published.iter().any(|t| t == def.name) {
+            ""
+        } else {
+            " WHERE 1=0"
+        };
+        let keys = cast_select(&def.key_fields());
+        let hash = row_hash_expr(def.fields);
         conn.execute_batch(&format!(
-            "INSERT INTO {} SELECT * FROM iceberg_scan('{}');",
-            def.name, loc
+            "CREATE OR REPLACE TABLE {base} AS SELECT {keys}, {hash} AS __h FROM {name}{filter};",
+            base = base_table(def.name),
+            name = def.name
         ))
-        .with_context(|| format!("hydrating {} from {}", def.name, loc))?;
+        .with_context(|| format!("recording hydrate baseline for {}", def.name))?;
     }
     Ok(())
+}
+
+/// Names of base tables present in the staging connection.
+fn staging_tables(conn: &Connection) -> Result<std::collections::HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'",
+    )?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(names)
 }
 
 /// A stable per-row hash expression over all columns, identical whether the row
@@ -191,16 +237,12 @@ pub fn publish(conn: &Connection, warehouse: &str) -> Result<()> {
         std::fs::create_dir_all(warehouse).ok();
     }
     let ts = now_ms();
-    // The iceberg extension is needed to read prior snapshots for the diff.
+    // The iceberg extension is needed to carry prior snapshots forward on commit.
     iceberg::load_extensions(conn, warehouse).ok();
-    // One object store (local or s3) for the whole publish — an s3 client carries
-    // shared runtime state, so build it once, not per table. One warehouse listing
-    // decides which tables already exist.
+    // One object store (local or s3) for the whole publish — build it once.
     let store = store_for(warehouse)?;
-    let published = store.published_tables(warehouse, &table_names());
     for def in CATALOG {
-        let is_pub = published.iter().any(|t| t == def.name);
-        publish_table(conn, &store, warehouse, def, is_pub, ts)?;
+        publish_table(conn, &store, warehouse, def, ts)?;
     }
     Ok(())
 }
@@ -214,105 +256,153 @@ pub struct CompactStats {
 
 /// Compact the warehouse (§8.8): rewrite each table's live rows into a single
 /// fresh data file (applying accumulated equality deletes and coalescing
-/// fragments), expire prior snapshots, and delete every orphaned file. Reads run
-/// against the current snapshot throughout; the `version-hint` swap is atomic and
-/// old files are removed only after it. `retain` is accepted for the CLI contract;
-/// v1 collapses to the single current snapshot.
+/// fragments), expire prior snapshots, and delete every orphaned file.
+///
+/// Concurrency-safe (§9): compaction commits with the same optimistic CAS as a
+/// normal sync. If a writer advances a table between compaction's read and its
+/// commit, the CAS loses; compaction then **re-reads the advanced snapshot's live
+/// rows (now including that writer's new data) and re-compacts** — folding the new
+/// stuff into the single compacted unit rather than dropping it. A losing
+/// writer, in turn, re-carries from the compacted snapshot, so orphan deletion
+/// never strands a file a live snapshot still references. `retain` is accepted for
+/// the CLI contract; v1 collapses to the single current snapshot.
 pub fn compact(warehouse: &str, _retain: usize) -> Result<CompactStats> {
     let store = store_for(warehouse)?;
     let published = store.published_tables(warehouse, &table_names());
     if published.is_empty() {
         return Ok(CompactStats::default());
     }
-    // A read connection over the current live rows (deletes already applied by
-    // iceberg_scan; s3 warehouses are mirrored to local first).
-    let Some(conn) = iceberg::open_read(warehouse)? else {
-        return Ok(CompactStats::default());
-    };
     let ts = now_ms();
     let mut stats = CompactStats::default();
+    // Re-mirrored fresh on the first pass and after every conflict.
+    let mut conn: Option<Connection> = None;
     for def in CATALOG {
         if !published.iter().any(|t| t == def.name) {
             continue;
         }
         let table_uri = table_uri(warehouse, def.name);
-        // Extract the live rows (sorted per §8.7); an empty table still gets a
-        // clean empty snapshot.
-        let sql = format!(
-            "SELECT {} FROM {}{}",
-            cast_select(def.fields),
-            def.name,
-            order_by(def.sort)
-        );
-        let batch = query_to_batch(&conn, &sql, def.fields)?
-            .unwrap_or_else(|| RecordBatch::new_empty(arrow_schema(def.fields)));
+        let mut converged = false;
+        for _ in 0..16 {
+            // Fresh read of the current live rows (picks up concurrent syncs);
+            // reused across tables until a conflict forces a re-read.
+            if conn.is_none() {
+                conn = iceberg::open_read(warehouse)?;
+            }
+            let Some(ref c) = conn else {
+                converged = true; // warehouse vanished; nothing to compact
+                break;
+            };
+            let sql = format!(
+                "SELECT {} FROM {}{}",
+                cast_select(def.fields),
+                def.name,
+                order_by(def.sort)
+            );
+            let batch = query_to_batch(c, &sql, def.fields)?
+                .unwrap_or_else(|| RecordBatch::new_empty(arrow_schema(def.fields)));
 
-        let keep: std::collections::HashSet<String> =
-            icewrite::rewrite_table(&store, &table_uri, def.fields, def.partition, def.sort, bucket_n(), &batch, ts)?
-                .into_iter()
-                .collect();
-
-        // Orphan removal: delete everything under the table not in the keep set.
-        for uri in store.list_uris(&table_uri)? {
-            if !keep.contains(&uri) {
-                store.delete(&uri).ok();
-                stats.files_deleted += 1;
+            match icewrite::rewrite_table(
+                &store, &table_uri, def.fields, def.partition, def.sort, bucket_n(), &batch, ts,
+            ) {
+                Ok(keep) => {
+                    let keep: std::collections::HashSet<String> = keep.into_iter().collect();
+                    // Orphan removal: delete everything under the table not kept.
+                    for uri in store.list_uris(&table_uri)? {
+                        if !keep.contains(&uri) {
+                            store.delete(&uri).ok();
+                            stats.files_deleted += 1;
+                        }
+                    }
+                    stats.tables += 1;
+                    converged = true;
+                    break;
+                }
+                // A writer won the version; re-read the advanced snapshot and fold
+                // its new rows into this compaction.
+                Err(e) if icewrite::is_commit_conflict(&e) => {
+                    conn = None;
+                    continue;
+                }
+                Err(e) => return Err(e),
             }
         }
-        stats.tables += 1;
+        if !converged {
+            anyhow::bail!(
+                "compaction of {} did not converge under concurrent writes — retry",
+                def.name
+            );
+        }
     }
     Ok(stats)
 }
 
-fn publish_table(
-    conn: &Connection,
-    store: &Store,
-    warehouse: &str,
-    def: &TableDef,
-    published: bool,
-    ts: i64,
-) -> Result<()> {
+fn publish_table(conn: &Connection, store: &Store, warehouse: &str, def: &TableDef, ts: i64) -> Result<()> {
     let loc = table_uri(warehouse, def.name);
     let hash = row_hash_expr(def.fields);
     let sel = cast_select(def.fields);
-
-    // Added or changed rows: staging rows whose full-row hash is not present in
-    // the snapshot. For an unpublished table, that is every row.
     let ord = order_by(def.sort);
-    let add_sql = if published {
-        format!(
-            "SELECT {sel} FROM {name} WHERE {hash} NOT IN (SELECT {hash} FROM iceberg_scan('{loc}')){ord}",
-            name = def.name
-        )
-    } else {
-        format!("SELECT {sel} FROM {name}{ord}", name = def.name)
-    };
-    let added = query_to_batch(conn, &add_sql, def.fields)?;
-
-    // Removed or changed keys: snapshot rows whose full-row hash is not present
-    // in staging → their key must be equality-deleted (the changed ones are
-    // re-added by the data file above in the same snapshot, which wins on
-    // sequence number). Only meaningful once the table has been published.
     let key_fields = def.key_fields();
-    let deleted = if published {
-        let key_sel = cast_select(&key_fields);
-        let del_sql = format!(
-            "SELECT DISTINCT {key_sel} FROM iceberg_scan('{loc}') \
-             WHERE {hash} NOT IN (SELECT {hash} FROM {name})",
-            name = def.name
-        );
-        query_to_batch(conn, &del_sql, &key_fields)?
-    } else {
-        None
-    };
+    let base = base_table(def.name);
+    let key_cols = key_fields
+        .iter()
+        .map(|f| format!("\"{}\"", f.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Ensure the hydrate baseline exists even if publish was called on a conn
+    // that wasn't hydrated (a fresh seed). Empty for an unpublished table (all
+    // staging rows are adds); the true remote rows for a published one.
+    if !staging_tables(conn)?.contains(&base) {
+        let published = store.published_tables(warehouse, &[def.name]);
+        let src = if published.iter().any(|t| t == def.name) {
+            format!("iceberg_scan('{loc}')")
+        } else {
+            format!("{name} WHERE 1=0", name = def.name)
+        };
+        conn.execute_batch(&format!(
+            "CREATE TABLE {base} AS SELECT {key_sel}, {hash} AS __h FROM {src};",
+            key_sel = cast_select(&key_fields)
+        ))
+        .with_context(|| format!("initializing baseline for {}", def.name))?;
+    }
+
+    // This writer's delta relative to the hydrate baseline (§9):
+    //  - added/changed: staging rows whose full-row hash isn't in the baseline.
+    //  - removed/changed keys: baseline rows whose hash isn't in staging → the
+    //    old version is equality-deleted (a changed key's new version is re-added).
+    // Concurrent writers' rows are in neither set, so they're never clobbered.
+    let add_sql = format!(
+        "SELECT {sel} FROM {name} WHERE {hash} NOT IN (SELECT __h FROM {base}){ord}",
+        name = def.name
+    );
+    let added = query_to_batch(conn, &add_sql, def.fields)?;
+    let del_sql = format!(
+        "SELECT {key_cols} FROM {base} WHERE __h NOT IN (SELECT {hash} FROM {name})",
+        name = def.name
+    );
+    let deleted = query_to_batch(conn, &del_sql, &key_fields)?;
 
     if added.is_none() && deleted.is_none() {
         return Ok(()); // nothing changed — no new snapshot
     }
     let del_arg = deleted.as_ref().map(|b| (&key_fields[..], b));
-    icewrite::commit(store, &loc, def.fields, def.partition, def.sort, bucket_n(), added.as_ref(), del_arg, ts)
-        .with_context(|| format!("committing iceberg snapshot for {}", def.name))?;
-    Ok(())
+
+    // Optimistic-commit loop (§9): commit the delta; if a concurrent writer won
+    // the version's CAS, `commit` re-reads the advanced snapshot (carrying its
+    // manifests forward) and we retry the same delta on top. Conflicts are rare.
+    for _ in 0..16 {
+        match icewrite::commit(
+            store, &loc, def.fields, def.partition, def.sort, bucket_n(),
+            added.as_ref(), del_arg, ts,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) if icewrite::is_commit_conflict(&e) => continue,
+            Err(e) => {
+                return Err(e).with_context(|| format!("committing iceberg snapshot for {}", def.name))
+            }
+        }
+    }
+    anyhow::bail!("iceberg commit for {} did not converge after retries", def.name);
 }
 
 #[cfg(test)]
@@ -330,6 +420,7 @@ mod tests {
 
         let c = Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&c).unwrap();
+        hydrate(&c, &wh).unwrap(); // empty warehouse → empty baselines
         // Docs from two sources; chunks across several doc_ids (→ several buckets).
         c.execute_batch(
             "INSERT INTO documents VALUES \
@@ -390,6 +481,7 @@ mod tests {
         // Session 1: insert two docs, publish.
         let c1 = Connection::open_in_memory().unwrap();
         c1.execute_batch(ddl).unwrap();
+        hydrate(&c1, &wh).unwrap(); // empty warehouse → empty baseline
         c1.execute_batch(
             "INSERT INTO documents VALUES \
              ('d1','git','a','git:a','A',NULL,'a','text/markdown','file',NULL,NULL,NULL,NULL,'t','1','h1','body1','{}'),\
@@ -398,7 +490,7 @@ mod tests {
         .unwrap();
         // Only publish the documents table (others absent in this minimal test).
         let store = Store::open(&wh, "").unwrap();
-        publish_table(&c1, &store, &wh, super::super::icewrite::table_def("documents").unwrap(), false, now_ms())
+        publish_table(&c1, &store, &wh, super::super::icewrite::table_def("documents").unwrap(), now_ms())
             .unwrap();
 
         // Reader sees 2 docs.
@@ -423,7 +515,7 @@ mod tests {
         )
         .unwrap();
         let store2 = Store::open(&wh, "").unwrap();
-        publish_table(&c2, &store2, &wh, super::super::icewrite::table_def("documents").unwrap(), true, now_ms() + 1000)
+        publish_table(&c2, &store2, &wh, super::super::icewrite::table_def("documents").unwrap(), now_ms() + 1000)
             .unwrap();
 
         // Fresh reader: d1 gone, d2 updated, d3 present → {d2,d3}.
@@ -469,6 +561,7 @@ mod tests {
         // Snapshot 1: two docs — full ensure_schema + publish, like a real sync.
         let c1 = Connection::open_in_memory().unwrap();
         crate::index::ensure_schema(&c1).unwrap();
+        hydrate(&c1, &wh).unwrap();
         c1.execute_batch(
             "INSERT INTO documents VALUES \
              ('d1','git','a','git:a','A',NULL,'a','text/markdown','file',NULL,NULL,NULL,NULL,'t','1','h1','b1','{}'),\
@@ -521,5 +614,57 @@ mod tests {
             .query_row(&format!("SELECT body FROM iceberg_scan('{loc}') WHERE doc_id='d2'"), [], |x| x.get(0))
             .unwrap();
         assert_eq!(body, "b2v2", "updated value preserved through compaction");
+    }
+
+    /// Concurrent writers (§9): two sessions hydrate the same snapshot and make
+    /// *disjoint* changes; both must survive. The second publish loses the CAS,
+    /// re-reads the advanced snapshot, and replays its delta on top — and crucially
+    /// does NOT delete the first writer's row (which is absent from its stale view).
+    #[test]
+    fn concurrent_writers_both_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        let wh = dir.path().join("wh").to_string_lossy().to_string();
+        let row = |id: &str, src: &str| {
+            format!("('{id}','{src}','{id}','{src}:{id}','{id}',NULL,'{id}','text/markdown','file',NULL,NULL,NULL,NULL,'t','1','h','b','{{}}')")
+        };
+
+        // Baseline: dA published.
+        let c0 = Connection::open_in_memory().unwrap();
+        crate::index::ensure_schema(&c0).unwrap();
+        hydrate(&c0, &wh).unwrap();
+        c0.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dA", "git"))).unwrap();
+        publish(&c0, &wh).unwrap();
+
+        // Two writers both hydrate the dA snapshot.
+        let ca = Connection::open_in_memory().unwrap();
+        crate::index::ensure_schema(&ca).unwrap();
+        hydrate(&ca, &wh).unwrap();
+        let cb = Connection::open_in_memory().unwrap();
+        crate::index::ensure_schema(&cb).unwrap();
+        hydrate(&cb, &wh).unwrap();
+
+        // Disjoint edits: A adds dB, B adds dC.
+        ca.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dB", "git"))).unwrap();
+        cb.execute_batch(&format!("INSERT INTO documents VALUES {};", row("dC", "slack"))).unwrap();
+
+        // A commits first; B commits against the now-stale snapshot.
+        publish(&ca, &wh).unwrap();
+        publish(&cb, &wh).unwrap(); // must CAS-retry and NOT drop dB
+
+        let r = Connection::open_in_memory().unwrap();
+        super::iceberg::install_iceberg(&r).unwrap();
+        let loc = format!("{wh}/documents");
+        let ids: Vec<String> = {
+            let mut stmt = r
+                .prepare(&format!("SELECT doc_id FROM iceberg_scan('{loc}') ORDER BY doc_id"))
+                .unwrap();
+            let v = stmt.query_map([], |x| x.get::<_, String>(0)).unwrap().map(|r| r.unwrap()).collect();
+            v
+        };
+        assert_eq!(
+            ids,
+            vec!["dA".to_string(), "dB".to_string(), "dC".to_string()],
+            "both writers' rows survive; neither clobbers the other"
+        );
     }
 }

@@ -167,10 +167,8 @@ fn connect(bucket: Option<&str>, prefix: Option<&str>, region: Option<&str>) -> 
 /// publish + tidy the shared warehouse. Per-write publishes keep the read layer
 /// current incrementally; this is the explicit compaction verb.
 fn sync(compact: bool, no_push: bool, retain: Option<usize>) -> Result<i32> {
-    if enabled() && role() == "consumer" {
-        eprintln!("✗ this machine is a cloud consumer — only the writer compacts the shared warehouse");
-        return Ok(1);
-    }
+    // Any machine may compact — commits use optimistic CAS (§8.8), and
+    // compaction aborts cleanly if a concurrent writer advanced a table.
     let cfg = config::resolve(Some(&workspace::work_root()));
     let retain = retain
         .or_else(|| cfg["storage"]["retain_snapshots"].as_u64().map(|n| n as usize))

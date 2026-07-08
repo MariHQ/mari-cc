@@ -257,6 +257,45 @@ pub fn local_warehouse_dir(global: bool) -> PathBuf {
     local_warehouse(&index::catalog_path(global))
 }
 
+/// The directory reads resolve locally for a scope: the local warehouse for a
+/// local backend, or the mirror of the s3 warehouse (§8.8). Vectors and iceberg
+/// tables both live under it.
+pub fn warehouse_local_read_dir(global: bool) -> PathBuf {
+    let wh = warehouse_uri(global);
+    if is_s3(&wh) {
+        mirror_dir(&wh)
+    } else {
+        PathBuf::from(wh)
+    }
+}
+
+/// Upload this scope's local Lance vectors to the s3 warehouse so remote
+/// consumers get hybrid (not keyword-only) search. No-op for a local backend.
+/// Immutable Lance files (new versions get new names) are uploaded once; the
+/// reader's mirror then pulls them down alongside the iceberg tables.
+pub fn upload_vectors_if_s3(global: bool) -> Result<()> {
+    let wh = warehouse_uri(global);
+    if !is_s3(&wh) {
+        return Ok(());
+    }
+    let local = local_warehouse_dir(global).join("vectors.lance");
+    if !local.exists() {
+        return Ok(());
+    }
+    use crate::index::icestore::Store;
+    let local_store = Store::Local;
+    let remote = Store::open(&wh, &storage_region())?;
+    let base = local.to_string_lossy().to_string();
+    let wh = wh.trim_end_matches('/');
+    for uri in local_store.list_uris(&base)? {
+        let rel = uri.strip_prefix(&base).unwrap_or(&uri).trim_start_matches('/');
+        let remote_uri = format!("{wh}/vectors.lance/{rel}");
+        // Idempotent: already-uploaded (immutable) files are skipped.
+        remote.put_if_absent(&remote_uri, local_store.get(&uri)?.unwrap_or_default())?;
+    }
+    Ok(())
+}
+
 fn table_uri(uri: &str, table: &str) -> String {
     format!("{}/{table}", uri.trim_end_matches('/'))
 }

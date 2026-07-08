@@ -228,6 +228,42 @@ impl Store {
         }
     }
 
+    /// Write `bytes` at `uri` **only if it does not already exist**. Returns
+    /// `true` if written, `false` if another writer already created it — the
+    /// atomic compare-and-swap that lets concurrent writers commit safely (§9):
+    /// each snapshot's `vN.metadata.json` can be created by exactly one writer.
+    pub fn put_if_absent(&self, uri: &str, bytes: Vec<u8>) -> Result<bool> {
+        match self {
+            Store::Local => {
+                let p = Path::new(uri);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                match std::fs::OpenOptions::new().write(true).create_new(true).open(p) {
+                    Ok(mut f) => {
+                        use std::io::Write;
+                        f.write_all(&bytes).with_context(|| format!("writing {uri}"))?;
+                        Ok(true)
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                    Err(e) => Err(e).with_context(|| format!("creating {uri}")),
+                }
+            }
+            Store::S3 { bucket, client } => {
+                use object_store::{PutMode, PutOptions};
+                let path = Self::s3_key(bucket, uri)?;
+                let payload: object_store::PutPayload = bytes.into();
+                let opts = PutOptions { mode: PutMode::Create, ..Default::default() };
+                let res = runtime().block_on(client.put_opts(&path, payload, opts));
+                match res {
+                    Ok(_) => Ok(true),
+                    Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
+                    Err(e) => Err(anyhow::Error::from(e)).with_context(|| format!("s3 create {uri}")),
+                }
+            }
+        }
+    }
+
     /// Read the bytes at `uri`, or `None` if it does not exist.
     pub fn get(&self, uri: &str) -> Result<Option<Vec<u8>>> {
         match self {
