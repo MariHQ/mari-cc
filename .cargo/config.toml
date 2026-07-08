@@ -1,0 +1,18 @@
+# Dynamic linking against shipped native libs (DuckDB, llama.cpp/ggml).
+# See vendor/duckdb/ and the `scripts/bundle-dylibs.sh` packaging step.
+
+[env]
+# libduckdb-sys (non-bundled) links against these at build time. Paths are
+# relative to this config file so the checkout is portable.
+DUCKDB_LIB_DIR = { value = "vendor/duckdb", relative = true }
+DUCKDB_INCLUDE_DIR = { value = "vendor/duckdb", relative = true }
+
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    # At runtime, resolve @rpath/*.dylib (libduckdb, libllama, libggml*) from a
+    # `lib/` dir next to the executable. `scripts/bundle-dylibs.sh` populates it.
+    "-C", "link-arg=-Wl,-rpath,@executable_path/lib",
+    # Dev convenience: also look one level up (target/<profile>/lib) and in the
+    # binary's own dir so `cargo run` / target/release/mari work after bundling.
+    "-C", "link-arg=-Wl,-rpath,@executable_path",
+]

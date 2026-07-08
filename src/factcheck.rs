@@ -292,7 +292,7 @@ fn load_kb_facts() -> Result<Vec<Fact>> {
     ];
     paths.sort();
     paths.dedup();
-    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.exists()).collect();
+    let paths: Vec<PathBuf> = paths.into_iter().filter(|p| index::warehouse_published_at(p)).collect();
     load_kb_facts_from_paths(&paths)
 }
 
@@ -1262,8 +1262,8 @@ mod tests {
     #[test]
     fn kb_facts_load_from_multiple_catalogs_and_doc_ref_tags() {
         let dir = tempfile::tempdir().unwrap();
-        let local = dir.path().join("local.duckdb");
-        let global = dir.path().join("global.duckdb");
+        let local = dir.path().join("local").join("catalog.duckdb");
+        let global = dir.path().join("global").join("catalog.duckdb");
         for (path, doc_id, canonical_ref, status, body) in [
             (
                 &local,
@@ -1280,7 +1280,7 @@ mod tests {
                 "Pricing changed 20% in 2025.",
             ),
         ] {
-            let conn = duckdb::Connection::open(path).unwrap();
+            let conn = duckdb::Connection::open_in_memory().unwrap();
             index::ensure_schema(&conn).unwrap();
             conn.execute(
                 "INSERT INTO documents (doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind, author_id, author_name, created_at, updated_at, observed_at, version, content_sha256, body, metadata_json)
@@ -1294,6 +1294,7 @@ mod tests {
                 params![canonical_ref, status],
             )
             .unwrap();
+            index::publish_to_path(&conn, path).unwrap();
         }
 
         let facts = load_kb_facts_from_paths(&[local, global]).unwrap();

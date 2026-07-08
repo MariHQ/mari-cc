@@ -50,6 +50,7 @@ fn write_cloud_cfg(backend: &str, bucket: &str, prefix: &str, region: &str) -> R
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     args: &[String],
     backend: Option<&str>,
@@ -57,10 +58,14 @@ pub fn run(
     prefix: Option<&str>,
     region: Option<&str>,
     force: bool,
+    compact: bool,
+    no_push: bool,
+    retain: Option<usize>,
 ) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
         Some("init") => init(backend, bucket, prefix, region, force),
         Some("connect") => connect(backend, bucket, prefix, region),
+        Some("sync") => sync(compact, no_push, retain),
         Some("role") => match args.get(1).map(|s| s.as_str()) {
             Some(r @ ("writer" | "consumer")) => {
                 set_role(r)?;
@@ -73,10 +78,49 @@ pub fn run(
             }
         },
         _ => {
-            eprintln!("usage: mari cloud <init|connect|role> …");
+            eprintln!("usage: mari cloud <init|connect|role|sync> …");
             Ok(2)
         }
     }
+}
+
+/// `mari cloud sync [--compact] [--no-push] [--retain N]` (writer-only, §9):
+/// publish + tidy the shared warehouse. Per-write publishes keep the read layer
+/// current incrementally; this is the explicit push + compaction verb.
+fn sync(compact: bool, no_push: bool, retain: Option<usize>) -> Result<i32> {
+    use crate::{config, index, workspace};
+    // One-writer rule: consumers never mutate the shared warehouse.
+    if enabled() && role() == "consumer" {
+        eprintln!("✗ this machine is a cloud consumer — only the writer compacts the shared warehouse");
+        return Ok(1);
+    }
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    let retain = retain
+        .or_else(|| cfg["storage"]["retain_snapshots"].as_u64().map(|n| n as usize))
+        .unwrap_or(1)
+        .max(1);
+
+    if !compact {
+        // Writes already land in the configured warehouse (local dir or s3), so a
+        // bare `cloud sync` has nothing to stage; nudge toward the tidy verb.
+        println!("✓ warehouse is current (writes publish incrementally). Use --compact to reclaim snapshots.");
+        let _ = no_push;
+        return Ok(0);
+    }
+
+    let mut total = index::icepub::CompactStats::default();
+    // Compact each published scope's warehouse (repo + global).
+    for global in [false, true] {
+        let warehouse = index::iceberg::warehouse_uri(global);
+        let stats = index::icepub::compact(&warehouse, retain)?;
+        total.tables += stats.tables;
+        total.files_deleted += stats.files_deleted;
+    }
+    println!(
+        "✓ compacted {} table(s), reclaimed {} orphan file(s) (retain={retain}).",
+        total.tables, total.files_deleted
+    );
+    Ok(0)
 }
 
 fn init(

@@ -132,6 +132,9 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
         }
         mirror_tags(&conn)?;
         set_meta(&conn, "last_sync", &now())?;
+        // Commit this source's changes to the Iceberg warehouse (§8.8). The
+        // staging conn is in-memory, so nothing persists until this runs.
+        super::publish_catalog(&conn, source_catalog_global(s))?;
     }
     // Vector embedding pass (§7.1): the local embedding model over every
     // chunk missing a vector; loud on failure, never silent.
@@ -144,7 +147,13 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
     }
     let mut embedded_vectors = 0usize;
     for g in catalogs_touched {
-        match open_catalog(g).and_then(|conn| super::vector::sync_vectors(&conn, g, rebuild)) {
+        match open_catalog(g).and_then(|conn| {
+            let n = super::vector::sync_vectors(&conn, g, rebuild)?;
+            // Persist embeddings-related catalog rows to Iceberg (§8.8). The
+            // Lance vectors themselves are written by sync_vectors directly.
+            super::publish_catalog(&conn, g)?;
+            Ok(n)
+        }) {
             Ok(n) => embedded_vectors += n,
             Err(e) => {
                 let msg = e.to_string();

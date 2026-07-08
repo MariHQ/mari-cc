@@ -1,3 +1,9 @@
 .idea/
 .claude/
 /target/
+
+# Build outputs and vendored native libs (not source-controlled)
+/bin/
+/vendor/
+/.crates.toml
+/.crates2.json

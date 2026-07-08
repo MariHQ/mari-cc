@@ -454,10 +454,12 @@ pub fn sync_vectors(conn: &duckdb::Connection, global: bool, rebuild: bool) -> R
 /// Verify the catalog's recorded embedding identity + dims match this build.
 fn check_dataset_identity(global: bool) -> Result<()> {
     let db = crate::index::catalog_path(global);
-    if !db.exists() {
+    // Read-only: this is a query-time guard on the read path. Opening
+    // read-write here would take DuckDB's exclusive lock and conflict with any
+    // other mari process (search or sync) touching the same catalog.
+    let Some(conn) = crate::index::open_readonly_path(&db)? else {
         return Ok(());
-    }
-    let conn = duckdb::Connection::open(&db)?;
+    };
     let model: Option<String> = conn
         .query_row(
             "SELECT value FROM schema_meta WHERE key = 'embedding.model'",
@@ -502,8 +504,10 @@ pub fn doc_neighbours(
         return None;
     }
     // Map chunk_id → doc_id via the catalog, then mean-pool per doc.
+    // Read-only open: this is a read path (lineage neighbours) and must not take
+    // DuckDB's exclusive lock (see check_dataset_identity).
     let db = crate::index::catalog_path(global);
-    let conn = duckdb::Connection::open(&db).ok()?;
+    let conn = crate::index::open_readonly_path(&db).ok()??;
     let mut stmt = conn.prepare("SELECT chunk_id, doc_id FROM chunks").ok()?;
     let chunk_doc: std::collections::HashMap<String, String> = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
