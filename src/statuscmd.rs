@@ -3,7 +3,6 @@
 
 use crate::{authcmd, cloud, config, index, workspace};
 use anyhow::Result;
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -13,7 +12,6 @@ struct CatalogStatus {
     last_sync: Option<String>,
     embedding_models: BTreeSet<String>,
     tag_counts: BTreeMap<String, usize>,
-    mirrored_tag_entry_targets: BTreeSet<String>,
 }
 
 pub fn run() -> Result<i32> {
@@ -122,8 +120,8 @@ pub fn run() -> Result<i32> {
         }
     );
 
-    // Tag counts by status.
-    let counts = combined_tag_counts(&cfg, &catalog_status);
+    // Tag counts by status (from the catalog `tags` table).
+    let counts = &catalog_status.tag_counts;
     if counts.is_empty() {
         println!("tags: none");
     } else {
@@ -148,6 +146,7 @@ fn status_catalog_paths(root: &Path) -> Vec<PathBuf> {
 
 fn catalog_status_from_paths(paths: &[PathBuf]) -> CatalogStatus {
     let mut status = CatalogStatus::default();
+    let mut seen_targets: BTreeSet<(String, String)> = BTreeSet::new();
     for path in paths {
         // Read-only over the published Iceberg snapshot; None when nothing has
         // been synced for this scope yet.
@@ -185,14 +184,21 @@ fn catalog_status_from_paths(paths: &[PathBuf]) -> CatalogStatus {
                 }
             }
         }
-        if let Ok(mut stmt) = conn.prepare("SELECT status, metadata_json FROM tags") {
-            if let Ok(rows) =
-                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-            {
-                for (tag_status, metadata_json) in rows.flatten() {
-                    *status.tag_counts.entry(tag_status).or_default() += 1;
-                    if let Some(target) = mirrored_tag_target(&metadata_json) {
-                        status.mirrored_tag_entry_targets.insert(target);
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT target_type, target_id, status FROM tags")
+        {
+            if let Ok(rows) = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            }) {
+                for (target_type, target_id, tag_status) in rows.flatten() {
+                    // A doc can be tagged in both the repo and global catalog;
+                    // count each (target_type, target_id) once.
+                    if seen_targets.insert((target_type, target_id)) {
+                        *status.tag_counts.entry(tag_status).or_default() += 1;
                     }
                 }
             }
@@ -206,41 +212,6 @@ fn schema_meta_value(conn: &duckdb::Connection, key: &str) -> Option<String> {
         r.get::<_, String>(0)
     })
     .ok()
-}
-
-fn mirrored_tag_target(metadata_json: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(metadata_json).ok()?;
-    if value["source"].as_str()? != "tags.entries" {
-        return None;
-    }
-    normalize_tag_target(value["target"].as_str()?)
-}
-
-fn normalize_tag_target(target: &str) -> Option<String> {
-    let normalized = target.strip_prefix("./").unwrap_or(target).trim();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized.to_string())
-    }
-}
-
-fn combined_tag_counts(cfg: &Value, catalog_status: &CatalogStatus) -> BTreeMap<String, usize> {
-    let mut counts = catalog_status.tag_counts.clone();
-    if let Some(entries) = cfg["tags"]["entries"].as_object() {
-        for (target, entry) in entries {
-            let Some(target) = normalize_tag_target(target) else {
-                continue;
-            };
-            if catalog_status.mirrored_tag_entry_targets.contains(&target) {
-                continue;
-            }
-            if let Some(status) = entry["status"].as_str() {
-                *counts.entry(status.to_string()).or_default() += 1;
-            }
-        }
-    }
-    counts
 }
 
 fn embedding_line(status: &CatalogStatus) -> Option<String> {
@@ -388,10 +359,8 @@ fn which(tool: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog_status_from_paths, combined_tag_counts, embedding_line, CatalogStatus};
+    use super::{catalog_status_from_paths, embedding_line};
     use crate::index;
-    use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn catalog_status_aggregates_repo_and_global_catalogs() {
@@ -432,31 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn catalog_status_collects_mirrored_tag_entry_targets() {
-        let dir = tempfile::tempdir().unwrap();
-        let catalog = dir.path().join("catalog.duckdb");
-        write_catalog(
-            &catalog,
-            &[("git/doc1", "git", "docs/api.md")],
-            "2026-01-01T00:00:00Z",
-            index::EMBEDDING_MODEL,
-        );
-        let conn = index::open_catalog_at(&catalog).unwrap();
-        conn.execute(
-            "UPDATE tags SET metadata_json = ?1 WHERE target_id = 'docs/api.md'",
-            duckdb::params![
-                json!({"source": "tags.entries", "target": "./docs/api.md"}).to_string()
-            ],
-        )
-        .unwrap();
-        index::publish_to_path(&conn, &catalog).unwrap();
-
-        let status = catalog_status_from_paths(&[catalog]);
-
-        assert!(status.mirrored_tag_entry_targets.contains("docs/api.md"));
-    }
-
-    #[test]
     fn embeddings_table_reads_model_rows() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("catalog.duckdb");
@@ -490,32 +434,6 @@ mod tests {
             embedding_line(&status).as_deref(),
             Some("qwen3-embedding-0.6b")
         );
-    }
-
-    #[test]
-    fn combined_tag_counts_do_not_double_count_mirrored_config_entries() {
-        let cfg = json!({
-            "tags": {
-                "entries": {
-                    "./docs/api.md": {"status": "canonical"},
-                    "docs/guide.md": {"status": "needs-review"}
-                }
-            }
-        });
-        let mut tag_counts = BTreeMap::new();
-        tag_counts.insert("canonical".to_string(), 1);
-        let mut mirrored_tag_entry_targets = BTreeSet::new();
-        mirrored_tag_entry_targets.insert("docs/api.md".to_string());
-        let status = CatalogStatus {
-            tag_counts,
-            mirrored_tag_entry_targets,
-            ..CatalogStatus::default()
-        };
-
-        let counts = combined_tag_counts(&cfg, &status);
-
-        assert_eq!(counts.get("canonical"), Some(&1));
-        assert_eq!(counts.get("needs-review"), Some(&1));
     }
 
     #[test]

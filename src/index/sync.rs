@@ -126,7 +126,7 @@ pub fn run(source: Option<&str>, rebuild: bool, since: Option<i64>) -> Result<i3
                 }
             }
         }
-        mirror_tags(&conn)?;
+        reconcile_ref_tags(&conn)?;
         set_meta(&conn, "last_sync", &now())?;
         // Commit this source's changes to the Iceberg warehouse (§8.8). The
         // staging conn is in-memory, so nothing persists until this runs.
@@ -1670,21 +1670,35 @@ fn record_event(
     Ok(())
 }
 
-fn mirror_tags(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM tags", [])?;
-    let root = workspace::work_root();
-    let cfg = config::resolve(Some(&root));
-    let Some(entries) = cfg["tags"]["entries"].as_object() else {
-        return Ok(());
+/// Reconcile `ref` tags (unresolved repo paths) into `doc` tags once the path
+/// they name gets indexed (§8.7). Tags are the catalog's own source of truth
+/// now, so existing `doc` tags are left untouched — this only promotes the
+/// deferred `ref` rows.
+fn reconcile_ref_tags(conn: &Connection) -> Result<()> {
+    let refs: Vec<(String, String, String, String, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT target_id, status, COALESCE(note, ''), COALESCE(\"by\", ''), COALESCE(\"at\", ''), metadata_json
+               FROM tags WHERE target_type = 'ref'",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .flatten()
+        .collect()
     };
-    for (target, entry) in entries {
-        let Some(status) = entry["status"].as_str() else {
+    for (target, status, note, by, at, metadata_json) in refs {
+        let doc_ids = doc_ids_for_tag_target(conn, &target)?;
+        if doc_ids.is_empty() {
             continue;
-        };
-        let note = entry["note"].as_str().unwrap_or("");
-        let by = entry["by"].as_str().unwrap_or("unknown");
-        let at = entry["at"].as_str().unwrap_or("");
-        for doc_id in doc_ids_for_tag_target(conn, target)? {
+        }
+        for doc_id in doc_ids {
             conn.execute(
                 "DELETE FROM tags WHERE target_type = 'doc' AND target_id = ?1",
                 [&doc_id],
@@ -1692,16 +1706,13 @@ fn mirror_tags(conn: &Connection) -> Result<()> {
             conn.execute(
                 "INSERT INTO tags (target_type, target_id, status, note, \"by\", \"at\", metadata_json)
                  VALUES ('doc', ?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    doc_id,
-                    status,
-                    note,
-                    by,
-                    at,
-                    json!({"source": "tags.entries", "target": target}).to_string()
-                ],
+                params![doc_id, status, note, by, at, metadata_json],
             )?;
         }
+        conn.execute(
+            "DELETE FROM tags WHERE target_type = 'ref' AND target_id = ?1",
+            [&target],
+        )?;
     }
     Ok(())
 }

@@ -90,6 +90,10 @@ Route on what follows `/mari` (or, if the skill auto-triggered, on the user's me
   "cut the explanation/restatement" → `understate`, "fix the error copy" → `clarify`, "tone down
   the hype" → `soften`, "sounds like AI" → `deslop`, "prepare for launch" → `polish`, "are
   translations in sync?" → `i18n conform`, "what should Claude trust here?" → `tag`.
+- **Curation intent** — "tag the knowledge base", "which docs are stale/out of date?", "what
+  should Claude trust?", "mark the deprecated stuff" → the auto-tagging flow `tag analyze` (scoped
+  to the named status when one is implied). Proposals only; tags are written after user
+  confirmation.
 - **No clear match** → a general editing pass using setup context + detector findings, or the
   retrieval flow if it reads as a question.
 
@@ -188,9 +192,15 @@ prunes). Then suggest `/mari sync`.
 ## Curation — what should Claude trust?
 
 - **`mari tag <path-or-ref> <status>`** — statuses: `canonical`, `stale`, `deprecated`, `draft`,
-  `internal`, `customer-facing`, `needs-review`. Tags are team-shared (committed config), boost
-  or bury search results, gate factcheck evidence, and drive hook advisories. Load
-  `references/reference-tag.md`. When tagging `deprecated`, suggest a lineage edge to the replacement.
+  `internal`, `customer-facing`, `needs-review`. Tags live in the catalog `tags` table and ride
+  the shared warehouse; they boost or bury search results, gate factcheck evidence, and drive hook
+  advisories. Load `references/reference-tag.md`. When tagging `deprecated`, add
+  `--superseded-by <ref>` to record the successor (a confirmed `replaces` lineage edge) so the
+  replacement pointer shows on search hits.
+- **`mari tag analyze [path…]`** — bulk auto-tagging (§10.4): the CLI extracts deterministic
+  context cards, you judge from them, ask the user grouped questions, and apply the agreed tags.
+  Default posture is *untagged = current* — hunt only for docs needing special treatment. Load
+  `references/reference-tag-analyze.md`. User-triggered only; never runs from a hook or sync.
 - **`mari facts add "<fact>" [--source "<ref>"]`** / `mari facts list` — the FACTS.md ledger that
   `factcheck` grounds against.
 - **`mari extract facts [--source S] [--doc D] [--since N]`** — mine candidate facts from recent

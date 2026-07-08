@@ -955,7 +955,7 @@ fn replacement_from_lineage(conn: &Connection, doc_id: &str) -> Result<Option<St
               WHERE deprecated_span.doc_id = ?1
                 AND le.status = 'confirmed'
               ORDER BY
-                CASE le.rel WHEN 'supersedes' THEN 0 WHEN 'updates' THEN 1 WHEN 'documents' THEN 2 ELSE 3 END,
+                CASE le.rel WHEN 'replaces' THEN 0 WHEN 'supersedes' THEN 1 WHEN 'updates' THEN 2 WHEN 'documents' THEN 3 ELSE 4 END,
                 other_doc.updated_at DESC
               LIMIT 1",
             [doc_id],

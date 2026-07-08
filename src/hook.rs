@@ -366,7 +366,7 @@ fn open_existing_catalog() -> Option<Connection> {
 
 fn tag_notice(root: &Path, cfg: &Value, file: &Path) {
     let rel = rel(root, file);
-    if let Some(status) = curation::tag_of(root, cfg, &rel) {
+    if let Some(status) = curation::tag_of(root, &rel) {
         if matches!(status.as_str(), "stale" | "deprecated") {
             println!("tag: {rel} is marked {status}; update or avoid relying on it");
         }

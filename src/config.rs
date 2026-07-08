@@ -79,8 +79,7 @@ pub fn defaults() -> Value {
         "rules": [],
         "nudges": [],
         "tags": {
-            "statuses": ["canonical","stale","deprecated","draft","internal","customer-facing","needs-review"],
-            "entries": {}
+            "statuses": ["canonical","stale","deprecated","draft","internal","customer-facing","needs-review"]
         },
         "facts": { "file": "FACTS.md" },
         "glossary": { "file": "STYLE.md" },

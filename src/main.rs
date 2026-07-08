@@ -279,13 +279,17 @@ enum Cmd {
     },
     /// Fetch the latest cloud index into the replica
     Pull,
-    /// Curation tags: <path-or-ref> <status> | list | remove
+    /// Curation tags: <path-or-ref> <status> | analyze | list | remove
     Tag {
         args: Vec<String>,
         #[arg(long)]
         note: Option<String>,
         #[arg(long)]
         status: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long = "superseded-by")]
+        superseded_by: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -661,8 +665,17 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             args,
             note,
             status,
+            source,
+            superseded_by,
             json,
-        } => curation::tag(&args, note.as_deref(), status.as_deref(), json),
+        } => curation::tag(
+            &args,
+            note.as_deref(),
+            status.as_deref(),
+            json,
+            source.as_deref(),
+            superseded_by.as_deref(),
+        ),
         Cmd::Glossary { args, use_, not_ } => {
             curation::glossary(&args, use_.as_deref(), not_.as_deref())
         }

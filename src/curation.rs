@@ -1,14 +1,17 @@
 //! Curation: tags, glossary, facts, extract, audit kb, humanize (SPEC §5.3/§5.4/§10).
 //!
-//! Tags live in the COMMITTED `<repo>/.mari/config.json` under `tags.entries`
-//! (`{ref: {status, by, at, note}}`) so they are team-shared and versioned.
+//! Tags live in the catalog `tags` table (§8.7), keyed `(target_type, target_id)`:
+//! a ref that resolves to an indexed document is stored as a `doc` tag on its
+//! `doc_id`; an unresolved repo path is stored as a `ref` tag on the normalized
+//! path (and reconciled into a `doc` tag once it gets indexed, §index::sync).
+//! Team sharing rides the shared warehouse like every other catalog table (§9).
 //! The glossary is STYLE.md's Terminology table (Use / Not columns); FACTS.md
 //! is the deterministic grounding ledger (one `- fact  (source)` per line).
 
 use crate::{authcmd, config, index, workspace};
 use anyhow::Result;
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -61,20 +64,13 @@ fn today() -> String {
     chrono::Utc::now().format("%Y-%m-%d").to_string()
 }
 
-/// Committed tags.entries object from the repo config file.
-fn tag_entries(root: &Path) -> Map<String, Value> {
-    config::read_json(&config::repo_config_path(root))["tags"]["entries"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default()
-}
-
-fn write_tag_entries(root: &Path, entries: Map<String, Value>) -> Result<()> {
-    config::set_in_file(
-        &config::repo_config_path(root),
-        "tags.entries",
-        Value::Object(entries),
-    )
+/// Published catalog warehouses for this root (repo workspace + `_global`),
+/// filtered to those already built. Tag storage lives here (§8.7).
+fn published_catalog_paths(root: &Path) -> Vec<PathBuf> {
+    catalog_paths(root)
+        .into_iter()
+        .filter(|p| index::warehouse_published_at(p))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +82,18 @@ pub fn tag(
     note: Option<&str>,
     status_filter: Option<&str>,
     json: bool,
+    source: Option<&str>,
+    superseded_by: Option<&str>,
 ) -> Result<i32> {
-    tag_in(&workspace::work_root(), args, note, status_filter, json)
+    tag_in(
+        &workspace::work_root(),
+        args,
+        note,
+        status_filter,
+        json,
+        source,
+        superseded_by,
+    )
 }
 
 fn tag_in(
@@ -96,23 +102,28 @@ fn tag_in(
     note: Option<&str>,
     status_filter: Option<&str>,
     json: bool,
+    source: Option<&str>,
+    superseded_by: Option<&str>,
 ) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
         None => {
-            eprintln!("usage: mari tag <path-or-ref> <status> [--note \"…\"] | mari tag list [--status S] [--json] | mari tag remove <ref>");
+            eprintln!("usage: mari tag <path-or-ref> <status> [--note \"…\"] [--superseded-by <ref>] | mari tag analyze [path…] [--status S] [--source <key>] [--json] | mari tag list [--status S] [--json] | mari tag remove <ref>");
             Ok(2)
         }
         Some("list") => tag_list(root, status_filter, json),
+        Some("analyze") => tag_analyze(root, &args[1..], status_filter, source, json),
         Some("remove") => {
             let Some(r) = args.get(1) else {
                 eprintln!("usage: mari tag remove <path-or-ref>");
                 return Ok(2);
             };
             let key = norm_ref(r);
-            let mut entries = tag_entries(root);
-            if entries.remove(&key).is_some() {
-                write_tag_entries(root, entries)?;
-                mirror_tag_to_catalogs(root, &key, None)?;
+            let paths = published_catalog_paths(root);
+            if paths.is_empty() {
+                eprintln!("✗ no catalog yet — run `mari sync` first");
+                return Ok(1);
+            }
+            if remove_tag(&paths, &key)? {
                 println!("✓ removed tag from {key}");
                 Ok(0)
             } else {
@@ -134,22 +145,51 @@ fn tag_in(
                 return Ok(2);
             }
             let key = norm_ref(r);
+            let paths = published_catalog_paths(root);
+            if paths.is_empty() {
+                eprintln!("✗ no catalog yet — run `mari sync` first");
+                return Ok(1);
+            }
+            // Resolve the successor up front so a bad `--superseded-by` errors
+            // before we write the tag (the flag errors if it does not resolve).
+            let successor = match superseded_by {
+                Some(s) => match resolve_ref_span(&paths, s)? {
+                    Some(found) => Some(found),
+                    None => {
+                        eprintln!("✗ --superseded-by `{s}` does not resolve to an indexed document — is it synced?");
+                        return Ok(1);
+                    }
+                },
+                None => None,
+            };
             let mut entry = json!({ "status": status, "by": author_in(root), "at": today() });
             if let Some(n) = note {
                 entry["note"] = json!(n);
             }
-            let mut entries = tag_entries(root);
-            entries.insert(key.clone(), entry);
-            let mirror_entry = entries.get(&key).cloned();
-            write_tag_entries(root, entries)?;
-            mirror_tag_to_catalogs(root, &key, mirror_entry.as_ref())?;
+            apply_tag(&paths, &key, &entry)?;
             match note {
                 Some(n) => println!("✓ tagged {key} {status} — {n}"),
                 None => println!("✓ tagged {key} {status}"),
             }
+            if let Some((succ_path, _)) = &successor {
+                let pointer = record_supersession(&paths, superseded_by.unwrap(), &key)?;
+                if let Some(p) = pointer {
+                    println!("  ↳ replaced by {p}");
+                }
+                let _ = succ_path;
+            }
             Ok(0)
         }
     }
+}
+
+/// A tag row for listing: normalized display ref + status/note/by/at.
+struct TagRow {
+    display: String,
+    status: String,
+    note: String,
+    by: String,
+    at: String,
 }
 
 fn tag_list(root: &Path, status_filter: Option<&str>, json_out: bool) -> Result<i32> {
@@ -163,25 +203,49 @@ fn tag_list(root: &Path, status_filter: Option<&str>, json_out: bool) -> Result<
             return Ok(2);
         }
     }
-    // Show the resolved view (repo config layered on defaults/global).
-    let cfg = resolved(root);
-    let entries: BTreeMap<String, Value> = cfg["tags"]["entries"]
-        .as_object()
-        .map(|m| {
-            m.iter()
-                .filter(|(_, v)| match status_filter {
-                    Some(s) => v["status"].as_str() == Some(s),
-                    None => true,
-                })
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut rows: BTreeMap<String, TagRow> = BTreeMap::new();
+    for path in published_catalog_paths(root) {
+        let Some(conn) = index::open_readonly_path(&path)? else {
+            continue;
+        };
+        let mut stmt = conn.prepare(
+            "SELECT COALESCE(d.path, d.canonical_ref, t.target_id),
+                    t.status, COALESCE(t.note, ''), COALESCE(t.\"by\", ''), COALESCE(t.\"at\", '')
+               FROM tags t
+               LEFT JOIN documents d ON t.target_type = 'doc' AND d.doc_id = t.target_id
+              WHERE t.status IS NOT NULL",
+        )?;
+        let fetched = stmt.query_map([], |r| {
+            Ok(TagRow {
+                display: r.get::<_, String>(0)?,
+                status: r.get::<_, String>(1)?,
+                note: r.get::<_, String>(2)?,
+                by: r.get::<_, String>(3)?,
+                at: r.get::<_, String>(4)?,
+            })
+        })?;
+        for row in fetched.flatten() {
+            if let Some(s) = status_filter {
+                if row.status != s {
+                    continue;
+                }
+            }
+            rows.entry(norm_ref(&row.display)).or_insert(row);
+        }
+    }
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
+        let out: Vec<Value> = rows
+            .iter()
+            .map(|(r, v)| {
+                json!({
+                    "ref": r, "status": v.status, "note": v.note, "by": v.by, "at": v.at
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(0);
     }
-    if entries.is_empty() {
+    if rows.is_empty() {
         println!(
             "no tags{}",
             status_filter
@@ -190,70 +254,209 @@ fn tag_list(root: &Path, status_filter: Option<&str>, json_out: bool) -> Result<
         );
         return Ok(0);
     }
-    for (r, v) in &entries {
-        let status = v["status"].as_str().unwrap_or("?");
-        let by = v["by"].as_str().unwrap_or("?");
-        let at = v["at"].as_str().unwrap_or("?");
-        let note = v["note"]
-            .as_str()
-            .map(|n| format!("  — {n}"))
-            .unwrap_or_default();
-        println!("{r}  [{status}]  ({by}, {at}){note}");
+    for (r, v) in &rows {
+        let by = if v.by.is_empty() { "?" } else { v.by.as_str() };
+        let at = if v.at.is_empty() { "?" } else { v.at.as_str() };
+        let note = if v.note.is_empty() {
+            String::new()
+        } else {
+            format!("  — {}", v.note)
+        };
+        println!("{r}  [{}]  ({by}, {at}){note}", v.status);
     }
-    println!("{} tag(s)", entries.len());
+    println!("{} tag(s)", rows.len());
     Ok(0)
 }
 
 /// Curation tag for a repo-relative path or doc ref, if any (SPEC §10.1).
-pub fn tag_of(_root: &Path, cfg: &Value, r: &str) -> Option<String> {
-    let entries = cfg["tags"]["entries"].as_object()?;
+/// Reads the catalog `tags` table: a `ref` tag on the normalized path, or a
+/// `doc` tag on any document the path resolves to.
+pub fn tag_of(root: &Path, r: &str) -> Option<String> {
+    tag_of_paths(&published_catalog_paths(root), r)
+}
+
+fn tag_of_paths(paths: &[PathBuf], r: &str) -> Option<String> {
     let key = norm_ref(r);
-    let entry = entries.get(&key).or_else(|| entries.get(r))?;
-    entry["status"].as_str().map(String::from)
-}
-
-fn mirror_tag_to_catalogs(root: &Path, target: &str, entry: Option<&Value>) -> Result<()> {
-    mirror_tag_to_catalog_paths(&catalog_paths(root), target, entry)
-}
-
-fn mirror_tag_to_catalog_paths(
-    paths: &[PathBuf],
-    target: &str,
-    entry: Option<&Value>,
-) -> Result<()> {
+    let like = format!("%{key}");
     for path in paths {
-        // Tagging a not-yet-built catalog is a no-op (same as before).
-        if !index::warehouse_published_at(path) {
+        let Ok(Some(conn)) = index::open_readonly_path(path) else {
             continue;
+        };
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT t.status
+                   FROM tags t
+                   LEFT JOIN documents d ON t.target_type = 'doc' AND d.doc_id = t.target_id
+                  WHERE (t.target_type = 'ref' AND t.target_id = ?1)
+                     OR (t.target_type = 'doc'
+                         AND (d.path = ?1 OR d.canonical_ref = ?1 OR d.external_id = ?1
+                              OR d.canonical_ref LIKE ?2))
+                  LIMIT 1",
+                duckdb::params![key, like],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        if status.is_some() {
+            return status;
         }
+    }
+    None
+}
+
+/// Write a tag across every published catalog: a `doc` tag on each document the
+/// ref resolves to, or a `ref` tag on the primary catalog when it resolves
+/// nowhere. Any prior `ref`/`doc` tag on the same target is replaced first.
+fn apply_tag(paths: &[PathBuf], key: &str, entry: &Value) -> Result<()> {
+    let mut resolved = false;
+    for path in paths {
         let conn = index::open_catalog_at(path)?;
-        for doc_id in catalog_doc_ids_for_target(&conn, target)? {
+        let doc_ids = catalog_doc_ids_for_target(&conn, key)?;
+        conn.execute(
+            "DELETE FROM tags WHERE target_type = 'ref' AND target_id = ?1",
+            [key],
+        )?;
+        for doc_id in &doc_ids {
             conn.execute(
                 "DELETE FROM tags WHERE target_type = 'doc' AND target_id = ?1",
-                [&doc_id],
+                [doc_id],
             )?;
-            let Some(entry) = entry else {
-                continue;
-            };
-            let Some(status) = entry["status"].as_str() else {
-                continue;
-            };
-            conn.execute(
-                "INSERT INTO tags (target_type, target_id, status, note, \"by\", \"at\", metadata_json)
-                 VALUES ('doc', ?1, ?2, ?3, ?4, ?5, ?6)",
-                duckdb::params![
-                    doc_id,
-                    status,
-                    entry["note"].as_str().unwrap_or(""),
-                    entry["by"].as_str().unwrap_or("unknown"),
-                    entry["at"].as_str().unwrap_or(""),
-                    json!({"source": "tags.entries", "target": target}).to_string()
-                ],
-            )?;
+            insert_tag(&conn, "doc", doc_id, key, entry)?;
+            resolved = true;
         }
         index::publish_to_path(&conn, path)?;
     }
+    if !resolved {
+        // Unresolved repo path: store a `ref` tag in the primary catalog.
+        let conn = index::open_catalog_at(&paths[0])?;
+        conn.execute(
+            "DELETE FROM tags WHERE target_type = 'ref' AND target_id = ?1",
+            [key],
+        )?;
+        insert_tag(&conn, "ref", key, key, entry)?;
+        index::publish_to_path(&conn, &paths[0])?;
+    }
     Ok(())
+}
+
+/// Remove a tag from every published catalog. Returns true if anything was
+/// deleted.
+fn remove_tag(paths: &[PathBuf], key: &str) -> Result<bool> {
+    let mut removed = false;
+    for path in paths {
+        let conn = index::open_catalog_at(path)?;
+        let mut n = conn.execute(
+            "DELETE FROM tags WHERE target_type = 'ref' AND target_id = ?1",
+            [key],
+        )?;
+        for doc_id in catalog_doc_ids_for_target(&conn, key)? {
+            n += conn.execute(
+                "DELETE FROM tags WHERE target_type = 'doc' AND target_id = ?1",
+                [&doc_id],
+            )?;
+        }
+        if n > 0 {
+            index::publish_to_path(&conn, path)?;
+            removed = true;
+        }
+    }
+    Ok(removed)
+}
+
+fn insert_tag(
+    conn: &duckdb::Connection,
+    target_type: &str,
+    target_id: &str,
+    display: &str,
+    entry: &Value,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO tags (target_type, target_id, status, note, \"by\", \"at\", metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        duckdb::params![
+            target_type,
+            target_id,
+            entry["status"].as_str().unwrap_or(""),
+            entry["note"].as_str().unwrap_or(""),
+            entry["by"].as_str().unwrap_or("unknown"),
+            entry["at"].as_str().unwrap_or(""),
+            json!({"source": "mari tag", "target": display}).to_string()
+        ],
+    )?;
+    Ok(())
+}
+
+/// The whole-document span (`span_id`, display ref) for a ref that resolves to
+/// an indexed document, searching each published catalog in turn.
+fn resolve_ref_span(paths: &[PathBuf], target: &str) -> Result<Option<(PathBuf, String)>> {
+    let key = norm_ref(target);
+    for path in paths {
+        let Some(conn) = index::open_readonly_path(path)? else {
+            continue;
+        };
+        if let Some(span) = first_span_for_ref(&conn, &key)? {
+            return Ok(Some((path.clone(), span)));
+        }
+    }
+    Ok(None)
+}
+
+/// First (whole-document) span id of the first document a ref resolves to.
+fn first_span_for_ref(conn: &duckdb::Connection, key: &str) -> Result<Option<String>> {
+    let Some(doc_id) = catalog_doc_ids_for_target(conn, key)?.into_iter().next() else {
+        return Ok(None);
+    };
+    let span: Option<String> = conn
+        .query_row(
+            "SELECT span_id FROM spans WHERE doc_id = ?1 ORDER BY start_line ASC LIMIT 1",
+            [&doc_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    Ok(span)
+}
+
+/// Record a confirmed `replaces` lineage edge from the successor's whole-doc
+/// span to the deprecated doc's, provenance `human` (§8.3). Written into every
+/// catalog where both refs resolve. Returns a display pointer to the successor.
+fn record_supersession(
+    paths: &[PathBuf],
+    successor_ref: &str,
+    deprecated_ref: &str,
+) -> Result<Option<String>> {
+    let successor = norm_ref(successor_ref);
+    let deprecated = norm_ref(deprecated_ref);
+    let mut pointer = None;
+    for path in paths {
+        let conn = index::open_catalog_at(path)?;
+        let (Some(from_span), Some(to_span)) = (
+            first_span_for_ref(&conn, &successor)?,
+            first_span_for_ref(&conn, &deprecated)?,
+        ) else {
+            continue;
+        };
+        let lineage_id = index::hash_hex(&format!("lineage:{from_span}:{to_span}"));
+        conn.execute(
+            "DELETE FROM lineage_edges WHERE lineage_id = ?1",
+            [&lineage_id],
+        )?;
+        conn.execute(
+            "INSERT INTO lineage_edges (lineage_id, from_span_id, to_span_id, rel, status, confidence, confirmed_by, confirmed_at, last_checked_at, metadata_json)
+             VALUES (?1, ?2, ?3, 'replaces', 'confirmed', 1.0, ?4, ?5, ?5, ?6)",
+            duckdb::params![
+                lineage_id,
+                from_span,
+                to_span,
+                author_in(&workspace::work_root()),
+                index::now(),
+                json!({"by": "human", "note": "tag --superseded-by"}).to_string(),
+            ],
+        )?;
+        index::publish_to_path(&conn, path)?;
+        if pointer.is_none() {
+            pointer = Some(successor.clone());
+        }
+    }
+    Ok(pointer)
 }
 
 fn catalog_doc_ids_for_target(conn: &duckdb::Connection, target: &str) -> Result<Vec<String>> {
@@ -265,6 +468,744 @@ fn catalog_doc_ids_for_target(conn: &duckdb::Connection, target: &str) -> Result
     )?;
     let rows = stmt.query_map(duckdb::params![norm, like], |r| r.get::<_, String>(0))?;
     Ok(rows.flatten().collect())
+}
+
+// ---------------------------------------------------------------------------
+// mari tag analyze (SPEC §10.4)
+// ---------------------------------------------------------------------------
+
+/// One document as seen by the catalog, used to build context cards.
+struct AnalyzeDoc {
+    doc_id: String,
+    reference: String,
+    title: String,
+    path: String,
+    source: String,
+    updated_at: Option<String>,
+    body: String,
+}
+
+#[derive(serde::Serialize)]
+struct VersionMarker {
+    marker: String,
+    #[serde(rename = "where")]
+    where_found: &'static str,
+}
+
+#[derive(serde::Serialize)]
+struct Sibling {
+    path: String,
+    version_marker: String,
+}
+
+#[derive(serde::Serialize)]
+struct NearDup {
+    #[serde(rename = "ref")]
+    reference: String,
+    cosine: f64,
+    relation: &'static str, // newer | older | unknown
+}
+
+#[derive(serde::Serialize, Default)]
+struct DraftMarkers {
+    todo_count: usize,
+    wip: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ContextCard {
+    #[serde(rename = "ref")]
+    reference: String,
+    title: String,
+    path: String,
+    source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_tag: Option<String>,
+    outline: Vec<String>,
+    version_markers: Vec<VersionMarker>,
+    siblings: Vec<Sibling>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    near_dup: Option<NearDup>,
+    inbound_links: i64,
+    draft_markers: DraftMarkers,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_at: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RepoContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    project_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_tag: Option<String>,
+    version_conventions: Vec<String>,
+}
+
+/// `mari tag analyze` — deterministic context extraction for the `/mari tag
+/// analyze` skill flow (§10.4). Emits a repo-context block plus one bounded
+/// context card per doc in scope. The CLI extracts; it never calls an LLM.
+fn tag_analyze(
+    root: &Path,
+    path_args: &[String],
+    status_filter: Option<&str>,
+    source: Option<&str>,
+    json: bool,
+) -> Result<i32> {
+    if let Some(s) = source {
+        if !authcmd::SOURCES.contains(&s) {
+            eprintln!("✗ unknown source: {s}");
+            return Ok(2);
+        }
+    }
+    if let Some(status) = status_filter {
+        let valid = statuses_in(root);
+        if !valid.iter().any(|s| s == status) {
+            eprintln!(
+                "✗ unknown status filter '{status}' — valid statuses: {}",
+                valid.join(", ")
+            );
+            return Ok(2);
+        }
+    }
+
+    let repo_ctx = repo_context(root);
+    let docs = analyze_docs(root)?;
+    if docs.is_empty() {
+        // No catalog / no indexed docs: fall back to repo-path cards for the
+        // explicit paths the user named (siblings/near-dup/inbound need an index).
+        if !path_args.is_empty() {
+            return tag_analyze_repo_only(root, path_args, &repo_ctx, json);
+        }
+        eprintln!("note: no indexed documents — run `mari sync` first, or pass repo paths to analyze uncataloged files");
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({ "repo_context": repo_ctx, "cards": [] }))?
+            );
+        }
+        return Ok(0);
+    }
+
+    let tags = analyze_current_tags(root)?;
+    let inbound = analyze_inbound_counts(root)?;
+    let neighbours = analyze_neighbours();
+
+    // Version-marker conventions observed across every doc ref/title.
+    let conventions = observe_version_conventions(&docs);
+    let repo_ctx = RepoContext {
+        version_conventions: conventions,
+        ..repo_ctx
+    };
+
+    let cards: Vec<ContextCard> = docs
+        .iter()
+        .filter(|d| in_scope(d, path_args, source, status_filter, &tags))
+        .map(|d| build_card(d, &docs, &tags, &inbound, &neighbours))
+        .collect();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "repo_context": repo_ctx,
+                "cards": cards,
+            }))?
+        );
+        return Ok(0);
+    }
+    print_repo_context(&repo_ctx);
+    if cards.is_empty() {
+        println!("\nno documents in scope — every doc in range is already handled.");
+        return Ok(0);
+    }
+    println!("\n{} document(s) in scope:\n", cards.len());
+    for c in &cards {
+        print_card(c);
+    }
+    println!(
+        "extracted context only — the skill judges from these cards and applies tags via `mari tag`."
+    );
+    Ok(0)
+}
+
+/// Whether a doc is in the analyze scope: matching path/source filters and,
+/// by default, currently untagged (or matching `--status` when given).
+fn in_scope(
+    d: &AnalyzeDoc,
+    path_args: &[String],
+    source: Option<&str>,
+    status_filter: Option<&str>,
+    tags: &HashMap<String, String>,
+) -> bool {
+    if let Some(s) = source {
+        if d.source != s {
+            return false;
+        }
+    }
+    if !path_args.is_empty() && !path_args.iter().any(|p| path_matches(p, &d.path, &d.reference)) {
+        return false;
+    }
+    match status_filter {
+        Some(s) => tags.get(&d.doc_id).map(String::as_str) == Some(s),
+        None => !tags.contains_key(&d.doc_id),
+    }
+}
+
+/// Match a repo path or glob (`*` wildcard) against a doc path/ref.
+fn path_matches(pattern: &str, path: &str, reference: &str) -> bool {
+    let pat = pattern.strip_prefix("./").unwrap_or(pattern);
+    if pat.contains('*') {
+        let mut re = String::from("(?i)");
+        for ch in pat.chars() {
+            match ch {
+                '*' => re.push_str(".*"),
+                c if c.is_ascii_alphanumeric() => re.push(c),
+                c => {
+                    re.push('\\');
+                    re.push(c);
+                }
+            }
+        }
+        if let Ok(rx) = Regex::new(&re) {
+            return rx.is_match(path) || rx.is_match(reference);
+        }
+    }
+    let lp = pat.to_lowercase();
+    path.to_lowercase().contains(&lp) || reference.to_lowercase().contains(&lp)
+}
+
+/// All indexed documents across published catalogs (deduped by normalized path).
+fn analyze_docs(root: &Path) -> Result<Vec<AnalyzeDoc>> {
+    let mut docs = Vec::new();
+    let mut seen = HashSet::new();
+    for path in published_catalog_paths(root) {
+        let Some(conn) = index::open_readonly_path(&path)? else {
+            continue;
+        };
+        // Curation tags apply to prose docs, not test fixtures or data files:
+        // restrict to markdown.
+        let mut stmt = conn.prepare(
+            "SELECT doc_id, canonical_ref, COALESCE(title, ''), COALESCE(path, ''), source_id,
+                    COALESCE(updated_at, ''), COALESCE(body, '')
+               FROM documents
+              WHERE lower(path) LIKE '%.md' OR lower(path) LIKE '%.markdown'
+                 OR lower(canonical_ref) LIKE '%.md' OR lower(canonical_ref) LIKE '%.markdown'",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(AnalyzeDoc {
+                doc_id: r.get::<_, String>(0)?,
+                reference: r.get::<_, String>(1)?,
+                title: r.get::<_, String>(2)?,
+                path: r.get::<_, String>(3)?,
+                source: r.get::<_, String>(4)?,
+                updated_at: {
+                    let u: String = r.get::<_, String>(5)?;
+                    if u.is_empty() {
+                        None
+                    } else {
+                        Some(u)
+                    }
+                },
+                body: r.get::<_, String>(6)?,
+            })
+        })?;
+        for d in rows.flatten() {
+            let dedup = norm_ref(if d.path.is_empty() {
+                &d.reference
+            } else {
+                &d.path
+            });
+            if seen.insert(dedup) {
+                docs.push(d);
+            }
+        }
+    }
+    Ok(docs)
+}
+
+/// doc_id → current tag status, across published catalogs.
+fn analyze_current_tags(root: &Path) -> Result<HashMap<String, String>> {
+    let mut tags = HashMap::new();
+    for path in published_catalog_paths(root) {
+        let Some(conn) = index::open_readonly_path(&path)? else {
+            continue;
+        };
+        let mut stmt =
+            conn.prepare("SELECT target_id, status FROM tags WHERE target_type = 'doc'")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for (id, status) in rows.flatten() {
+            tags.entry(id).or_insert(status);
+        }
+    }
+    Ok(tags)
+}
+
+/// doc_id → inbound doc→doc edge count (§8.4), across published catalogs.
+fn analyze_inbound_counts(root: &Path) -> Result<HashMap<String, i64>> {
+    let mut counts: HashMap<String, i64> = HashMap::new();
+    for path in published_catalog_paths(root) {
+        let Some(conn) = index::open_readonly_path(&path)? else {
+            continue;
+        };
+        let mut stmt = conn.prepare(
+            "SELECT to_id, COUNT(DISTINCT from_id) FROM edges
+              WHERE to_type = 'doc' AND from_type = 'doc' GROUP BY to_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for (id, n) in rows.flatten() {
+            let e = counts.entry(id).or_default();
+            *e = (*e).max(n);
+        }
+    }
+    Ok(counts)
+}
+
+/// doc_id → nearest neighbour (doc_id, cosine), merged across repo + global
+/// vector stores.
+fn analyze_neighbours() -> HashMap<String, (String, f64)> {
+    let mut best: HashMap<String, (String, f64)> = HashMap::new();
+    for global in [false, true] {
+        if let Some(map) = index::vector::doc_neighbours(global, 1) {
+            for (doc, neighbours) in map {
+                if let Some((other, score)) = neighbours.into_iter().next() {
+                    let entry = best.entry(doc).or_insert((other.clone(), score));
+                    if score > entry.1 {
+                        *entry = (other, score);
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+fn build_card(
+    d: &AnalyzeDoc,
+    all: &[AnalyzeDoc],
+    tags: &HashMap<String, String>,
+    inbound: &HashMap<String, i64>,
+    neighbours: &HashMap<String, (String, f64)>,
+) -> ContextCard {
+    let near_dup = neighbours.get(&d.doc_id).and_then(|(other_id, cosine)| {
+        all.iter().find(|o| &o.doc_id == other_id).map(|o| NearDup {
+            reference: o.reference.clone(),
+            cosine: (cosine * 1000.0).round() / 1000.0,
+            relation: newer_older(d.updated_at.as_deref(), o.updated_at.as_deref()),
+        })
+    });
+    let clean = strip_html_comments(&d.body);
+    ContextCard {
+        reference: d.reference.clone(),
+        title: cap(&d.title, 120),
+        path: d.path.clone(),
+        source: d.source.clone(),
+        current_tag: tags.get(&d.doc_id).cloned(),
+        outline: outline(&clean),
+        version_markers: version_markers(&d.path, &d.title, &clean),
+        siblings: siblings(d, all),
+        near_dup,
+        inbound_links: inbound.get(&d.doc_id).copied().unwrap_or(0),
+        draft_markers: draft_markers(d),
+        modified_at: d.updated_at.clone(),
+    }
+}
+
+/// "newer"/"older"/"unknown" for `d` relative to `other` by modified time.
+fn newer_older(d: Option<&str>, other: Option<&str>) -> &'static str {
+    match (d, other) {
+        (Some(a), Some(b)) if a > b => "newer",
+        (Some(a), Some(b)) if a < b => "older",
+        _ => "unknown",
+    }
+}
+
+fn cap(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// First H1 + up to 8 H2s, each capped at 80 chars.
+fn outline(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut h1 = None;
+    for line in body.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("## ") {
+            if out.len() < 8 {
+                out.push(format!("H2 {}", cap(rest, 80)));
+            }
+        } else if let Some(rest) = t.strip_prefix("# ") {
+            if h1.is_none() {
+                h1 = Some(format!("H1 {}", cap(rest, 80)));
+            }
+        }
+    }
+    let mut result = Vec::new();
+    if let Some(h1) = h1 {
+        result.push(h1);
+    }
+    result.extend(out);
+    result
+}
+
+/// Remove `<!-- … -->` comment blocks (license headers, editor notes) so they
+/// don't pollute the lede or masquerade as version markers.
+fn strip_html_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        match rest[start + 4..].find("-->") {
+            Some(end) => rest = &rest[start + 4 + end + 3..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Version markers (`v2`, `1.15`) from the doc's path, title, and front matter —
+/// the places a version *labels* a doc. Body prose is deliberately excluded: an
+/// arbitrary decimal in a sentence or code sample is not a version marker.
+/// Up to 4, path/title/front-matter order.
+fn version_markers(path: &str, title: &str, body: &str) -> Vec<VersionMarker> {
+    let re = Regex::new(r"(?i)\bv\d+(?:\.\d+)*\b|\b\d+\.\d+(?:\.\d+)?\b|\bas of \d+(?:\.\d+)*\b")
+        .unwrap();
+    let front_matter = body
+        .strip_prefix("---")
+        .and_then(|r| r.split("---").next())
+        .unwrap_or("");
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (text, where_found) in [
+        (path, "path"),
+        (title, "title"),
+        (front_matter, "front-matter"),
+    ] {
+        for m in re.find_iter(text) {
+            let marker = m.as_str().to_lowercase();
+            if seen.insert(marker.clone()) {
+                out.push(VersionMarker {
+                    marker,
+                    where_found,
+                });
+                if out.len() >= 4 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Same-stem versioned siblings: other docs whose basename stem (its version
+/// marker stripped) matches this doc's and that carry a version marker. Up to 5.
+fn siblings(d: &AnalyzeDoc, all: &[AnalyzeDoc]) -> Vec<Sibling> {
+    let ver = Regex::new(r"(?i)v?\d+[._]\d+(?:[._]\d+)?").unwrap();
+    let stem_of = |p: &str| -> Option<String> {
+        let base = Path::new(p).file_name()?.to_str()?.to_lowercase();
+        if !ver.is_match(&base) {
+            return None;
+        }
+        Some(ver.replace_all(&base, "#").to_string())
+    };
+    let Some(stem) = stem_of(if d.path.is_empty() {
+        &d.reference
+    } else {
+        &d.path
+    }) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for o in all {
+        if o.doc_id == d.doc_id {
+            continue;
+        }
+        let op = if o.path.is_empty() {
+            &o.reference
+        } else {
+            &o.path
+        };
+        if stem_of(op).as_deref() == Some(stem.as_str()) {
+            let marker = ver
+                .find(&Path::new(op).file_name().and_then(|b| b.to_str()).unwrap_or(op).to_lowercase())
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            out.push(Sibling {
+                path: op.clone(),
+                version_marker: marker,
+            });
+            if out.len() >= 5 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn draft_markers(d: &AnalyzeDoc) -> DraftMarkers {
+    // Explicit body markers (whole-word) are real signal.
+    let todo_re = Regex::new(r"\b(?:TODO|TBD|FIXME)\b").unwrap();
+    let todo_count = todo_re.find_iter(&d.body).count();
+    // A draft/WIP *flag* is a structural cue (path segment or title word), not a
+    // substring of prose ("swiping" is not WIP).
+    let label = format!("{} {}", d.path.to_lowercase(), d.title.to_lowercase());
+    let wip = Regex::new(r"\bwip\b|\bdraft\b|/drafts?/")
+        .unwrap()
+        .is_match(&label);
+    DraftMarkers { todo_count, wip }
+}
+
+fn observe_version_conventions(docs: &[AnalyzeDoc]) -> Vec<String> {
+    let mut conventions: BTreeSet<String> = BTreeSet::new();
+    let ver = Regex::new(r"(?i)v\d+\.\d+(?:\.\d+)?|v\d+|\d+\.\d+(?:\.\d+)?").unwrap();
+    for d in docs {
+        let src = if d.path.is_empty() {
+            &d.reference
+        } else {
+            &d.path
+        };
+        if let Some(m) = ver.find(&src.to_lowercase()) {
+            // Report the shape, not the specific version.
+            let shape = generalize_version(m.as_str());
+            let scope = if src.contains('/') && m.start() < src.rfind('/').unwrap_or(0) {
+                "path"
+            } else {
+                "filename"
+            };
+            conventions.insert(format!("{shape} in {scope}"));
+        }
+        if d.title.to_lowercase().contains("as of ") {
+            conventions.insert("\"as of <version>\" in title".to_string());
+        }
+    }
+    conventions.into_iter().take(6).collect()
+}
+
+fn generalize_version(m: &str) -> String {
+    let dots = m.matches('.').count();
+    let v = if m.to_lowercase().starts_with('v') { "v" } else { "" };
+    match dots {
+        0 => format!("{v}N"),
+        1 => format!("{v}N.N"),
+        _ => format!("{v}N.N.N"),
+    }
+}
+
+/// Repo-level context: project version (manifest + latest semver git tag).
+fn repo_context(root: &Path) -> RepoContext {
+    RepoContext {
+        project_version: manifest_version(root),
+        git_tag: latest_semver_tag(root),
+        version_conventions: Vec::new(),
+    }
+}
+
+fn manifest_version(root: &Path) -> Option<String> {
+    // Cargo.toml / pyproject.toml: first `version = "…"` under a package table.
+    for name in ["Cargo.toml", "pyproject.toml"] {
+        if let Ok(text) = std::fs::read_to_string(root.join(name)) {
+            for line in text.lines() {
+                let t = line.trim();
+                if let Some(rest) = t.strip_prefix("version") {
+                    let rest = rest.trim_start().trim_start_matches('=').trim();
+                    let v = rest.trim_matches(['"', '\'']).trim();
+                    if !v.is_empty() && v.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        return Some(v.to_string());
+                    }
+                }
+            }
+        }
+    }
+    // package.json: "version": "…".
+    if let Ok(text) = std::fs::read_to_string(root.join("package.json")) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            if let Some(ver) = v["version"].as_str() {
+                return Some(ver.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn latest_semver_tag(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["tag", "--list", "--sort=-v:refname"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let semver = Regex::new(r"^v?\d+\.\d+(?:\.\d+)?$").unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|t| semver.is_match(t))
+        .map(String::from)
+}
+
+/// Repo-only fallback when there is no catalog: build reduced cards (no
+/// siblings/near-dup/inbound, which need the index) for the named paths.
+fn tag_analyze_repo_only(
+    root: &Path,
+    path_args: &[String],
+    repo_ctx: &RepoContext,
+    json: bool,
+) -> Result<i32> {
+    let files = crate::detector::runner::collect_files(path_args);
+    let mut cards = Vec::new();
+    for f in &files {
+        let rel = f
+            .strip_prefix(root)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .to_string();
+        let Ok(body) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        let title = body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("# ").map(|s| s.to_string()))
+            .unwrap_or_else(|| rel.clone());
+        let d = AnalyzeDoc {
+            doc_id: rel.clone(),
+            reference: rel.clone(),
+            title,
+            path: rel.clone(),
+            source: "localfiles".into(),
+            updated_at: std::fs::metadata(f)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|_| String::new())
+                .filter(|s| !s.is_empty()),
+            body,
+        };
+        let clean = strip_html_comments(&d.body);
+        cards.push(ContextCard {
+            reference: d.reference.clone(),
+            title: cap(&d.title, 120),
+            path: d.path.clone(),
+            source: d.source.clone(),
+            current_tag: None,
+            outline: outline(&clean),
+            version_markers: version_markers(&d.path, &d.title, &clean),
+            siblings: Vec::new(),
+            near_dup: None,
+            inbound_links: 0,
+            draft_markers: draft_markers(&d),
+            modified_at: None,
+        });
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "repo_context": repo_ctx,
+                "cards": cards,
+            }))?
+        );
+        return Ok(0);
+    }
+    print_repo_context(repo_ctx);
+    println!(
+        "\n{} uncataloged file(s) (no index — siblings/near-dup/inbound unavailable):\n",
+        cards.len()
+    );
+    for c in &cards {
+        print_card(c);
+    }
+    Ok(0)
+}
+
+fn print_repo_context(ctx: &RepoContext) {
+    println!("repo context:");
+    let same_version = |a: &str, b: &str| a.trim_start_matches('v') == b.trim_start_matches('v');
+    match (&ctx.project_version, &ctx.git_tag) {
+        (Some(v), Some(t)) if !same_version(v, t) => {
+            println!("  project version: {v} (manifest), {t} (latest git tag) — they disagree")
+        }
+        (Some(v), _) => println!("  project version: {v}"),
+        (None, Some(t)) => println!("  project version: {t} (latest git tag)"),
+        (None, None) => println!("  project version: unknown"),
+    }
+    if ctx.version_conventions.is_empty() {
+        println!("  version conventions: none observed");
+    } else {
+        println!(
+            "  version conventions: {}",
+            ctx.version_conventions.join("; ")
+        );
+    }
+}
+
+fn print_card(c: &ContextCard) {
+    let tag = c
+        .current_tag
+        .as_deref()
+        .map(|t| format!("  [{t}]"))
+        .unwrap_or_default();
+    println!("• {}{tag}", c.reference);
+    if !c.title.is_empty() {
+        println!("    title: {}", c.title);
+    }
+    println!("    path: {}  source: {}", c.path, c.source);
+    if !c.outline.is_empty() {
+        println!("    outline: {}", c.outline.join(" · "));
+    }
+    if !c.version_markers.is_empty() {
+        let vs: Vec<String> = c
+            .version_markers
+            .iter()
+            .map(|v| format!("{} ({})", v.marker, v.where_found))
+            .collect();
+        println!("    version markers: {}", vs.join(", "));
+    }
+    if !c.siblings.is_empty() {
+        let ss: Vec<String> = c
+            .siblings
+            .iter()
+            .map(|s| format!("{} [{}]", s.path, s.version_marker))
+            .collect();
+        println!("    versioned siblings: {}", ss.join(", "));
+    }
+    if let Some(nd) = &c.near_dup {
+        println!(
+            "    near-dup: {} (cosine {:.3}, {})",
+            nd.reference, nd.cosine, nd.relation
+        );
+    }
+    if c.inbound_links > 0 {
+        println!("    inbound links: {}", c.inbound_links);
+    }
+    if c.draft_markers.todo_count > 0 || c.draft_markers.wip {
+        println!(
+            "    draft markers: {} TODO/TBD/FIXME{}",
+            c.draft_markers.todo_count,
+            if c.draft_markers.wip {
+                ", draft/WIP flag"
+            } else {
+                ""
+            }
+        );
+    }
+    if let Some(m) = &c.modified_at {
+        println!("    modified: {m}");
+    }
+    println!();
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,23 +1962,8 @@ fn audit_kb_in(root: &Path, paths: &[String], json_out: bool, strict: bool) -> R
         }
     }
 
-    // 2. needs-review backlog from tags.entries and mirrored catalog tags.
+    // 2. needs-review backlog from the catalog `tags` table.
     let mut needs_review_seen = HashSet::new();
-    if let Some(entries) = cfg["tags"]["entries"].as_object() {
-        for (r, v) in entries {
-            if v["status"].as_str() == Some("needs-review") {
-                let by = v["by"].as_str().unwrap_or("?");
-                let at = v["at"].as_str().unwrap_or("?");
-                needs_review_seen.insert(norm_ref(r));
-                findings.push(KbFinding {
-                    severity: "warn",
-                    rule: "needs-review",
-                    file: r.clone(),
-                    message: format!("flagged needs-review by {by} on {at}"),
-                });
-            }
-        }
-    }
     findings.extend(catalog_needs_review_findings(root, &mut needs_review_seen)?);
 
     // 3. Inconsistent terminology: >=2 spellings of a glossary group in one file.
@@ -1724,109 +2650,8 @@ mod tests {
         v.iter().map(|x| x.to_string()).collect()
     }
 
-    #[test]
-    fn tag_add_list_remove_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-
-        // add
-        let code = tag_in(
-            root,
-            &s(&["docs/api.md", "canonical"]),
-            Some("primary reference"),
-            None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(code, 0);
-        let cfg = config::read_json(&config::repo_config_path(root));
-        let entry = &cfg["tags"]["entries"]["docs/api.md"];
-        assert_eq!(entry["status"], "canonical");
-        assert_eq!(entry["note"], "primary reference");
-        assert!(entry["by"].as_str().is_some());
-        assert!(entry["at"].as_str().unwrap().len() == 10); // YYYY-MM-DD
-
-        // tag_of resolves, including ./ normalization
-        assert_eq!(
-            tag_of(root, &cfg, "docs/api.md").as_deref(),
-            Some("canonical")
-        );
-        assert_eq!(
-            tag_of(root, &cfg, "./docs/api.md").as_deref(),
-            Some("canonical")
-        );
-        assert_eq!(tag_of(root, &cfg, "other.md"), None);
-
-        // list (both plain and json paths just need to not fail)
-        assert_eq!(tag_in(root, &s(&["list"]), None, None, false).unwrap(), 0);
-        assert_eq!(
-            tag_in(root, &s(&["list"]), None, Some("canonical"), true).unwrap(),
-            0
-        );
-
-        // remove
-        assert_eq!(
-            tag_in(root, &s(&["remove", "./docs/api.md"]), None, None, false).unwrap(),
-            0
-        );
-        let cfg = config::read_json(&config::repo_config_path(root));
-        assert!(cfg["tags"]["entries"].get("docs/api.md").is_none());
-        // removing again fails
-        assert_eq!(
-            tag_in(root, &s(&["remove", "docs/api.md"]), None, None, false).unwrap(),
-            1
-        );
-    }
-
-    #[test]
-    fn tag_unknown_status_exits_2() {
-        let dir = tempfile::tempdir().unwrap();
-        let code = tag_in(
-            dir.path(),
-            &s(&["README.md", "totally-bogus-status"]),
-            None,
-            None,
-            false,
-        )
-        .unwrap();
-        assert_eq!(code, 2);
-        assert!(!config::repo_config_path(dir.path()).exists());
-        assert_eq!(
-            tag_in(
-                dir.path(),
-                &s(&["list"]),
-                None,
-                Some("totally-bogus-status"),
-                false
-            )
-            .unwrap(),
-            2
-        );
-    }
-
-    #[test]
-    fn tag_ref_with_dots_stays_flat() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        tag_in(
-            root,
-            &s(&["gdocs:launch.plan.v2", "draft"]),
-            None,
-            None,
-            false,
-        )
-        .unwrap();
-        let cfg = config::read_json(&config::repo_config_path(root));
-        assert_eq!(
-            cfg["tags"]["entries"]["gdocs:launch.plan.v2"]["status"],
-            "draft"
-        );
-    }
-
-    #[test]
-    fn tag_mirror_updates_existing_catalog_docs() {
-        let dir = tempfile::tempdir().unwrap();
-        let catalog = dir.path().join("catalog.duckdb");
+    /// Publish a catalog at `path` holding one doc (`doc1`, path `docs/api.md`).
+    fn catalog_with_api_doc(path: &Path) {
         let conn = duckdb::Connection::open_in_memory().unwrap();
         index::ensure_schema(&conn).unwrap();
         conn.execute(
@@ -1839,34 +2664,139 @@ mod tests {
             [],
         )
         .unwrap();
+        index::publish_to_path(&conn, path).unwrap();
+    }
+
+    fn tag_status_in(path: &Path, target_type: &str, target_id: &str) -> Option<String> {
+        let conn = index::open_readonly_path(path).unwrap().unwrap();
+        conn.query_row(
+            "SELECT status FROM tags WHERE target_type = ?1 AND target_id = ?2",
+            duckdb::params![target_type, target_id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn tag_apply_resolves_to_doc_and_removes() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.duckdb");
+        catalog_with_api_doc(&catalog);
+        let paths = std::slice::from_ref(&catalog);
+
+        let entry = json!({ "status": "canonical", "by": "tester", "at": "2026-07-06", "note": "primary" });
+        apply_tag(paths, "docs/api.md", &entry).unwrap();
+
+        assert_eq!(
+            tag_status_in(&catalog, "doc", "doc1").as_deref(),
+            Some("canonical")
+        );
+        // tag_of resolves, including ./ normalization.
+        assert_eq!(tag_of_paths(paths, "docs/api.md").as_deref(), Some("canonical"));
+        assert_eq!(tag_of_paths(paths, "./docs/api.md").as_deref(), Some("canonical"));
+        assert_eq!(tag_of_paths(paths, "other.md"), None);
+
+        // remove clears it; removing again reports nothing removed.
+        assert!(remove_tag(paths, "docs/api.md").unwrap());
+        assert_eq!(tag_status_in(&catalog, "doc", "doc1"), None);
+        assert!(!remove_tag(paths, "docs/api.md").unwrap());
+    }
+
+    #[test]
+    fn tag_unknown_status_exits_2_without_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        // Bad status is rejected before any catalog is required.
+        assert_eq!(
+            tag_in(
+                dir.path(),
+                &s(&["README.md", "totally-bogus-status"]),
+                None,
+                None,
+                false,
+                None,
+                None,
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            tag_in(
+                dir.path(),
+                &s(&["list"]),
+                None,
+                Some("totally-bogus-status"),
+                false,
+                None,
+                None,
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn tag_unresolved_ref_stored_as_ref_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.duckdb");
+        // Published but empty catalog: the ref resolves nowhere.
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        index::ensure_schema(&conn).unwrap();
         index::publish_to_path(&conn, &catalog).unwrap();
         drop(conn);
 
-        let entry = json!({
-            "status": "canonical",
-            "by": "tester",
-            "at": "2026-07-06",
-            "note": "primary"
-        });
-        mirror_tag_to_catalog_paths(std::slice::from_ref(&catalog), "docs/api.md", Some(&entry))
-            .unwrap();
-        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
-        let status: String = conn
-            .query_row(
-                "SELECT status FROM tags WHERE target_type = 'doc' AND target_id = 'doc1'",
-                [],
-                |row| row.get(0),
+        let entry = json!({ "status": "draft", "by": "tester", "at": "2026-07-06" });
+        apply_tag(std::slice::from_ref(&catalog), "gdocs:launch.plan.v2", &entry).unwrap();
+
+        // Dots in the ref are preserved verbatim as the ref-tag target_id.
+        assert_eq!(
+            tag_status_in(&catalog, "ref", "gdocs:launch.plan.v2").as_deref(),
+            Some("draft")
+        );
+    }
+
+    #[test]
+    fn superseded_by_records_replaces_lineage_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("catalog.duckdb");
+        let conn = duckdb::Connection::open_in_memory().unwrap();
+        index::ensure_schema(&conn).unwrap();
+        for (doc, path) in [("old", "docs/v1.md"), ("new", "docs/v2.md")] {
+            conn.execute(
+                "INSERT INTO documents (
+                    doc_id, source_id, external_id, canonical_ref, title, url, path, mime_type, kind,
+                    author_id, author_name, created_at, updated_at, observed_at, version,
+                    content_sha256, body, metadata_json
+                ) VALUES (?1, 'git', ?2, ?3, ?2, '', ?2, 'text/markdown', 'doc',
+                    '', '', NULL, NULL, 'now', '1', 'sha', 'body', '{}')",
+                duckdb::params![doc, path, format!("git:{path}")],
             )
             .unwrap();
-        assert_eq!(status, "canonical");
-        drop(conn);
-
-        mirror_tag_to_catalog_paths(std::slice::from_ref(&catalog), "docs/api.md", None).unwrap();
-        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tags", [], |row| row.get(0))
+            conn.execute(
+                "INSERT INTO spans (span_id, doc_id, chunk_id, span_kind, label, start_byte, end_byte, start_line, end_line, stable_hash, metadata_json)
+                 VALUES (?1, ?2, NULL, 'section', 'root', 0, 100, 1, 10, 'h', '{}')",
+                duckdb::params![format!("span-{doc}"), doc],
+            )
             .unwrap();
-        assert_eq!(count, 0);
+        }
+        index::publish_to_path(&conn, &catalog).unwrap();
+        drop(conn);
+        let paths = std::slice::from_ref(&catalog);
+
+        let pointer = record_supersession(paths, "docs/v2.md", "docs/v1.md").unwrap();
+        assert_eq!(pointer.as_deref(), Some("docs/v2.md"));
+
+        let conn = index::open_readonly_path(&catalog).unwrap().unwrap();
+        let (rel, status, from_span, to_span): (String, String, String, String) = conn
+            .query_row(
+                "SELECT rel, status, from_span_id, to_span_id FROM lineage_edges",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(rel, "replaces");
+        assert_eq!(status, "confirmed");
+        assert_eq!(from_span, "span-new"); // successor → deprecated
+        assert_eq!(to_span, "span-old");
     }
 
     #[test]

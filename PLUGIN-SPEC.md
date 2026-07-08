@@ -228,7 +228,6 @@ A nudge is the hand-declared counterpart of a confirmed lineage edge (§8.3): th
 
 ```
 tags.statuses  = ["canonical","stale","deprecated","draft","internal","customer-facing","needs-review"]
-tags.entries   = {}    # {path-or-doc-ref: {status, by, at, note}}  — committed config; team-shared
 facts.file     = "FACTS.md"
 glossary.file  = "STYLE.md"   # glossary terms live in STYLE.md's Terminology section
 ```
@@ -264,7 +263,7 @@ Interactive, assistant-guided setup.
 - Exit 0.
 
 #### `mari status`
-Prints: workspace dir; cloud role/remote/last-pull (if cloud); embedding identity (warns on model mismatch → suggest `mari sync --rebuild`); last-sync age + staleness warning; per-source line `label scope connected|local tracked=N indexed=M`; detector style guide + hook state; tag counts by status. Tag counts are logical counts: a committed `tags.entries` item that has already been mirrored into the DuckDB `tags` table is counted once, not once from config plus once from the mirror.
+Prints: workspace dir; cloud role/remote/last-pull (if cloud); embedding identity (warns on model mismatch → suggest `mari sync --rebuild`); last-sync age + staleness warning; per-source line `label scope connected|local tracked=N indexed=M`; detector style guide + hook state; tag counts by status.
 
 #### `mari auth <provider> [--token T] [--url U] [--email E] [--subdomain S] [--key K] [--secret S] [--method M]`
 Providers: `confluence discord github google hubspot jira linear microsoft salesforce slack zendesk`. (Auth provider `google` maps to source key `gdocs`.) Interactive providers (`google`, `microsoft`) with no flags run a browser/device-code flow; others validate the supplied credential against the service and save it to the source's scope location. Exit `0`/`1` (connect error)/`2` (unknown provider or missing required field).
@@ -348,12 +347,24 @@ See §9.
 
 ### 5.3 Curation
 
-#### `mari tag <path-or-ref> <status> [--note "…"] | mari tag list [--status S] [--json] | mari tag remove <path-or-ref>`
-Tag a repo file or an indexed doc ref with one status from `tags.statuses` (`canonical stale deprecated draft internal customer-facing needs-review`). Tags are stored in committed `.mari/config.json` (`tags.entries`) so they are team-shared and versioned, and mirrored into the catalog `tags` table immediately when the indexed doc is present, and again at sync/search time. Effects:
+#### `mari tag <path-or-ref> <status> [--note "…"] [--superseded-by <path-or-ref>] | mari tag list [--status S] [--json] | mari tag remove <path-or-ref>`
+Tag a repo file or an indexed doc ref with one status from `tags.statuses` (`canonical stale deprecated draft internal customer-facing needs-review`). Bulk tagging goes through `mari tag analyze` (below). Tags are stored in the catalog `tags` table (§8.7), keyed `(target_type, target_id)` with status, note, author, and timestamp; team sharing rides the shared warehouse like every other catalog table (§9).
+
+`--superseded-by <path-or-ref>` records the successor in the document lineage: a confirmed `replaces` lineage edge (§8.3) from the successor's whole-document span to the tagged doc's, provenance `human`. Valid with any status but most useful with `deprecated` — it is what powers the replacement pointer below. The flag errors if the successor ref does not resolve. `mari tag remove` leaves the lineage edge in place (lineage is history, not tag metadata).
+
+Effects:
 - **Search ranking:** fused scores multiply by `search.tag_boosts` (canonical up-ranked; stale/deprecated down-ranked). `--tag`/`--no-tag` filters available on `search`/`recent`.
-- **Result display:** tag badge shown on every hit; `deprecated` hits print their replacement pointer if a lineage edge exists.
+- **Result display:** tag badge shown on every hit; `deprecated` hits print their replacement pointer if a `replaces` lineage edge exists (created via `--superseded-by`).
 - **Factcheck trust:** claims supported only by `stale`/`deprecated` sources are reported as `unsupported-claim` with a "source is stale" note; `canonical` sources are preferred evidence.
 - **Hooks:** editing a file tagged `deprecated` or `stale` produces an advisory notice; `needs-review` files are surfaced by `mari audit kb`.
+
+#### `mari tag analyze [path…] [--status S] [--source <key>] [--json]`
+Deterministic context extraction for the `/mari tag analyze` skill flow (§10.4). Emits a **repo-context block** (current project version from manifest + latest semver git tag, both shown when they disagree; version-marker conventions observed across doc paths/titles/front matter) followed by one bounded **context card** per doc in scope (field set and per-field caps in §10.4): identity + current tag, outline, lede, version markers, versioned siblings, near-dup pointer, inbound-link count, draft markers, modified time. Every card field exists to help pick a category; cards are capped so an entire knowledge base fits one agent session; the skill judges from cards, asks the user what it cannot infer, and applies tags via `mari tag <ref> <status>`. The CLI extracts; it never calls an LLM.
+- `path…` — restrict to repo paths/globs; default = whole knowledge base (repo workspace + `_global`).
+- `--status S` — restrict to docs already tagged `S` (for re-reviewing existing tags); default = untagged docs.
+- `--source <key>` — restrict to one connector source.
+- `--json` — the same repo-context block + cards, machine-shaped.
+Requires an index for doc-ref cards (repo-path cards work without one).
 
 #### `mari glossary [harvest|list|add <term> --use "<canonical>" --not "<variants,…>"]`
 Manages the Terminology table in STYLE.md.
@@ -836,7 +847,7 @@ CREATE TABLE lineage_edges (
   lineage_id TEXT PRIMARY KEY,
   from_span_id TEXT NOT NULL REFERENCES spans(span_id),
   to_span_id TEXT NOT NULL REFERENCES spans(span_id),
-  rel TEXT NOT NULL,                    -- explains, implements, documents, contradicts, updates, translates
+  rel TEXT NOT NULL,                    -- explains, implements, documents, contradicts, updates, translates, replaces
   status TEXT NOT NULL,                 -- proposed | confirmed | rejected
   confidence REAL NOT NULL,
   confirmed_by TEXT,
@@ -1204,6 +1215,46 @@ Approved terms live in STYLE.md's Terminology table (Use / Not columns). `mari g
 
 ### 10.3 Facts
 FACTS.md is the deterministic grounding source: one fact per line with optional `(source)` attribution. Populated manually (`mari facts add`), or in bulk via `mari extract facts` (agent reviews before writing). Accepted ledger facts are mirrored into the catalog `facts` table when a catalog exists, with `status='accepted'`, source attribution, author, timestamp, and `metadata_json.source='FACTS.md'`. `factcheck` treats FACTS.md as ground truth; contradictions are errors.
+
+### 10.4 Auto-tagging (`tag analyze`)
+
+Tagging by hand does not scale past a few dozen docs, so the `tag analyze` skill flow does it in one session: the CLI extracts bounded deterministic context for every doc, the agent judges from that context, asks the user about what it cannot infer, and writes the agreed tags via `mari tag`. Teams typically run it once at setup and afterwards only tag docs when they become a problem in search.
+
+**Default posture: untagged = current.** An untagged doc is assumed fine — full trust, normal ranking. The flow is not trying to tag everything; it hunts for docs that need **special treatment** (stale, deprecated, draft, internal-only, contradicted, …). A doc the agent or user judges fine is simply left untagged.
+
+**Repo-context block.** `tag analyze` opens with repo-level context the agent grounds its inferences in: the **current project version** (read from the repo's manifest — Cargo.toml, package.json, pyproject.toml, go.mod, … — and the latest semver git tag, both reported when they disagree), and the **version-marker conventions** observed across doc paths, titles, and front matter (`flink-doc-1.15.md`, `docs/1.15/…`, `v2/`, "as of 0.9" in a title).
+
+**Doc context card.** For every doc in scope, `tag analyze` deterministically extracts a bounded context card so the agent can judge most docs without opening them (full reads stay available via `mari doc`). The card is deliberately minimal: tags are a small set of trust/audience categories that steer search and downstream processes, so a field earns its place only by helping pick a category — merely descriptive metadata is excluded. Fields are fixed and individually capped; a card stays under ~1 KB, so a whole knowledge base fits one agent session:
+
+| Field | Bound | Helps decide |
+|---|---|---|
+| `ref, title, path, source, current_tag?` | title ≤ 120 chars | `internal` vs `customer-facing` (source, channel), `draft` (path conventions) |
+| `outline` | first H1 + up to 8 H2s, each ≤ 80 chars | what the doc *is* — baseline for any category call |
+| `lede` | first body paragraph, ≤ 280 chars | supersession, draft, and audience language |
+| `version_markers` | up to 4, with where found (path/title/front-matter/body) | `stale`/`deprecated` vs the current project version |
+| `siblings` | up to 5 same-stem versioned siblings `{path, version_marker}` | `deprecated` (a newer sibling exists) |
+| `near_dup` | top 1 `{ref, cosine, newer\|older}` | `deprecated` (newer copy), `needs-review` (contradiction candidate) |
+| `inbound_links` | edge-graph inbound count (§8.4) | `canonical` (hub doc) |
+| `draft_markers` | TODO/TBD/FIXME count; draft/WIP flag | `draft` |
+| `modified_at` | — | newer-vs-older tie-breaks for siblings and near-dups |
+
+**Skill judgment guidance.** The skill carries common sense, not rules — starting points the agent weighs against everything else it knows, free to overrule:
+- A version marker older than the current project version usually means `deprecated` — the right tag even when the tree is kept deliberately for users on old releases, since `deprecated` semantics (§10.1: down-ranked but searchable, replacement pointer shown) are exactly what search should do with a superseded doc. Not `stale`: a frozen version doc is finished, not out of date. The question to ask the user is whether the old version is still an *operative supported surface* (an LTS most users run) — then its docs are current product and stay untagged. Versions themselves are never tags; the marker only informs the category.
+- Supersession language ("superseded by", "moved to", "no longer maintained"), a newer near-duplicate, or a newer same-stem sibling suggests `deprecated`.
+- A doc whose lineage counterpart (§8.3) changed after its last edit, or whose dated claims have passed, leans `stale`.
+- Draft/WIP markers, heavy TODO density, or `drafts/` paths suggest `draft`.
+- Help-center sources (Zendesk/Salesforce/HubSpot KB) and docsite pages lean `customer-facing`; docs from internal channels/spaces lean `internal` — the agent can't know a team's boundary, so it asks once and generalizes.
+- `audit kb` contradiction candidates and claims unsupported by FACTS.md lean `needs-review`.
+- Heavily-linked hub docs, FACTS.md sources, and root spec-position files (README, SPEC, PRODUCT.md) lean `canonical`.
+
+**Flow** (entry `/mari tag analyze`, `/tag analyze`, or intent phrasing — "tag the knowledge base", "which docs are stale?"). One session covers the whole knowledge base:
+
+1. **Extract.** Run `mari tag analyze` (scoped by any path/source the user gave) — repo context + a card per doc.
+2. **Judge.** Decide from cards; read the doc (`mari doc`, `mari related`) when a card isn't enough.
+3. **Plan & ask.** Present one plan of **all** proposed tags (ref, status, one-line rationale, grouped by status; `deprecated` entries show their proposed successor) and ask **grouped questions** for what the agent cannot infer — one question per pattern, not per file ("these 12 docs match `flink-doc-1.15.*` and the project is on 1.18 — tag them `deprecated`, or is 1.15 still a supported release your users run (leave untagged)?"). The user edits the plan: change statuses, drop entries, add docs the agent missed.
+4. **Apply.** Write each agreed tag via `mari tag <ref> <status> --note "analyze: <rationale>"`, adding `--superseded-by <ref>` whenever the successor is known (a newer sibling or near-duplicate identified during judging) so the deprecation carries its replacement pointer. Print a summary of tags per status and what was deliberately left untagged.
+
+The flow never runs unprompted: no hook, sync step, or background job invokes `tag analyze`. It is user-triggered curation, same trust posture as `/sync`.
 
 ---
 
@@ -1845,7 +1896,7 @@ Mari's slash surface has two layers: a set of **standalone commands** for the hi
 |---|---|---|
 | `/search <question>` | Knowledge flow (§16.3) | Accepts natural language ("theres an outage in #incidents, what is causing it"), not just keyword queries. Flags pass through to `mari search`. |
 | `/sync [source]` | `mari sync` | The one command **never** run unprompted; `/sync` is the explicit user prompt. |
-| `/tag <path-or-ref> <status>` | `mari tag` | Also `/tag list`, `/tag remove`. |
+| `/tag <path-or-ref> <status>` | `mari tag` | Also `/tag list`, `/tag remove`, and `/tag analyze` → the auto-tagging flow (§10.4). |
 | `/factcheck <file> [--source F]` | `mari factcheck` | Agent adds `--decompose` claim decomposition when depth is asked for. |
 | `/audit [path]` | `mari audit` / `mari audit kb` | Bare path → detector report; "audit the knowledge base" phrasing → `audit kb`. |
 | `/deslop <target>` | deslop verb (§13) | |
@@ -1867,6 +1918,7 @@ Mari's slash surface has two layers: a set of **standalone commands** for the hi
 - **`/mari <known-subcommand> …`** → route to the command (init, sync, status, search, tag, config, features, docsite, glossary, facts, extract, nudge, rules, audit, localize, …). Any standalone command's verb also works here (`/mari deslop README.md` ≡ `/deslop README.md`).
 - **Natural-language question** → knowledge flow (§16.3).
 - **Editing intent phrases** map to verbs: "make it punchier"→sharpen, "cut it down"→tighten, "make it less salesy"→soften, "sounds like AI"→deslop, "prepare for launch"→polish, etc.
+- **Curation intent phrases** map to the auto-tagging flow (§10.4): "tag the knowledge base", "which docs are stale/out of date?", "what should Claude trust?", "mark the deprecated stuff" → `/mari tag analyze` (scoped to the named status when one is implied). Proposals only; tags are written after user confirmation.
 - **Coupling intent phrases** map to `nudge add`: "whenever X changes, update Y", "keep this section in sync with that function" → compose the `--when`/`--edit` pair (with `#symbol` when the user names a function or heading), confirm, and run it.
 - **Connector setup** → the relevant `connect-<source>` skill: scope question (with per-source default), method choice, click-by-click credential walkthrough, the three credential-handling paths, `mari auth` + `mari track add` + first `mari sync`, confirmation.
 - **Ambiguity rule:** when input could be either a question or an edit request, prefer the knowledge flow for interrogatives and the detector-first flow for file references; ask only when both readings are plausible and consequential.
