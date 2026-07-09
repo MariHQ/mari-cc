@@ -13,7 +13,7 @@ Glean is for company-wide knowledge. Mari is for project-level knowledge.
 ## **Product Capabilities**
 
 **Ingest and search team knowledge**  
-Mari connects to the knowledge teams already use: GitHub issues, git commit messages, Linear tickets, Slack threads, docs, local repositories, and product files. It retrieves, indexes, and makes that context available to Claude. Mari can leverage gdoc cli commands and personal access tokens for a frictionless experience.
+Mari connects to the knowledge teams already use: GitHub issues, git commit messages, Linear tickets, Jira issues, Slack threads, Granola meeting notes, docs, local repositories, and product files. It retrieves, indexes, and makes that context available to Claude. Mari can leverage gdoc cli commands and personal access tokens for a frictionless experience.
 
 Teams can choose how knowledge is stored and shared. Embeddings can stay local, sync through Git LFS or S3, or be managed through Mari’s SaaS layer. Cron jobs or hosted sync keep the index fresh, so Claude can answer with current team context.
 

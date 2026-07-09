@@ -122,6 +122,7 @@ gdocs.lookback_days    = 30
 gdocs.comments         = true    # index Drive comments as separate docs
 github.include         = ["issues","pulls"]
 zendesk.brands         = []      # optional brand filter
+granola.transcripts    = false   # append raw meeting transcript to each note
 ocr.backend            = "text"  # text (Rust-native default) | auto | ocr-model  (§8.6)
 ocr.model              = "baidu/Unlimited-OCR"   # the only supported engine; no fallbacks
 ocr.dpi                = 200
@@ -480,6 +481,12 @@ Shared sync semantics:
 (Named in PRODUCT.md; not in the prototypes. Specified to the GitHub/Jira pattern.)
 - **Credential:** personal API key. Stored: `{token, name}`.
 - **Documents:** one per issue (title + description + comments). Refs: `linear:TEAM`, issue/project URL. Must track ≥1. Incremental: per-team `updatedAt` cursor; prunes untracked teams.
+
+### 6.14 Granola — `granola` · lists `folders` · **no auth** (local cache) · default **local** · always-when-connected
+- **Source:** reads Granola's on-device meeting-notes cache (macOS: `~/Library/Application Support/Granola/cache-v3.json`); no network call, no credential. **Connected** = cache file present; path overridable via `granola.cache_path`.
+- **Documents:** one per meeting note — the AI-enhanced notes plus the user's raw notes, `# title` prepended; the raw transcript is excluded unless `granola.transcripts=true` (then appended). Refs: `granola:<folderName>`, note id or share URL. `doc_id` = Granola document id; author = note creator; created/modified from note timestamps.
+- **Tracking:** with nothing tracked, indexes every note in the cache; `folders` narrows to named Granola folders/workspaces.
+- **Incremental:** per-note `updated_at`; prunes notes that vanish from the cache (or whose folder was untracked).
 
 ---
 
@@ -1497,7 +1504,7 @@ Compose a toolbox, not one search — `search` with agent-generated `--variant`s
 
 Setup is assistant-guided end-to-end; the user never has to run anything (but always may). Sync is the one command never run unprompted — `/sync` (or an explicit ask) is the only trigger. Standalone editorial commands follow the same verb contract as the router: preserve meaning and voice, rewrite-not-delete, re-run the detector after.
 
-Connector-setup skills ship per source: `connect-slack connect-github connect-gdocs connect-confluence connect-jira connect-zendesk connect-salesforce connect-hubspot connect-microsoft connect-discord connect-linear`.
+Connector-setup skills ship per source: `connect-slack connect-github connect-gdocs connect-confluence connect-jira connect-zendesk connect-salesforce connect-hubspot connect-microsoft connect-discord connect-linear connect-granola`. (`connect-granola` has no auth step — it reads the local Granola cache.)
 
 ---
 

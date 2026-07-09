@@ -1,6 +1,6 @@
 {
   "name": "mari",
-  "description": "Curate, search, and share your team's product knowledge layer — local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, git history, and local files — plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
+  "description": "Curate, search, and share your team's product knowledge layer — local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, Granola, git history, and local files — plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
   "owner": { "name": "Daniel Henneberger" },
   "plugins": [
     {

@@ -117,6 +117,15 @@ const SOURCES: &[SourceInfo] = &[
         cred_fields: "personal API key",
     },
     SourceInfo {
+        key: "granola",
+        label: "Granola",
+        auth: None,
+        list_keys: &["granola.folders"],
+        auto_index: "all notes in the local Granola cache",
+        lookback_key: None,
+        cred_fields: "none (reads the local Granola cache)",
+    },
+    SourceInfo {
         key: "git",
         label: "Git history",
         auth: None,
@@ -298,6 +307,7 @@ mod tests {
                 "microsoft",
                 "discord",
                 "linear",
+                "granola",
                 "git",
                 "localfiles"
             ]

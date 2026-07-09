@@ -306,6 +306,7 @@ pub const SOURCES: &[&str] = &[
     "microsoft",
     "discord",
     "linear",
+    "granola",
     "localfiles",
 ];
 

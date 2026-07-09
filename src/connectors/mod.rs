@@ -22,6 +22,7 @@ fn list_keys(source: &str) -> Option<&'static [&'static str]> {
         "microsoft" => Some(&["microsoft.drives", "microsoft.mail", "microsoft.teams"]),
         "discord" => Some(&["discord.channels", "discord.guilds"]),
         "linear" => Some(&["linear.teams", "linear.projects"]),
+        "granola" => Some(&["granola.folders"]),
         "localfiles" => Some(&["localfiles.paths"]),
         _ => None,
     }

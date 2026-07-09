@@ -59,6 +59,7 @@ pub fn sync_source(
         "microsoft" => microsoft::sync(conn, &cfg, rebuild),
         "discord" => discord::sync(conn, &cfg, rebuild, since_days),
         "linear" => linear::sync(conn, &cfg, rebuild),
+        "granola" => granola::sync(conn, &cfg, rebuild),
         other => Err(anyhow!("unknown source: {other}")),
     }
 }
@@ -502,6 +503,8 @@ pub mod discord;
 pub mod gdocs;
 #[path = "cloud/github.rs"]
 pub mod github;
+#[path = "cloud/granola.rs"]
+pub mod granola;
 #[path = "cloud/hubspot.rs"]
 pub mod hubspot;
 #[path = "cloud/jira.rs"]

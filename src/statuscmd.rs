@@ -184,9 +184,7 @@ fn catalog_status_from_paths(paths: &[PathBuf]) -> CatalogStatus {
                 }
             }
         }
-        if let Ok(mut stmt) =
-            conn.prepare("SELECT target_type, target_id, status FROM tags")
-        {
+        if let Ok(mut stmt) = conn.prepare("SELECT target_type, target_id, status FROM tags") {
             if let Ok(rows) = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -287,6 +285,7 @@ fn source_table() -> Vec<(
             Some("linear"),
             vec!["linear.teams", "linear.projects"],
         ),
+        ("granola", "Granola", None, vec!["granola.folders"]),
         ("git", "Git history", None, vec!["git.repos"]),
         ("localfiles", "Local files", None, vec!["localfiles.paths"]),
     ]
@@ -457,6 +456,7 @@ mod tests {
                 "microsoft",
                 "discord",
                 "linear",
+                "granola",
                 "git",
                 "localfiles"
             ]

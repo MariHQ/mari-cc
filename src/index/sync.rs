@@ -212,10 +212,16 @@ fn should_print_git_cloud_commit_nudge(enabled: bool, role: &str, backend: &str)
 fn sync_sources(source: Option<&str>) -> Vec<&str> {
     match source {
         Some(s) => vec![s],
-        None => sync_sources_for_config(
-            &config::resolve(Some(&workspace::work_root())),
-            |provider| authcmd::credential(provider).is_some(),
-        ),
+        None => {
+            let cfg = config::resolve(Some(&workspace::work_root()));
+            let cfg_for_probe = cfg.clone();
+            sync_sources_for_config(&cfg, move |provider| {
+                authcmd::credential(provider).is_some()
+                    // Granola has no credential: "connected" = cache present (§6.14).
+                    || (provider == "granola"
+                        && crate::connectors::cloud::granola::cache_present(&cfg_for_probe))
+            })
+        }
     }
 }
 
@@ -250,6 +256,7 @@ const CLOUD_SOURCE_ORDER: &[&str] = &[
     "microsoft",
     "discord",
     "linear",
+    "granola",
 ];
 
 fn source_active<F>(cfg: &serde_json::Value, source: &str, connected: &F) -> bool
@@ -282,6 +289,7 @@ fn list_keys_for_source(source: &str) -> &'static [&'static str] {
         "microsoft" => &["microsoft.drives", "microsoft.mail", "microsoft.teams"],
         "discord" => &["discord.channels", "discord.guilds"],
         "linear" => &["linear.teams", "linear.projects"],
+        "granola" => &["granola.folders"],
         "git" => &["git.repos"],
         "localfiles" => &["localfiles.paths"],
         _ => &[],
@@ -291,7 +299,7 @@ fn list_keys_for_source(source: &str) -> &'static [&'static str] {
 fn always_when_connected(source: &str) -> bool {
     matches!(
         source,
-        "slack" | "gdocs" | "zendesk" | "salesforce" | "hubspot" | "git"
+        "slack" | "gdocs" | "zendesk" | "salesforce" | "hubspot" | "git" | "granola"
     )
 }
 

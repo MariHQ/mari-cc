@@ -18,8 +18,9 @@ status, scope, credential file path + fields, config file path + tracked-ref lis
 `slack.[channels]`, `github.[repos]`), whether it indexes-everything-when-connected, and (for
 Slack/Discord/Google Drive) the first-sync lookback. Mari ships **12 core connectors** — Git
 history (the current repo, no auth, on by default), Slack, Google Drive, GitHub, Linear,
-Confluence, Jira, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord — plus local files,
-always on. Read the output and act on it; don't memorize the list.
+Confluence, Jira, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Granola (local
+meeting-notes cache, no auth) — plus local files, always on. Read the output and act on it;
+don't memorize the list.
 
 **Each connector has a guided `/connect-<name>` setup skill** (`connect-slack`,
 `connect-github`, `connect-linear`, …) that walks scope and every auth option for that source.

@@ -1931,7 +1931,7 @@ Compose a toolbox, not one search — `search` with agent-generated `--variant`s
 
 Setup is assistant-guided end-to-end; the user never has to run anything (but always may). Sync is the one command never run unprompted — `/sync` (or an explicit ask) is the only trigger. Standalone editorial commands follow the same verb contract as the router: preserve meaning and voice, rewrite-not-delete, re-run the detector after.
 
-Connector-setup skills ship per source: `connect-slack connect-github connect-gdocs connect-confluence connect-jira connect-zendesk connect-salesforce connect-hubspot connect-microsoft connect-discord connect-linear`.
+Connector-setup skills ship per source: `connect-slack connect-github connect-gdocs connect-confluence connect-jira connect-zendesk connect-salesforce connect-hubspot connect-microsoft connect-discord connect-linear connect-granola`. (`connect-granola` has no auth step — it reads the local Granola cache.)
 
 ---
 

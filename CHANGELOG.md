@@ -22,7 +22,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remote-code acknowledgement).
 - Connectors: localfiles, git (+ commit history), Slack, Google Drive, GitHub,
   Confluence, Jira, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord,
-  Linear; shared §6.0 HTTP contract.
+  Linear, Granola (local meeting-notes cache); shared §6.0 HTTP contract.
 - Post-edit hook (8 jobs) and post-commit association hook; edit-notify rules
   and nudges; cloud sharing (git + S3) with vector replication.
 - `mari model pull` / `mari model status`, `mari doctor`, checksum-verified
