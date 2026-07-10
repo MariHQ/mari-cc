@@ -88,6 +88,7 @@ Pick one of three paths depending on how the user wants to handle the credential
 - **You run it** (default) — run the appropriate line yourself:
   - Cloud: `mari auth confluence --url https://you.atlassian.net/wiki --email you@company.com --token <api-token>`
   - Server/DC: `mari auth confluence --url https://wiki.yourcompany.com --token <PAT>`
+  - **Public / anonymous** (no account or token — for world-readable wikis such as **Apache's** `cwiki.apache.org`, or when the PAT page says "contact your workspace admin"): `mari auth confluence --url https://cwiki.apache.org/confluence --anonymous`. Stores `{"method":"anonymous","url":…}` and sends no `Authorization` header. Confirm the API is open first: `curl -s -o /dev/null -w '%{http_code}' "<base>/rest/api/content?spaceKey=FLINK&limit=1"` should print `200`.
 - **User runs it** (privacy — token never passes through you) — hand them the exact line above to paste into their own terminal.
 - **Write the credential file directly** — run `mari init search` to get the credential file path, then write the JSON there:
   - Cloud: `{"method":"cloud","url":"https://you.atlassian.net/wiki","email":"you@company.com","token":"<api-token>","name":null}`

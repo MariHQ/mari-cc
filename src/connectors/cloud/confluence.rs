@@ -30,18 +30,26 @@ pub fn sync(conn: &Connection, cfg: &Value, rebuild: bool) -> Result<SyncStats> 
         .unwrap_or_default()
         .trim_end_matches('/')
         .to_string();
-    let auth = match cred["method"].as_str() {
-        Some("cloud") => format!(
-            "Basic {}",
-            authcmd::base64(&format!(
-                "{}:{}",
-                cred["email"].as_str().unwrap_or(""),
-                cred["token"].as_str().unwrap_or("")
-            ))
-        ),
-        _ => format!("Bearer {}", cred["token"].as_str().unwrap_or("")),
+    // Anonymous mode (§6.5): public wiki, no Authorization header.
+    let headers = match cred["method"].as_str() {
+        Some("anonymous") => vec![],
+        Some("cloud") => vec![(
+            "Authorization".into(),
+            format!(
+                "Basic {}",
+                authcmd::base64(&format!(
+                    "{}:{}",
+                    cred["email"].as_str().unwrap_or(""),
+                    cred["token"].as_str().unwrap_or("")
+                ))
+            ),
+        )],
+        _ => vec![(
+            "Authorization".into(),
+            format!("Bearer {}", cred["token"].as_str().unwrap_or("")),
+        )],
     };
-    let mut http = Http::new(vec![("Authorization".into(), auth)]);
+    let mut http = Http::new(headers);
     let mut stats = SyncStats::default();
     let mut seen_ids: BTreeSet<String> = BTreeSet::new();
 

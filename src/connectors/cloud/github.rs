@@ -91,13 +91,17 @@ pub fn sync(conn: &Connection, cfg: &Value, rebuild: bool) -> Result<SyncStats> 
                     Err(e) => eprintln!("note: github {} skipped: {e}", doc.external_id),
                 }
             }
+            // Checkpoint after every page so a kill / rate-limit abort resumes
+            // where it left off (§6.3). Ordering is `updated ASC`, so
+            // `max_updated` only advances; `since=` is inclusive and re-ingest is
+            // content-hash idempotent, so resuming re-fetches at most one page.
+            if !max_updated.is_empty() {
+                set_meta(conn, &cursor_key, &max_updated)?;
+            }
             if arr.len() < 100 {
                 break;
             }
             page += 1;
-        }
-        if !max_updated.is_empty() {
-            set_meta(conn, &cursor_key, &max_updated)?;
         }
     }
     // Prune docs of untracked repos (§6.3).

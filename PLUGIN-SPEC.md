@@ -8,7 +8,7 @@ This is the master behavioral specification for Mari, a local-first Claude Code 
 
 Mari answers "What should our AI know, trust, and reuse?" It has five pillars:
 
-1. **Ingest & search** — make the knowledge teams already use retrievable by Claude with local hybrid search via a rich context graph. Sources: Slack, GitHub, Granola, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, git history, and local files.
+1. **Ingest & search** — make the knowledge teams already use retrievable by Claude with local hybrid search via a rich context graph. Sources: Slack, GitHub, Granola, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, mailing-list archives (Apache Pony Mail), git history, and local files.
 2. **Curate** — tag knowledge as canonical, stale, deprecated, draft, internal, customer-facing, or needs-review; maintain a glossary and a facts ledger; audit the knowledge base.
 3. **Improve AI-authored content** — an editorial vocabulary (`deslop`, `tighten`, `understate`, `clarify`, `critique`, `polish`, …) plus a deterministic ~170-rule detector for AI slop, clarity, house style, and inclusive language.
 4. **Ground claims** — factcheck content against FACTS.md, source-of-truth files, and the knowledge base; catch contradictions and unsupported claims before publish.
@@ -483,7 +483,7 @@ Shared sync semantics:
 - **Pruning:** item-tracked sources prune docs that vanish or whose ref was untracked; incremental/whole-collection sources (Zendesk tickets, Salesforce, HubSpot, Microsoft mail/Teams) never prune.
 
 ### 6.1 Slack — `slack` · lists `channels` · auth `slack` · default scope **global** · always-when-connected
-- **Credential:** User OAuth token `xoxp-…` (sees DMs + private channels) or Bot token `xoxb-…` (invited channels only). Scopes: `channels:history groups:history im:history mpim:history channels:read groups:read users:read`. Missing `groups:read` degrades to public channels (logged, not fatal). Stored: `{token, team, user, url}`.
+- **Credential:** User OAuth token `xoxp-…` (sees DMs + private channels) or Bot token `xoxb-…` (invited channels only). **Session mode** (SPEC.md §6.1) for admin-approval-gated workspaces (e.g. Apache Flink Slack): `mari auth slack --token xoxc-… --secret xoxd-…` stores `{method:"session", token, cookie, …}` and the connector sends `Authorization: Bearer <xoxc>` + `Cookie: d=<xoxd>`; browser-session creds, user-scoped, expire on logout. Scopes: `channels:history groups:history im:history mpim:history channels:read groups:read users:read`. Missing `groups:read` degrades to public channels (logged, not fatal). Stored: `{token, team, user, url}`.
 - **Documents:** one per thread (root + replies), one per standalone message. `doc_id = <channel>/<root_ts>`; URL = permalink; author + created/modified (last activity).
 - **Tracking:** default = all channels the token is a member of; explicit `channels` list (or `all`/`*`) narrows.
 - **Incremental:** per-channel timestamp cursor + trailing 7-day re-scan window (catches edits/late replies). First sync backfills 14 days. User directory cached in state.
@@ -497,19 +497,19 @@ Shared sync semantics:
 ### 6.3 GitHub — `github` · lists `repos` · auth `github` · default **local**
 - **Credential:** fine-grained PAT (`github_pat_…`; read: Contents, Issues, Pull requests, Metadata) or classic (`ghp_…`; `repo`/`public_repo`). Stored: `{token, login}`.
 - **Documents:** issues + PRs (title, body, comments) of tracked repos. `github.include` narrows to `["issues"]`/`["pulls"]`. `doc_id = owner/repo#N`. No auto-index; must track ≥1 repo. No lookback.
-- **Incremental:** per-repo `updated_at` high-water cursor; prunes untracked repos' docs.
+- **Incremental:** per-repo `updated_at` high-water cursor **persisted after every page** (`sort=updated&direction=asc`), so a kill or rate-limit wait resumes mid-repo instead of restarting; content-hash idempotent re-ingest. Rate limits (`429`, or `403` + `x-ratelimit-remaining: 0`) are waited out to `x-ratelimit-reset` per §6.0, not aborted. Prunes untracked repos' docs.
 
 ### 6.4 Git history — `git` · lists `repos` · **no auth** · default **local** · always-when-connected
 - Shells out to local `git log`. With nothing tracked, indexes the cwd repo; `repos` adds other clones. One document per commit; `doc_id = <repo>:<sha>`; URL derived from origin remote when GitHub/GitLab-shaped. Chat-sized chunking.
 - **Incremental:** last-HEAD cursor, reads `last..HEAD`; rebase/force-push triggers full scan and prune of vanished commits.
 
 ### 6.5 Confluence — `confluence` · lists `spaces, pages` · auth `confluence` · default **local**
-- **Credential:** Cloud = email + API token (Basic; URL includes `/wiki`); Server/DC = PAT (Bearer). Method inferred from presence of `--email`. Stored: `{method, url, email, token, name}`.
+- **Credential:** Cloud = email + API token (Basic; URL includes `/wiki`); Server/DC = PAT (Bearer). Method inferred from presence of `--email`. Stored: `{method, url, email, token, name}`. **Anonymous mode** for public Server/DC wikis (e.g. ASF `cwiki.apache.org`): `mari auth confluence --url <base> --anonymous` stores `{method:"anonymous", url}`, no token, no `Authorization` header. Tracked + anonymous = connected; `401/403` → auth error suggesting a PAT. (Canonical: SPEC.md §6.5.)
 - **Documents:** every page, storage HTML flattened to text, `# title` prepended. Refs: page/space URL, `confluence:SPACEKEY`, `confluence:page:<id>`. Must track ≥1. `doc_id` = page id.
 - **Incremental:** version number; list endpoint carries metadata, bodies fetched lazily for changed pages; prunes unseen pages.
 
 ### 6.6 Jira — `jira` · lists `projects` · auth `jira` · default **local**
-- **Credential:** as Confluence (Cloud Basic / DC PAT), URL without trailing path.
+- **Credential:** as Confluence (Cloud Basic / DC PAT), URL without trailing path. **Anonymous mode** (`mari auth jira --url <base> --anonymous` → `{method:"anonymous", url}`, no `Authorization` header) for public trackers such as ASF `issues.apache.org/jira`. (Canonical: SPEC.md §6.6.)
 - **Documents:** one per issue (summary + description + comments). Refs: `jira:PROJ` or `/browse/PROJ-123` URL. `doc_id` = issue key; author = reporter. Must track ≥1.
 - **Incremental:** per-project `updated >` cursor; prunes untracked projects.
 
@@ -544,6 +544,14 @@ Shared sync semantics:
 (Named in PRODUCT.md; not in the prototypes. Specified to the GitHub/Jira pattern.)
 - **Credential:** personal API key. Stored: `{token, name}`.
 - **Documents:** one per issue (title + description + comments). Refs: `linear:TEAM`, issue/project URL. Must track ≥1. Incremental: per-team `updatedAt` cursor; prunes untracked teams.
+
+### 6.14 Mailing lists — `lists` · config block `lists` · lists `lists` · **no auth** (public archives) · default **local**
+(Canonical definition: SPEC.md §6.15. Specified for the Apache-style community-knowledge case — `dev@`/`user@` lists hold the design record; not in the prototypes.)
+- **Backend:** an [Apache Pony Mail](https://lists.apache.org) archive (default `https://lists.apache.org`; `lists.archive_url` overrides). Public archives need no credential; the source is active whenever ≥1 list is tracked.
+- **Tracking:** each ref is a list address `dev@flink.apache.org` (or `lists:…`/a `lists.apache.org` URL), normalized to `<localpart>@<domain>`. Must track ≥1.
+- **Documents:** one per **thread** (root + replies in date order), `# <subject>` prepended, each message a `From: <name> — <date>` header + plaintext body (HTML flattened, attachments dropped). `doc_id = <list>/<root-mid>`; URL `<archive_url>/thread/<root-mid>`; container = list address; author = root sender; created/updated = root/last-reply dates; mime `text/plain`, kind `thread`.
+- **Fetch:** Pony Mail JSON API (`/api/stats.lua` to enumerate threads, `/api/thread.lua?id=<root-mid>` for bodies; `/api/mbox.lua` per-month as fallback), under the §6.0 HTTP contract.
+- **Incremental:** per-list newest-epoch cursor + 14-day trailing re-scan for late replies; first sync backfills `lists.lookback_days` (0 = whole archive). Revision = `<last-reply-epoch>:<count>`. Prunes untracked lists' threads; never deletes threads within a tracked list (append-only, whole-collection).
 
 ---
 

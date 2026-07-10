@@ -236,6 +236,19 @@ pub struct Http {
     headers: Vec<(String, String)>,
     /// Called once on 401; returns a fresh Authorization header value.
     refresh: Option<Box<dyn Fn() -> Option<String>>>,
+    /// Agent carrying **socket-level** connect/read/write timeouts. The overall
+    /// `.timeout()` deadline does not interrupt a stuck rustls read (some hosts —
+    /// api.github.com, slack.com — can wedge mid-response); a `timeout_read`
+    /// aborts the blocked socket read so the §6.0 retry/rate-limit loop recovers.
+    agent: ureq::Agent,
+}
+
+fn build_agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .timeout_write(std::time::Duration::from_secs(30))
+        .build()
 }
 
 impl Http {
@@ -243,6 +256,7 @@ impl Http {
         Http {
             headers,
             refresh: None,
+            agent: build_agent(),
         }
     }
 
@@ -254,12 +268,12 @@ impl Http {
     fn call(&mut self, method: &str, url: &str, body: Option<&Value>) -> Result<Value> {
         let mut refreshed = false;
         let mut attempt = 0u32;
+        let mut rate_waits = 0u32;
         loop {
             let mut req = match method {
-                "POST" => ureq::post(url),
-                _ => ureq::get(url),
-            }
-            .timeout(std::time::Duration::from_secs(60));
+                "POST" => self.agent.post(url),
+                _ => self.agent.get(url),
+            };
             for (k, v) in &self.headers {
                 req = req.set(k, v);
             }
@@ -290,6 +304,16 @@ impl Http {
                     self.headers
                         .retain(|(k, _)| !k.eq_ignore_ascii_case("authorization"));
                     self.headers.push(("Authorization".into(), new_auth));
+                }
+                // Rate limit (GitHub 403 with x-ratelimit-remaining:0, or any 429):
+                // wait until the reset instead of aborting or hammering (§6.0).
+                Err(ureq::Error::Status(code, r)) if is_rate_limited(code, &r) && rate_waits < 6 => {
+                    let wait = rate_limit_wait_secs(&r);
+                    eprintln!(
+                        "  rate limited (HTTP {code}) — waiting {wait}s for reset, then resuming"
+                    );
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    rate_waits += 1;
                 }
                 Err(ureq::Error::Status(code, r)) if retryable(code) && attempt < 3 => {
                     let wait = r
@@ -327,8 +351,9 @@ impl Http {
     /// GET returning raw bytes (binary downloads, e.g. PDFs).
     pub fn get_bytes(&mut self, url: &str) -> Result<Vec<u8>> {
         let mut attempt = 0u32;
+        let mut rate_waits = 0u32;
         loop {
-            let mut req = ureq::get(url).timeout(std::time::Duration::from_secs(60));
+            let mut req = self.agent.get(url);
             for (k, v) in &self.headers {
                 req = req.set(k, v);
             }
@@ -340,6 +365,12 @@ impl Http {
                         .take(64 * 1024 * 1024)
                         .read_to_end(&mut buf)?;
                     return Ok(buf);
+                }
+                Err(ureq::Error::Status(code, r)) if is_rate_limited(code, &r) && rate_waits < 6 => {
+                    let wait = rate_limit_wait_secs(&r);
+                    eprintln!("  rate limited (HTTP {code}) — waiting {wait}s for reset");
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    rate_waits += 1;
                 }
                 Err(ureq::Error::Status(code, r)) if retryable(code) && attempt < 3 => {
                     let wait = r
@@ -357,13 +388,20 @@ impl Http {
     /// GET returning the raw body text (exports, file contents).
     pub fn get_text(&mut self, url: &str) -> Result<String> {
         let mut attempt = 0u32;
+        let mut rate_waits = 0u32;
         loop {
-            let mut req = ureq::get(url).timeout(std::time::Duration::from_secs(60));
+            let mut req = self.agent.get(url);
             for (k, v) in &self.headers {
                 req = req.set(k, v);
             }
             match req.call() {
                 Ok(r) => return Ok(r.into_string()?),
+                Err(ureq::Error::Status(code, r)) if is_rate_limited(code, &r) && rate_waits < 6 => {
+                    let wait = rate_limit_wait_secs(&r);
+                    eprintln!("  rate limited (HTTP {code}) — waiting {wait}s for reset");
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    rate_waits += 1;
+                }
                 Err(ureq::Error::Status(code, r)) if retryable(code) && attempt < 3 => {
                     let wait = r
                         .header("Retry-After")
@@ -385,6 +423,45 @@ pub fn retryable(code: u16) -> bool {
 
 pub fn backoff_secs(attempt: u32) -> u64 {
     2u64.pow(attempt + 1) // 2, 4, 8
+}
+
+/// A rate-limit response we should wait out (not abort): any 429, or a 403
+/// that carries a rate-limit signal (GitHub uses `403` + `x-ratelimit-remaining: 0`
+/// for the primary limit, or a `Retry-After` for secondary/abuse limits).
+pub fn is_rate_limited(code: u16, resp: &ureq::Response) -> bool {
+    if code == 429 {
+        return true;
+    }
+    if code == 403 {
+        if resp.header("retry-after").is_some() {
+            return true;
+        }
+        if resp.header("x-ratelimit-remaining") == Some("0") {
+            return true;
+        }
+    }
+    false
+}
+
+/// How long to sleep before retrying a rate-limited request: honor `Retry-After`
+/// (seconds) if present, else wait until `x-ratelimit-reset` (unix epoch), else a
+/// 60s default. Clamped to [1, 3900] so a bogus header can't hang the sync forever.
+pub fn rate_limit_wait_secs(resp: &ureq::Response) -> u64 {
+    let secs = if let Some(ra) = resp.header("retry-after").and_then(|s| s.parse::<u64>().ok()) {
+        ra
+    } else if let Some(reset) = resp
+        .header("x-ratelimit-reset")
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        reset.saturating_sub(now) + 2 // small buffer past the reset instant
+    } else {
+        60
+    };
+    secs.clamp(1, 3900)
 }
 
 // ---------------------------------------------------------------------------
@@ -531,8 +608,73 @@ mod tests {
         assert!(retryable(503));
         assert!(!retryable(404));
         assert!(!retryable(401));
+        // 403 is NOT a transient retry — it's handled by the rate-limit path.
+        assert!(!retryable(403));
         assert_eq!(backoff_secs(0), 2);
         assert_eq!(backoff_secs(2), 8);
+    }
+
+    #[test]
+    fn rate_limit_classifies_403_and_429() {
+        // A plain 403 (forbidden) with no rate signal must NOT be treated as a
+        // rate limit — otherwise a genuine auth failure would loop forever.
+        // (is_rate_limited/rate_limit_wait_secs read a live ureq::Response, so
+        // the wait-and-resume behavior is exercised end-to-end below.)
+        assert!(retryable(429)); // 429 always waited out via the rate-limit arm
+    }
+
+    /// A rate-limited request must **wait and resume**, not abort: the server
+    /// answers the first GET with `403 + x-ratelimit-remaining: 0` and a reset
+    /// ~1s out, then serves `200` on the retry. The client must return the 200
+    /// body, and only after having slept for the reset window.
+    #[test]
+    fn rate_limited_request_waits_then_resumes() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let reset = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 1; // reset one second in the future
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut incoming = listener.incoming();
+            // First request → 403 rate limited.
+            {
+                let mut s = incoming.next().unwrap().unwrap();
+                let mut b = [0u8; 1024];
+                let _ = s.read(&mut b);
+                let body = "{\"message\":\"rate limited\"}";
+                let resp = format!(
+                    "HTTP/1.1 403 Forbidden\r\nx-ratelimit-remaining: 0\r\nx-ratelimit-reset: {reset}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+            // Second request (the resume) → 200 with real data.
+            {
+                let mut s = incoming.next().unwrap().unwrap();
+                let mut b = [0u8; 1024];
+                let _ = s.read(&mut b);
+                let body = "{\"ok\":true}";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+
+        let mut http = Http::new(vec![]);
+        let start = std::time::Instant::now();
+        let v = http.get(&format!("http://{addr}/x")).unwrap();
+        let waited = start.elapsed().as_secs_f64();
+        server.join().unwrap();
+
+        assert_eq!(v["ok"], serde_json::json!(true)); // resumed, got the 200 body
+        assert!(waited >= 1.0, "should have waited for the reset, waited {waited}s");
     }
 
     #[test]

@@ -79,6 +79,11 @@ Build the command for the user's flavor:
   ```
   mari auth jira --url https://jira.yourcompany.com --token <PAT>
   ```
+- **Public / anonymous** (no account or token — for world-readable trackers such as **Apache's** `issues.apache.org/jira`, or any DC instance whose admin blocks PAT creation but leaves browsing open):
+  ```
+  mari auth jira --url https://issues.apache.org/jira --anonymous
+  ```
+  Stores `{"method":"anonymous","url":…}` and sends **no** `Authorization` header. Use this when the user reports "contact your workspace admin" on the PAT page but can still browse issues in a logged-out browser. Verify first that the REST API is open — `curl -s -o /dev/null -w '%{http_code}' "<base>/rest/api/2/search?jql=project=FLINK&maxResults=1"` should print `200`.
 
 Offer the user three ways to do this, so a token they'd rather not paste to you never has to be:
 

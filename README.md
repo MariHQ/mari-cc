@@ -13,7 +13,8 @@ credentials never enter the repo.
 - **Ingest and search.** Local hybrid (semantic + keyword) search over the
   knowledge your team already uses: Slack, GitHub, Google Drive, Jira,
   Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear,
-  Granola, git history, and local files (Markdown, HTML, PDF, and Office
+  Granola, mailing-list archives (Apache Pony Mail), git history, and local
+  files (Markdown, HTML, PDF, and Office
   documents).
 - **Curate.** Tag knowledge as canonical, stale, deprecated, draft, internal,
   customer-facing, or needs-review; keep a glossary and a facts ledger; audit

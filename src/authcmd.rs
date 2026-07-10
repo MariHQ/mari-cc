@@ -14,6 +14,7 @@ pub struct AuthFlags {
     pub key: Option<String>,
     pub secret: Option<String>,
     pub method: Option<String>,
+    pub anonymous: bool,
 }
 
 pub const PROVIDERS: &[&str] = &[
@@ -69,18 +70,37 @@ pub fn run(provider: &str, f: AuthFlags) -> Result<i32> {
         );
         return Ok(2);
     }
-    let _ = (&f.key, &f.secret, &f.method); // accepted per SPEC; unused by current providers
+    let _ = (&f.key, &f.method); // accepted per SPEC; unused by current providers
     let cred = match provider {
         "slack" => {
-            let token = match require(&f.token, "--token (xoxp-… or xoxb-…)") {
+            let token = match require(&f.token, "--token (xoxp-…, xoxb-…, or xoxc-… with --secret)") {
                 Ok(v) => v,
                 Err(c) => return Ok(c),
             };
-            let resp: Value = post_form("https://slack.com/api/auth.test", &token)?;
-            if !resp["ok"].as_bool().unwrap_or(false) {
-                return connect_err(&format!("Slack rejected the token: {}", resp["error"]));
+            // Session mode (§6.1): a browser `xoxc-…` web token is inert without
+            // the `d` cookie (`xoxd-…`), supplied via --secret. Lets Mari read a
+            // workspace that blocks app installs.
+            if let Some(cookie) = &f.secret {
+                let resp = post_form_with_cookie(
+                    "https://slack.com/api/auth.test",
+                    &token,
+                    cookie,
+                )?;
+                if !resp["ok"].as_bool().unwrap_or(false) {
+                    return connect_err(&format!(
+                        "Slack rejected the session credentials: {}",
+                        resp["error"]
+                    ));
+                }
+                json!({"method": "session", "token": token, "cookie": cookie,
+                       "team": resp["team"], "user": resp["user"], "url": resp["url"]})
+            } else {
+                let resp: Value = post_form("https://slack.com/api/auth.test", &token)?;
+                if !resp["ok"].as_bool().unwrap_or(false) {
+                    return connect_err(&format!("Slack rejected the token: {}", resp["error"]));
+                }
+                json!({"token": token, "team": resp["team"], "user": resp["user"], "url": resp["url"]})
             }
-            json!({"token": token, "team": resp["team"], "user": resp["user"], "url": resp["url"]})
         }
         "github" => {
             let token = match require(&f.token, "--token (github_pat_… or ghp_…)") {
@@ -162,6 +182,28 @@ pub fn run(provider: &str, f: AuthFlags) -> Result<i32> {
                 Ok(v) => v.trim_end_matches('/').to_string(),
                 Err(c) => return Ok(c),
             };
+            // Anonymous mode (§6.5/§6.6): public Server/DC instances such as ASF's
+            // issues.apache.org / cwiki.apache.org serve the read API with no auth.
+            if f.anonymous || f.method.as_deref() == Some("anonymous") {
+                let probe = if provider == "jira" {
+                    format!("{url}/rest/api/2/serverInfo")
+                } else {
+                    format!("{url}/rest/api/content?limit=1")
+                };
+                if let Err(e) = get_json(&probe, &[]) {
+                    return connect_err(&format!(
+                        "{provider} anonymous probe failed ({e}) — this instance may require a token"
+                    ));
+                }
+                let cred = json!({"method": "anonymous", "url": url});
+                let path = credential_path(provider);
+                workspace::write_credential(&path, &cred)?;
+                println!(
+                    "✓ {provider} connected (anonymous) — credential saved to {}",
+                    path.display()
+                );
+                return Ok(0);
+            }
             let token = match require(&f.token, "--token") {
                 Ok(v) => v,
                 Err(c) => return Ok(c),
@@ -358,8 +400,18 @@ fn connect_err(msg: &str) -> Result<i32> {
     Ok(1)
 }
 
+/// Agent with socket-level connect/read/write timeouts so a wedged rustls read
+/// (seen on github.com / slack.com) aborts instead of hanging the auth probe.
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(30))
+        .timeout_read(std::time::Duration::from_secs(60))
+        .timeout_write(std::time::Duration::from_secs(30))
+        .build()
+}
+
 fn get_json(url: &str, headers: &[(&str, &str)]) -> Result<Value> {
-    let mut req = ureq::get(url).timeout(std::time::Duration::from_secs(60));
+    let mut req = agent().get(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
@@ -371,9 +423,23 @@ fn get_json(url: &str, headers: &[(&str, &str)]) -> Result<Value> {
 }
 
 fn post_form(url: &str, token: &str) -> Result<Value> {
-    match ureq::post(url)
+    match agent()
+        .post(url)
         .set("Authorization", &format!("Bearer {token}"))
-        .timeout(std::time::Duration::from_secs(60))
+        .call()
+    {
+        Ok(r) => Ok(r.into_json()?),
+        Err(ureq::Error::Status(code, _)) => Err(anyhow!("connect error: HTTP {code}")),
+        Err(e) => Err(anyhow!("connect error: {e}")),
+    }
+}
+
+/// Slack session auth: `xoxc-…` Bearer token plus the `d` cookie (`xoxd-…`).
+fn post_form_with_cookie(url: &str, token: &str, cookie: &str) -> Result<Value> {
+    match agent()
+        .post(url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Cookie", &format!("d={cookie}"))
         .call()
     {
         Ok(r) => Ok(r.into_json()?),

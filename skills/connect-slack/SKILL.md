@@ -1,6 +1,6 @@
 ---
 name: connect-slack
-description: Complete click-by-click setup for connecting Slack to Mari — pick scope, create a Slack app, get a User OAuth token (xoxp-, sees your DMs + private channels) or a Bot token (xoxb-), authenticate, and sync. Use when the user wants to connect or add Slack as a Mari source.
+description: Complete click-by-click setup for connecting Slack to Mari — pick scope, create a Slack app, get a User OAuth token (xoxp-, sees your DMs + private channels) or a Bot token (xoxb-), authenticate, and sync. Includes the session-credential workaround (xoxc- token + d cookie) for public/community workspaces where app installs require admin approval and no token can be created. Use when the user wants to connect or add Slack as a Mari source.
 version: 0.1.0
 user-invocable: true
 argument-hint: (guided Slack setup)
@@ -26,11 +26,11 @@ Ask the user: **"Do you want to search Slack from every repo (global) or just th
 
 **Default to global.** Slack is almost always a personal account the user will want to reach from everywhere, so unless they say otherwise, plan on `global`. You'll actually set this in Part 4 after auth.
 
-## Part 2 — Connection method: User token or Bot token?
+## Part 2 — Connection method: User token, Bot token, or Session?
 
-Mari accepts either kind of Slack token. Explain the trade-off and let the user pick:
+Mari accepts three kinds of Slack credential. Explain the trade-off and let the user pick:
 
-**(A) User OAuth token — `xoxp-…` (recommended).**
+**(A) User OAuth token — `xoxp-…` (recommended when you *can* install apps).**
 - Acts as *you*. Mari searches everything your Slack account can already see: all public channels you're in, your private channels, your DMs, and group DMs.
 - No need to invite anything into channels.
 - Best when the goal is "make my Slack searchable."
@@ -39,13 +39,23 @@ Mari accepts either kind of Slack token. Explain the trade-off and let the user 
 - Acts as a bot user. The bot only sees channels it has been **explicitly invited into**, and never sees your DMs.
 - Good when you want a narrow, auditable, shared-workspace integration rather than personal access.
 
-Both come from the same Slack app you'll create in Part 3 — the only difference is whether you add the scopes under **User Token Scopes** or **Bot Token Scopes**, and which token you copy at the end.
+**(C) Session credentials — `xoxc-…` token + `d` cookie (`xoxd-…`) — the workaround for locked-down / public workspaces.**
+- **Use this whenever you cannot create a token at all** — e.g. **Install to Workspace** shows *"This workspace requires apps to be approved by admins"* and you're not an admin. This is common on large **community / public workspaces** (the Apache Flink, Kubernetes, etc. Slacks) where app installs are disabled for everyone.
+- Both (A) and (B) require installing a Slack app, which is exactly what the approval wall blocks — so neither works. Session mode needs **no app and no admin**: it reuses the credentials your already-logged-in browser tab uses, giving the same visibility as a `xoxp-` user token.
+- Trade-off: the credentials are personal and **expire on logout/rotation** (re-extract when a sync starts returning `invalid_auth`), and non-app access is a gray area under Slack's ToS — the user's call for a community workspace.
+- Go to **3C** (skip the app-creation steps entirely).
+
+**Decision shortcut:** if the user is on a public/community Slack, or has already hit "requires apps to be approved by admins," go straight to **(C) / step 3C** — do not send them in circles trying to create an app that can never be installed.
+
+Tokens (A) and (B) come from the same Slack app you'll create in Part 3 — the only difference is whether you add the scopes under **User Token Scopes** or **Bot Token Scopes**, and which token you copy at the end. Session credentials (C) come from the browser, not an app.
 
 Once connected, Mari indexes **all channels that token can see** — one document per thread (a root message and its replies) and one per standalone message. You do **not** need to list channels. Adding `#channel` references later only *narrows* the sync to those channels; it's optional.
 
 ## Part 3 — Get the credential
 
-### 3.0 — Create a Slack app (both methods)
+> Picked **(C) session** in Part 2 (or hit the admin-approval wall)? **Skip 3.0/3A/3B entirely** and jump to **3C** — you do not create an app.
+
+### 3.0 — Create a Slack app (token methods A and B only)
 
 1. Go to **https://api.slack.com/apps** and sign in.
 2. Click **Create New App**.
@@ -81,6 +91,25 @@ That token is all Mari needs. Give it to the assistant (or keep it private — s
 3. Scroll up and click **Install to Workspace**, then **Allow**.
 4. Copy the value under **Bot User OAuth Token** — it starts with **`xoxb-`**.
 5. **Invite the bot into every channel you want indexed.** In Slack, open a channel and type `/invite @mari-search` (use your app's name). A bot token sees **only** channels it's been invited to — nothing is indexed until you invite it somewhere.
+
+### 3C — Session token (`xoxc-…` + `d` cookie) — when the workspace blocks app installs
+
+If **Install to Workspace** shows *"This workspace requires apps to be approved by admins"* and you have no admin, you cannot mint a `xoxp-`/`xoxb-` token at all. Use your **browser session** instead — the same credentials your logged-in Slack tab already uses. This needs no app and no approval; it reads exactly what your account can see.
+
+Extract two values from a logged-in Slack tab in a desktop browser:
+
+1. **The `xoxc-` token.** Open **DevTools** (F12) → **Network** tab → click any request to `…/api/…` (e.g. filter for `api`) → **Payload** / **Form Data** → copy the value of the **`token`** field (starts with `xoxc-`). *(Console alternative: `JSON.parse(localStorage.localConfig_v2).teams` and read the active team's `token`.)*
+2. **The `d` cookie (`xoxd-…`).** DevTools → **Application** → **Cookies** → `https://app.slack.com` → click the **`d`** row → copy its **Value** (starts with `xoxd-`). It is URL-encoded; paste it verbatim.
+
+Authenticate with the token as `--token` and the cookie as `--secret`:
+
+```
+mari auth slack --token xoxc-… --secret xoxd-…
+```
+
+Mari validates via `auth.test` (sending `Authorization: Bearer <xoxc>` + `Cookie: d=<xoxd>`) and stores `{"method":"session", …}`. Everything downstream (scope, sync, tracking) is identical to a `xoxp-` token.
+
+**Caveats to state plainly:** these are your personal browser-session credentials — they read only what your account can already see, they **expire on logout or rotation** (re-extract when a sync starts returning `invalid_auth`), and non-app access is a gray area under Slack's ToS. It's the user's call for a community workspace like Apache Flink's.
 
 ### Gotcha: private channels
 

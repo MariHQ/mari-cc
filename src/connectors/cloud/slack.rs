@@ -29,7 +29,12 @@ pub fn sync(
         .as_str()
         .unwrap_or("https://slack.com/")
         .to_string();
-    let mut http = Http::new(vec![("Authorization".into(), format!("Bearer {token}"))]);
+    // Session mode (§6.1): a `xoxc-…` web token needs the `d` cookie (`xoxd-…`).
+    let mut headers = vec![("Authorization".into(), format!("Bearer {token}"))];
+    if let Some(cookie) = cred["cookie"].as_str() {
+        headers.push(("Cookie".into(), format!("d={cookie}")));
+    }
+    let mut http = Http::new(headers);
 
     let lookback = lookback_days(cfg, "slack.lookback_days", 14, since);
     let mut stats = SyncStats::default();

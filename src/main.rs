@@ -63,6 +63,9 @@ enum Cmd {
         secret: Option<String>,
         #[arg(long)]
         method: Option<String>,
+        /// Connect a public instance with no credential (jira/confluence)
+        #[arg(long)]
+        anonymous: bool,
     },
     /// Show or change per-source scope (global | local)
     Scope {
@@ -498,6 +501,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             key,
             secret,
             method,
+            anonymous,
         } => authcmd::run(
             &provider,
             authcmd::AuthFlags {
@@ -508,6 +512,7 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
                 key,
                 secret,
                 method,
+                anonymous,
             },
         ),
         Cmd::Scope { source, scope } => authcmd::scope(source.as_deref(), scope.as_deref()),
