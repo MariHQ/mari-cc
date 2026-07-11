@@ -51,8 +51,19 @@ pub fn run(args: &[String], json: bool) -> Result<i32> {
     }
 }
 
-fn print_plan(json: bool) -> Result<i32> {
-    let plan = DocsitePlan {
+/// The docsite build plan and current readiness status as JSON, for the
+/// console's Docsite tab.
+pub fn plan_json() -> serde_json::Value {
+    serde_json::to_value(build_plan()).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+pub fn status_json() -> serde_json::Value {
+    serde_json::to_value(status_for_root(&workspace::work_root()))
+        .unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn build_plan() -> DocsitePlan {
+    DocsitePlan {
         phases: vec![
             DocsitePhase {
                 phase: "survey codebase",
@@ -90,7 +101,11 @@ fn print_plan(json: bool) -> Result<i32> {
                 output: "post-edit hook and edit-notify rules for drift control",
             },
         ],
-    };
+    }
+}
+
+fn print_plan(json: bool) -> Result<i32> {
+    let plan = build_plan();
     if json {
         println!("{}", serde_json::to_string_pretty(&plan)?);
     } else {

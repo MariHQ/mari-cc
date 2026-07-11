@@ -5,8 +5,8 @@
 //! existing modules or run a parametrized SELECT, return JSON.
 
 use crate::{
-    assets, authcmd, cloud, config, connectors, curation, detector, index, lineage, rulescmd,
-    workspace,
+    assets, authcmd, cloud, config, connectors, curation, detector, docsite, i18n, index, lineage,
+    rulescmd, workspace,
 };
 use anyhow::{anyhow, Result};
 use duckdb::types::ValueRef;
@@ -112,6 +112,12 @@ pub fn route(ctx: &Ctx) -> Result<(u16, Value)> {
         (Method::Post, ["templates", "scaffold"]) => ok(templates_scaffold(ctx)?),
 
         (Method::Post, ["tags", "statuses"]) => ok(tag_statuses_set(ctx)?),
+
+        (Method::Get, ["localization"]) => ok(i18n::overview_json()),
+        (Method::Get, ["docsite"]) => ok(json!({
+            "plan": docsite::plan_json(),
+            "status": docsite::status_json(),
+        })),
 
         (Method::Get, ["cloud"]) => ok(cloud_status()?),
         (Method::Post, ["cloud", "pull"]) => ok(cloud_pull()?),

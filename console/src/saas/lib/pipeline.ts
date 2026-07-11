@@ -8,6 +8,8 @@ import {
   BookMarked,
   ListChecks,
   LayoutTemplate,
+  Languages,
+  Globe,
   ScrollText,
   BellRing,
   SlidersHorizontal,
@@ -29,6 +31,8 @@ export type StepId =
   | "glossary"
   | "facts"
   | "templates"
+  | "localization"
+  | "docsite"
   | "rules"
   | "nudges"
   | "cloud"
@@ -65,6 +69,11 @@ export const STEPS: Step[] = [
     description: "The claims ledger from FACTS.md that factcheck grounds against." },
   { id: "templates", name: "Templates", icon: LayoutTemplate, group: "Curation",
     description: "Document archetypes (runbook, ADR, RFC, …). Scaffold a new doc from a template." },
+
+  { id: "localization", name: "Localization", icon: Languages, group: "Docs",
+    description: "Translation coverage across languages — which docs are localized, and which are stale." },
+  { id: "docsite", name: "Docsite", icon: Globe, group: "Docs",
+    description: "Docs-site readiness: platform, community files, and the build/keep-alive plan." },
 
   { id: "rules", name: "Rules", icon: ScrollText, group: "Governance",
     description: "Edit-notify rules and the detector: waivers, zero-tolerance, and the full rule catalog." },

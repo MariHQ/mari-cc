@@ -14,6 +14,8 @@ import { LineageGroup } from "./groups/LineageGroup";
 import { GlossaryGroup } from "./groups/GlossaryGroup";
 import { FactsGroup } from "./groups/FactsGroup";
 import { TemplatesGroup } from "./groups/TemplatesGroup";
+import { LocalizationGroup } from "./groups/LocalizationGroup";
+import { DocsiteGroup } from "./groups/DocsiteGroup";
 import { RulesGroup } from "./groups/RulesGroup";
 import { NudgesGroup } from "./groups/NudgesGroup";
 import { CloudGroup } from "./groups/CloudGroup";
@@ -39,6 +41,8 @@ const renderGroup = (step: Step) => {
     case "glossary":  return <GlossaryGroup />;
     case "facts":     return <FactsGroup />;
     case "templates": return <TemplatesGroup />;
+    case "localization": return <LocalizationGroup />;
+    case "docsite":   return <DocsiteGroup />;
     case "rules":     return <RulesGroup />;
     case "nudges":    return <NudgesGroup />;
     case "cloud":     return <CloudGroup />;

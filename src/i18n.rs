@@ -67,6 +67,68 @@ pub fn run(args: &[String], deep: bool, limit: Option<usize>, strict: bool) -> R
     }
 }
 
+/// Repo-wide localization matrix for the console: every source-language doc
+/// that has at least one translation, the set of languages seen, and per-cell
+/// status (path, layout, and whether the translation is stale relative to its
+/// source's mtime). Read-only; findings are leads, not verdicts.
+pub fn overview_json() -> serde_json::Value {
+    use serde_json::json;
+    use std::collections::BTreeSet;
+    let root = crate::workspace::work_root();
+
+    fn mtime(p: &Path) -> Option<std::time::SystemTime> {
+        std::fs::metadata(p).and_then(|m| m.modified()).ok()
+    }
+    let rel = |p: &Path| -> String {
+        p.strip_prefix(&root).unwrap_or(p).display().to_string()
+    };
+
+    let mut langs: BTreeSet<String> = BTreeSet::new();
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+
+    for entry in WalkBuilder::new(&root).hidden(true).build().flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "md" | "mdx" | "markdown") {
+            continue;
+        }
+        // Only source-language docs anchor a row; translations are the cells.
+        if is_translation_file(p) {
+            continue;
+        }
+        let translations = find_translations(p);
+        if translations.is_empty() {
+            continue;
+        }
+        let src_mtime = mtime(p);
+        let mut cells = serde_json::Map::new();
+        for t in &translations {
+            langs.insert(t.lang.clone());
+            let stale = match (src_mtime, mtime(&t.path)) {
+                (Some(s), Some(tt)) => s > tt,
+                _ => false,
+            };
+            cells.insert(
+                t.lang.clone(),
+                json!({ "path": rel(&t.path), "layout": t.layout, "stale": stale }),
+            );
+        }
+        rows.push(json!({ "source": rel(p), "translations": serde_json::Value::Object(cells) }));
+    }
+    rows.sort_by(|a, b| {
+        a["source"].as_str().unwrap_or("").cmp(b["source"].as_str().unwrap_or(""))
+    });
+
+    json!({
+        "languages": langs.into_iter().collect::<Vec<_>>(),
+        "sources": rows,
+        "sourceLangs": SOURCE_LANGS,
+    })
+}
+
 /// Localized translation files are skipped by the detector (SPEC §11.0.6).
 pub fn is_translation_file(path: &Path) -> bool {
     detected_language(path)

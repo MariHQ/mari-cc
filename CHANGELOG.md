@@ -42,7 +42,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   edit-notify rules; browse and govern the full detector rule catalog
   (zero-tolerance / ignore); scaffold document templates; generate a STYLE.md;
   and manage the tag status vocabulary. The lineage view is a dagre-laid-out,
-  searchable/filterable graph; the overview has recharts summaries.
+  searchable/filterable graph; the overview has recharts summaries; a
+  Localization tab shows the translation matrix (coverage + staleness per
+  language) and a Docsite tab shows docs-site readiness and the build plan.
 
 ### Security
 - OCR model tiers require `ocr.accept_remote_code=true` (they run

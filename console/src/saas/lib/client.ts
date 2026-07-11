@@ -200,6 +200,27 @@ export type DetectorInfo = {
 
 export type Template = { id: string; title: string; file: string; sections: string[]; basis: string };
 
+export type LocalizationCell = { path: string; layout: string; stale: boolean };
+export type LocalizationSource = { source: string; translations: Record<string, LocalizationCell> };
+export type Localization = { languages: string[]; sources: LocalizationSource[]; sourceLangs: string[] };
+
+export type DocsitePhase = { phase: string; command: string; output: string };
+export type DocsiteStatus = {
+  root: string;
+  platform: string | null;
+  docs_dir: boolean;
+  readme: boolean;
+  license: boolean;
+  contributing: boolean;
+  code_of_conduct: boolean;
+  security: boolean;
+  changelog: boolean;
+  hook_configured: boolean;
+  rules_configured: boolean;
+  next_commands: string[];
+};
+export type DocsiteInfo = { plan: { phases: DocsitePhase[] }; status: DocsiteStatus };
+
 export type CloudStatus = {
   enabled: boolean;
   role: string;
@@ -280,6 +301,9 @@ export const api = {
     post<{ ok: boolean }>("/api/templates/scaffold", { type, title, force }),
 
   setTagStatuses: (statuses: string[]) => post<{ ok: boolean }>("/api/tags/statuses", { statuses }),
+
+  localization: () => get<Localization>("/api/localization"),
+  docsite: () => get<DocsiteInfo>("/api/docsite"),
 
   cloud: () => get<CloudStatus>("/api/cloud"),
   cloudPull: () => post<{ ok: boolean; exitCode: number }>("/api/cloud/pull"),
