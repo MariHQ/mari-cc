@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-11
+
+### Added
+- Config-editable detector word lists (`detector.lists`): the ~50 word/phrase
+  lists the detector triggers on (AI-slop tells, clarity, style, inclusive, and
+  the Microsoft/Google/Plain packs) are now a registry of 49 lists resolved per
+  config layer. `detector.lists.<id>` replaces a built-in list wholesale (empty
+  disables the rule; missing or malformed falls back to the built-in), so teams
+  can retune the calibrated sets without recompiling. New SPEC §11.0.8.
+- Console word-list editor in the Detector tab: search and edit any list
+  (one-per-line for word/phrase lists, JSON rows for map/weighted/groups),
+  write to the repo or global layer, and reset to the built-in default; backed
+  by `GET`/`PUT /api/detector/lists`. The keys also surface in the Config tab.
+
 ## [0.2.0] - 2026-07-10
 
 ### Added
