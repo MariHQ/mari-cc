@@ -1,6 +1,6 @@
 [package]
 name = "mari"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Local-first knowledge curation and prose-quality CLI for Claude Code"
 license = "MIT"

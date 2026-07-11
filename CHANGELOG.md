@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-10
+
 ### Added
 - Local hybrid search (keyword + `Qwen3-Embedding-0.6B` vectors) over 13
   sources; Lance vector storage with DuckDB Arrow-bridge ranking and weighted
@@ -40,11 +42,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   from the browser. Switch between any workspace already indexed on the machine
   (a `~/.mari/projects.json` registry maps them to paths); manage nudges and
   edit-notify rules; browse and govern the full detector rule catalog
-  (zero-tolerance / ignore); scaffold document templates; generate a STYLE.md;
-  and manage the tag status vocabulary. The lineage view is a dagre-laid-out,
-  searchable/filterable graph; the overview has recharts summaries; a
-  Localization tab shows the translation matrix (coverage + staleness per
-  language) and a Docsite tab shows docs-site readiness and the build plan.
+  (zero-tolerance / ignore); scaffold document templates; manage the tag status
+  vocabulary; and run the deterministic detector (`mari detect`) on text or a
+  file with one-click rule waivers. The lineage view is a dagre-laid-out,
+  searchable/filterable graph; the overview has recharts summaries; the
+  Localization tab explores per-language structural drift (`i18n conform`) and
+  on-demand attention coverage; and a Docsite tab shows docs-site readiness and
+  the build plan.
 
 ### Security
 - OCR model tiers require `ocr.accept_remote_code=true` (they run
