@@ -33,22 +33,16 @@ pub fn rules() -> Vec<Rule> {
     ]
 }
 
-/// Emit one finding per match of a map rule; message ends with the
+/// Emit one finding per match of a config-resolved `Map` list; `rule_id` is the
+/// finding's rule, `list_id` the `detector.lists` key. Message ends with the
 /// replacement in single quotes.
-fn run_map(
-    ctx: &Ctx,
-    em: &mut Emitter,
-    id: &str,
-    severity: Severity,
-    re: &fancy_regex::Regex,
-    map: &[MapEntry],
-    label: &str,
-) {
-    helpers::scan_fancy(ctx, re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(map, m) {
+fn run_map(ctx: &Ctx, em: &mut Emitter, rule_id: &str, list_id: &str, severity: Severity, label: &str) {
+    let re = ctx.lists.map_regex(list_id);
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
+        if let Some(to) = ctx.lists.map_lookup(list_id, m) {
             em.emit(
                 ctx,
-                id,
+                rule_id,
                 FAM,
                 severity,
                 off,
@@ -74,7 +68,7 @@ fn window(s: &str, start: usize, end: usize, pad: usize) -> &str {
 
 // ---------------------------------------------------------------- gendered
 
-const GENDERED: &[MapEntry] = &[
+pub const GENDERED: &[MapEntry] = &[
     me("chairman", "chair"),
     me("chairmen", "chairs"),
     me("mankind", "humanity"),
@@ -113,15 +107,14 @@ const PACK_OVERLAP: &[&str] = &[
 ];
 
 fn gendered_language(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(GENDERED));
+    let re = ctx.lists.map_regex("gendered-noun");
     let suppress = matches!(ctx.style_guide.as_str(), "microsoft" | "google");
-    helpers::scan_fancy(ctx, re, |off, len, m| {
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
         let lower = m.to_lowercase();
         if suppress && PACK_OVERLAP.contains(&lower.as_str()) {
             return;
         }
-        if let Some(to) = helpers::map_lookup(GENDERED, m) {
+        if let Some(to) = ctx.lists.map_lookup("gendered-noun", m) {
             em.emit(
                 ctx,
                 "gendered-language",
@@ -137,7 +130,7 @@ fn gendered_language(ctx: &Ctx, em: &mut Emitter) {
 
 // ---------------------------------------------------------------- ableist
 
-const ABLEIST_WARN: &[MapEntry] = &[
+pub const ABLEIST_WARN: &[MapEntry] = &[
     me("crazy", "wild / baffling"),
     me("insane", "extreme"),
     me("psycho", "erratic"),
@@ -149,40 +142,20 @@ const ABLEIST_WARN: &[MapEntry] = &[
     me("crippling", "degrading"),
 ];
 
-const ABLEIST_ADVISORY: &[MapEntry] = &[
+pub const ABLEIST_ADVISORY: &[MapEntry] = &[
     me("sanity check", "consistency check"),
     me("sane", "reasonable"),
     me("dummy value", "placeholder value"),
 ];
 
 fn ableist_language(ctx: &Ctx, em: &mut Emitter) {
-    static WARN_RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    static ADV_RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let warn_re = WARN_RE.get_or_init(|| helpers::map_regex(ABLEIST_WARN));
-    let adv_re = ADV_RE.get_or_init(|| helpers::map_regex(ABLEIST_ADVISORY));
-    run_map(
-        ctx,
-        em,
-        "ableist-language",
-        Severity::Warn,
-        warn_re,
-        ABLEIST_WARN,
-        "ableist term",
-    );
-    run_map(
-        ctx,
-        em,
-        "ableist-language",
-        Severity::Advisory,
-        adv_re,
-        ABLEIST_ADVISORY,
-        "ableist idiom",
-    );
+    run_map(ctx, em, "ableist-language", "ableist-term", Severity::Warn, "ableist term");
+    run_map(ctx, em, "ableist-language", "ableist-term-advisory", Severity::Advisory, "ableist idiom");
 }
 
 // ---------------------------------------------------------------- vague links
 
-const VAGUE_LINK: &[&str] = &[
+pub const VAGUE_LINK: &[&str] = &[
     "click here",
     "here",
     "read more",
@@ -193,9 +166,10 @@ const VAGUE_LINK: &[&str] = &[
 ];
 
 fn vague_link_text(ctx: &Ctx, em: &mut Emitter) {
+    let vague = ctx.lists.words("vague-link-text");
     for l in &ctx.links {
         let t = l.text.trim().to_lowercase();
-        if VAGUE_LINK.contains(&t.as_str()) {
+        if vague.iter().any(|v| v.eq_ignore_ascii_case(&t)) {
             em.emit(
                 ctx,
                 "vague-link-text",
@@ -251,7 +225,7 @@ fn skipped_heading(ctx: &Ctx, em: &mut Emitter) {
 
 // ---------------------------------------------------------------- person-first
 
-const PERSON_FIRST: &[MapEntry] = &[
+pub const PERSON_FIRST: &[MapEntry] = &[
     me("suffers from", "has"),
     me("suffering from", "living with"),
     me("victim of", "person affected by"),
@@ -264,17 +238,7 @@ const PERSON_FIRST: &[MapEntry] = &[
 ];
 
 fn person_first_language(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(PERSON_FIRST));
-    run_map(
-        ctx,
-        em,
-        "person-first-language",
-        Severity::Warn,
-        re,
-        PERSON_FIRST,
-        "person-first language",
-    );
+    run_map(ctx, em, "person-first-language", "person-first", Severity::Warn, "person-first language");
 }
 
 // ---------------------------------------------------------------- gendered address
@@ -297,7 +261,7 @@ fn gendered_address(ctx: &Ctx, em: &mut Emitter) {
 
 // ---------------------------------------------------------------- tech-historical
 
-const TECH_WARN: &[MapEntry] = &[
+pub const TECH_WARN: &[MapEntry] = &[
     me("blacklist", "blocklist"),
     me("blacklists", "blocklists"),
     me("blacklisted", "blocked"),
@@ -313,7 +277,7 @@ const TECH_WARN: &[MapEntry] = &[
     me("sanity", "confidence"),
 ];
 
-const TECH_ADVISORY: &[MapEntry] = &[
+pub const TECH_ADVISORY: &[MapEntry] = &[
     me("master", "primary / main"),
     me("slave", "replica / worker"),
     me("native", "built-in"),
@@ -325,11 +289,9 @@ const TECH_EXEMPT: &str =
     r"master's|scrum master|master class|native speaker|primitive type|native to";
 
 fn tech_historical_terms(ctx: &Ctx, em: &mut Emitter) {
-    static WARN_RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    static ADV_RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
     static EXEMPT_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let warn_re = WARN_RE.get_or_init(|| helpers::map_regex(TECH_WARN));
-    let adv_re = ADV_RE.get_or_init(|| helpers::map_regex(TECH_ADVISORY));
+    let warn_re = ctx.lists.map_regex("tech-inclusive");
+    let adv_re = ctx.lists.map_regex("tech-inclusive-advisory");
     let exempt = EXEMPT_RE.get_or_init(|| {
         regex::RegexBuilder::new(TECH_EXEMPT)
             .case_insensitive(true)
@@ -340,8 +302,8 @@ fn tech_historical_terms(ctx: &Ctx, em: &mut Emitter) {
     // Warn map first; remember its ranges so the advisory singles (`master`,
     // `slave`) never re-report inside `master/slave`.
     let mut warn_ranges: Vec<(usize, usize)> = Vec::new();
-    helpers::scan_fancy(ctx, warn_re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(TECH_WARN, m) {
+    helpers::scan_fancy(ctx, &warn_re, |off, len, m| {
+        if let Some(to) = ctx.lists.map_lookup("tech-inclusive", m) {
             warn_ranges.push((off, off + len));
             em.emit(
                 ctx,
@@ -354,14 +316,14 @@ fn tech_historical_terms(ctx: &Ctx, em: &mut Emitter) {
             );
         }
     });
-    helpers::scan_fancy(ctx, adv_re, |off, len, m| {
+    helpers::scan_fancy(ctx, &adv_re, |off, len, m| {
         if warn_ranges.iter().any(|&(a, b)| off < b && off + len > a) {
             return;
         }
         if exempt.is_match(window(&ctx.masked, off, off + len, 12)) {
             return;
         }
-        if let Some(to) = helpers::map_lookup(TECH_ADVISORY, m) {
+        if let Some(to) = ctx.lists.map_lookup("tech-inclusive-advisory", m) {
             em.emit(
                 ctx,
                 "tech-historical-terms",
@@ -377,7 +339,7 @@ fn tech_historical_terms(ctx: &Ctx, em: &mut Emitter) {
 
 // ---------------------------------------------------------------- violent
 
-const VIOLENT: &[MapEntry] = &[
+pub const VIOLENT: &[MapEntry] = &[
     me("abort", "stop"),
     me("aborts", "stops"),
     me("kill", "end"),
@@ -389,16 +351,15 @@ const VIOLENT: &[MapEntry] = &[
 ];
 
 fn violent_tech_metaphor(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
     static NUM_RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(VIOLENT));
+    let re = ctx.lists.map_regex("violent-metaphor");
     let num = NUM_RE.get_or_init(|| regex::Regex::new(r"^[ \t]*-?\d").unwrap());
-    helpers::scan_fancy(ctx, re, |off, len, m| {
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
         // Suppressed when followed by a number (`kill -9`).
         if num.is_match(&ctx.masked[off + len..]) {
             return;
         }
-        if let Some(to) = helpers::map_lookup(VIOLENT, m) {
+        if let Some(to) = ctx.lists.map_lookup("violent-metaphor", m) {
             em.emit(
                 ctx,
                 "violent-tech-metaphor",
@@ -414,7 +375,7 @@ fn violent_tech_metaphor(ctx: &Ctx, em: &mut Emitter) {
 
 // ---------------------------------------------------------------- ageist etc.
 
-const AGEIST: &[MapEntry] = &[
+pub const AGEIST: &[MapEntry] = &[
     me("ghetto", "makeshift"),
     me("gypsy", "traveler"),
     me("gypped", "cheated"),
@@ -429,17 +390,7 @@ const AGEIST: &[MapEntry] = &[
 ];
 
 fn ageist_classist_cultural(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(AGEIST));
-    run_map(
-        ctx,
-        em,
-        "ageist-classist-cultural",
-        Severity::Advisory,
-        re,
-        AGEIST,
-        "loaded term",
-    );
+    run_map(ctx, em, "ageist-classist-cultural", "dated-term", Severity::Advisory, "loaded term");
 }
 
 // ---------------------------------------------------------------- alt text

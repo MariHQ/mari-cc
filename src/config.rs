@@ -74,7 +74,8 @@ pub fn defaults() -> Value {
         "detector": {
             "styleGuide": "microsoft",
             "ignoreRules": [], "ignoreFiles": [], "ignoreValues": {},
-            "ignoreReasons": {}, "ignoreSpans": {}, "zeroTolerance": [], "grammar": false
+            "ignoreReasons": {}, "ignoreSpans": {}, "zeroTolerance": [], "grammar": false,
+            "lists": {}
         },
         "hook": { "maxFindings": 20, "grammar": false, "quiet": false },
         "rules": [],

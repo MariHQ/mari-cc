@@ -2,19 +2,37 @@
 
 use super::ctx::Ctx;
 
-/// `\b(w1|w2|…)\b`, case-insensitive, entries escaped.
-pub fn word_list(words: &[&str]) -> regex::Regex {
-    let alts: Vec<String> = words.iter().map(|w| regex::escape(w)).collect();
+/// A regex that can never match — used when a (possibly config-emptied) list
+/// resolves to zero entries, so an alternation is never built from `""`.
+pub fn never_match() -> regex::Regex {
+    regex::Regex::new(r"[^\s\S]").unwrap()
+}
+
+fn never_match_fancy() -> fancy_regex::Regex {
+    fancy_regex::Regex::new(r"[^\s\S]").unwrap()
+}
+
+/// `\b(w1|w2|…)\b`, case-insensitive, entries escaped. Accepts `&str` or
+/// `String` entries so both built-in `&[&str]` defaults and config-resolved
+/// `Vec<String>` overrides compile through the same path.
+pub fn word_list<S: AsRef<str>>(words: &[S]) -> regex::Regex {
+    if words.is_empty() {
+        return never_match();
+    }
+    let alts: Vec<String> = words.iter().map(|w| regex::escape(w.as_ref())).collect();
     regex::RegexBuilder::new(&format!(r"\b({})\b", alts.join("|")))
         .case_insensitive(true)
         .build()
-        .unwrap()
+        .unwrap_or_else(|_| never_match())
 }
 
 /// Longest-first alternation guarded by lookarounds instead of `\b`
 /// (keys may end in punctuation where a trailing `\b` never matches).
-pub fn phrase_list(phrases: &[&str]) -> fancy_regex::Regex {
-    let mut sorted: Vec<&str> = phrases.to_vec();
+pub fn phrase_list<S: AsRef<str>>(phrases: &[S]) -> fancy_regex::Regex {
+    if phrases.is_empty() {
+        return never_match_fancy();
+    }
+    let mut sorted: Vec<&str> = phrases.iter().map(|p| p.as_ref()).collect();
     sorted.sort_by_key(|p| std::cmp::Reverse(p.len()));
     let alts: Vec<String> = sorted.iter().map(|p| regex::escape(p)).collect();
     fancy_regex::RegexBuilder::new(&format!(
@@ -23,7 +41,7 @@ pub fn phrase_list(phrases: &[&str]) -> fancy_regex::Regex {
     ))
     .case_insensitive(true)
     .build()
-    .unwrap()
+    .unwrap_or_else(|_| never_match_fancy())
 }
 
 /// Iterate all matches over `ctx.masked`, advancing one char on zero-width.

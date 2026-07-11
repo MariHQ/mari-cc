@@ -335,12 +335,12 @@ fn run_map(
     id: &str,
     family: Family,
     sev: Severity,
-    map: &[MapEntry],
+    list_id: &str,
     what: &str,
 ) {
-    let re = helpers::map_regex(map);
+    let re = ctx.lists.map_regex(list_id);
     helpers::scan_fancy(ctx, &re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(map, m) {
+        if let Some(to) = ctx.lists.map_lookup(list_id, m) {
             em.emit(
                 ctx,
                 id,
@@ -381,7 +381,7 @@ fn microsoft_ampm(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const ACCESSIBILITY_TERMS: &[&str] = &[
+pub const ACCESSIBILITY_TERMS: &[&str] = &[
     "a victim of",
     "able-bodied",
     "an epileptic",
@@ -409,9 +409,8 @@ const ACCESSIBILITY_TERMS: &[&str] = &[
 ];
 
 fn microsoft_accessibility(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::phrase_list(ACCESSIBILITY_TERMS));
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("microsoft-accessibility");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "microsoft-accessibility",
@@ -463,7 +462,7 @@ fn microsoft_avoid_words(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const MS_CONTRACTIONS: &[MapEntry] = &[
+pub const MS_CONTRACTIONS: &[MapEntry] = &[
     me("how is", "how's"),
     me("it is", "it's"),
     me("that is", "that's"),
@@ -482,7 +481,7 @@ fn microsoft_contractions(ctx: &Ctx, em: &mut Emitter) {
         "microsoft-contractions",
         FAM,
         Severity::Advisory,
-        MS_CONTRACTIONS,
+        "microsoft-contractions",
         "prefer the contraction",
     );
 }
@@ -648,7 +647,7 @@ fn ms_gender_slash(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const GENDER_BIAS: &[MapEntry] = &[
+pub const GENDER_BIAS: &[MapEntry] = &[
     me("alumna", "graduate"),
     me("alumnus", "graduate"),
     me("alumnae", "graduates"),
@@ -759,7 +758,7 @@ fn ms_gender_bias(ctx: &Ctx, em: &mut Emitter) {
         "ms-gender-bias",
         Family::Inclusive,
         Severity::Warn,
-        GENDER_BIAS,
+        "microsoft-gender-bias",
         "gendered term",
     );
 }
@@ -1034,7 +1033,7 @@ fn ms_suspended_hyphen(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const TERM_SWAPS: &[MapEntry] = &[
+pub const TERM_SWAPS: &[MapEntry] = &[
     me("adaptor", "adapter"),
     me("administrate", "administer"),
     me("alphanumerical", "alphanumeric"),
@@ -1074,7 +1073,7 @@ fn ms_term_swaps(ctx: &Ctx, em: &mut Emitter) {
         "ms-term-swaps",
         FAM,
         Severity::Advisory,
-        TERM_SWAPS,
+        "microsoft-term-swap",
         "term swap",
     );
 }
@@ -1116,7 +1115,7 @@ fn ms_units_spelled_number(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const AZ_WORDLIST: &[&str] = &[
+pub const AZ_WORDLIST: &[&str] = &[
     "above",
     "accessible",
     "actionable",
@@ -1140,10 +1139,9 @@ const AZ_WORDLIST: &[&str] = &[
 ];
 
 fn ms_vocab_az_wordlist(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::phrase_list(AZ_WORDLIST));
+    let re = ctx.lists.phrase_regex("microsoft-a-z");
     let mut hits: Vec<(usize, usize, String)> = Vec::new();
-    helpers::scan_fancy(ctx, re, |off, len, m| hits.push((off, len, m.to_string())));
+    helpers::scan_fancy(ctx, &re, |off, len, m| hits.push((off, len, m.to_string())));
     if hits.len() >= 2 {
         for (off, len, m) in hits {
             em.emit(
@@ -1159,7 +1157,7 @@ fn ms_vocab_az_wordlist(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const MS_WORDINESS: &[MapEntry] = &[
+pub const MS_WORDINESS: &[MapEntry] = &[
     me("sufficient number of", "enough"),
     me("sufficient number", "enough"),
     me("take away", "remove"),
@@ -1296,13 +1294,13 @@ fn ms_wordiness(ctx: &Ctx, em: &mut Emitter) {
         "ms-wordiness",
         FAM,
         Severity::Advisory,
-        MS_WORDINESS,
+        "microsoft-wordiness",
         "wordy phrase",
     );
 }
 
 /// The Vale Microsoft adverb list (SPEC §11.2 — family B, pack microsoft).
-const MS_ADVERBS: &[&str] = &[
+pub const MS_ADVERBS: &[&str] = &[
     "abnormally",
     "absentmindedly",
     "accidentally",
@@ -1569,10 +1567,9 @@ const MS_ADVERBS: &[&str] = &[
 ];
 
 fn microsoft_adverbs(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::word_list(MS_ADVERBS));
+    let re = ctx.lists.word_regex("microsoft-adverbs");
     let mut hits: Vec<(usize, usize)> = Vec::new();
-    helpers::scan(ctx, re, |off, len, _| hits.push((off, len)));
+    helpers::scan(ctx, &re, |off, len, _| hits.push((off, len)));
     if hits.len() >= 2 {
         for (off, len) in hits {
             em.emit(

@@ -198,6 +198,19 @@ export type DetectorInfo = {
   catalog: DetectorRule[];
 };
 
+export type DetectorListKind = "words" | "phrases" | "weighted" | "map" | "groups";
+export type DetectorList = {
+  id: string;
+  label: string;
+  family: string;
+  pack: string | null;
+  kind: DetectorListKind;
+  default: unknown[];
+  override: unknown[] | null;
+  overridden: boolean;
+  source: "repo" | "global" | "default";
+};
+
 export type Template = { id: string; title: string; file: string; sections: string[]; basis: string };
 
 export type DetectFinding = {
@@ -337,6 +350,11 @@ export const api = {
     post<{ ok: boolean }>("/api/detector/zero", { rule, action }),
   setIgnore: (rule: string, action: "add" | "remove", reason?: string) =>
     post<{ ok: boolean }>("/api/detector/ignore", { rule, action, reason }),
+  detectorLists: () => get<{ lists: DetectorList[] }>("/api/detector/lists"),
+  setDetectorList: (id: string, value: unknown[], scope: "repo" | "global") =>
+    put<{ ok: boolean }>("/api/detector/lists", { id, value, scope }),
+  resetDetectorList: (id: string, scope: "repo" | "global") =>
+    put<{ ok: boolean; reset: boolean }>("/api/detector/lists", { id, reset: true, scope }),
 
   templates: () => get<{ templates: Template[] }>("/api/templates"),
   scaffoldTemplate: (type: string, title?: string, force?: boolean) =>

@@ -107,6 +107,8 @@ pub fn route(ctx: &Ctx) -> Result<(u16, Value)> {
         (Method::Get, ["detector"]) => ok(detector_get()?),
         (Method::Post, ["detector", "zero"]) => ok(detector_zero(ctx)?),
         (Method::Post, ["detector", "ignore"]) => ok(detector_ignore(ctx)?),
+        (Method::Get, ["detector", "lists"]) => ok(detector_lists_get()?),
+        (Method::Put, ["detector", "lists"]) => ok(detector_lists_set(ctx)?),
         (Method::Post, ["detect"]) => ok(detect(ctx)?),
 
         (Method::Get, ["templates"]) => ok(templates_list()?),
@@ -1095,6 +1097,95 @@ fn detector_ignore(ctx: &Ctx) -> Result<Value> {
         _ => return Err(anyhow!("action must be add or remove")),
     }
     Ok(json!({ "ok": true }))
+}
+
+/* ── detector word lists (detector.lists) ─────────────────────────────────── */
+
+/// Every registered word/phrase list with its built-in default, current
+/// override (if any), and which config layer supplies it.
+fn detector_lists_get() -> Result<Value> {
+    let root = root();
+    let effective = config::resolve(Some(&root));
+    let eff_over = effective
+        .get("detector")
+        .and_then(|d| d.get("lists"))
+        .cloned()
+        .unwrap_or(json!({}));
+    let repo = config::read_json(&config::repo_config_path(&root));
+    let global = config::read_json(&config::global_config_path());
+    let repo_over = repo.get("detector").and_then(|d| d.get("lists"));
+    let global_over = global.get("detector").and_then(|d| d.get("lists"));
+
+    let items: Vec<Value> = detector::lists::registry()
+        .iter()
+        .map(|d| {
+            let ov = eff_over.get(d.id);
+            let source = if repo_over.and_then(|v| v.get(d.id)).is_some() {
+                "repo"
+            } else if global_over.and_then(|v| v.get(d.id)).is_some() {
+                "global"
+            } else {
+                "default"
+            };
+            json!({
+                "id": d.id,
+                "label": d.label,
+                "family": serde_json::to_value(d.family).unwrap_or_else(|_| json!("")),
+                "pack": d.pack,
+                "kind": serde_json::to_value(d.kind).unwrap_or_else(|_| json!("")),
+                "default": d.default_json(),
+                "override": ov,
+                "overridden": ov.is_some(),
+                "source": source,
+            })
+        })
+        .collect();
+    Ok(json!({ "lists": items }))
+}
+
+/// Set (`{id, value, scope}`) or reset (`{id, reset:true, scope}`) one list
+/// override. Writes `detector.lists.<id>` in the chosen layer, mirroring the
+/// CLI's own config write path.
+fn detector_lists_set(ctx: &Ctx) -> Result<Value> {
+    let b = body_json(ctx)?;
+    let id = b["id"].as_str().ok_or_else(|| anyhow!("id required"))?;
+    if !detector::lists::registry().iter().any(|d| d.id == id) {
+        return Err(anyhow!("unknown list id: {id}"));
+    }
+    let scope = b["scope"].as_str().unwrap_or("repo");
+    let path = match scope {
+        "global" => config::global_config_path(),
+        _ => config::repo_config_path(&root()),
+    };
+    if b["reset"].as_bool().unwrap_or(false) {
+        remove_list_override(&path, id)?;
+        return Ok(json!({ "ok": true, "reset": true }));
+    }
+    let value = b.get("value").cloned().filter(|v| !v.is_null());
+    let value = value.ok_or_else(|| anyhow!("value required"))?;
+    if !value.is_array() {
+        return Err(anyhow!("value must be a JSON array"));
+    }
+    config::set_in_file(&path, &format!("detector.lists.{id}"), value)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Drop `detector.lists.<id>` from a config file (revert to the built-in).
+fn remove_list_override(path: &PathBuf, id: &str) -> Result<()> {
+    let mut cfg = config::read_json(path);
+    let removed = cfg
+        .get_mut("detector")
+        .and_then(|d| d.get_mut("lists"))
+        .and_then(|l| l.as_object_mut())
+        .map(|m| m.remove(id).is_some())
+        .unwrap_or(false);
+    if removed {
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p).ok();
+        }
+        std::fs::write(path, serde_json::to_string_pretty(&cfg)?)?;
+    }
+    Ok(())
 }
 
 /// Run the deterministic detector on pasted text or a repo file and return the

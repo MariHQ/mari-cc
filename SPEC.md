@@ -152,7 +152,10 @@ detector.ignoreValues   = {}            # {ruleId: [exact values to waive]}
 detector.ignoreReasons  = {}            # {ruleId|glob|value: "reason"}
 detector.zeroTolerance  = []            # rule ids that fire on FIRST occurrence, bypassing density gates
 detector.grammar        = false         # opt-in grammar pass (§11.7)
+detector.lists          = {}            # {listId: [...]} — replace a built-in word/phrase list (§11.0.8)
 ```
+
+`detector.lists` lets a team retune the word/phrase lists the detector triggers on without touching code. Each key is a **list id** from the registry (§11.0.8); the value **replaces** that list's built-in default wholesale for the current config layer. An empty array (`[]`) disables the list's rule; a missing key uses the built-in; a malformed value (not an array) falls back to the built-in. Entry shape follows the list's kind: `words`/`phrases` → `["term", …]`; `weighted` → `[["word","base",1.5], …]`; `map` → `[["from","to"], …]`; `groups` → `[["variant a","variant b"], …]`. Lists resolve per config layer like any other scalar (repo wins over global); the console's **Detector** tab has a per-list editor, and every key is also visible in the **Config** tab.
 
 Waivers live **only** in config JSON — there are no inline in-file disable comments.
 
@@ -948,6 +951,14 @@ Applied before segmentation (already listed under `mari detect`, restated as the
 | NLI / embeddings / slop spans (ML tier) | `ort` (ONNX Runtime) or `candle`; `gline-rs` for GLiNER; `tokenizers` |
 | Perplexity / attention (generative tier) | `llama-cpp-2` (llama.cpp bindings, GGUF models) |
 | Date canonicalization (grounding) | plain code or `chrono` |
+
+#### 11.0.8 Word-list registry (config-overridable lists)
+
+Every list a rule matches against is registered centrally with a stable **list id**, its family/pack, a **kind** (`words`, `phrases`, `weighted`, `map`, `groups`), and its built-in default entries (the calibrated sets below remain the single source of truth). At runtime a rule resolves its list through the shared `Lists` provider carried on the detector context: `detector.lists.<id>` in config **replaces** the default wholesale (present wins; absent → built-in; `[]` → the rule never fires; malformed → built-in), and resolved+compiled regexes are cached once per run and shared across every file. This is what makes the normative lists **team-tunable in config and in the console** (§4.5) without recompiling.
+
+List ids track rule ids, except where a rule draws on more than one list or a rule id is not a clean slug: Family A — `overused-word`, `marketing-buzzword`, `cliche-opener`, `significance-boilerplate`, `sycophancy`, `hedge-overuse`, `conversational-scaffolding`, `hype-intensifier`, `serves-as-copula`, `media-coverage-boilerplate`, `future-outlook-speculation`, `conclusion-restate`, `transition-scaffolding`. Family B — `wordy-phrase`, `complex-word`, `nominalization`, `weasel-word`, `redundant-pair`. Family C — `style-swap`, `contraction`, `singular-they`, `redundant-acronym`, `terminology-consistency`. Family D — `gendered-noun`, `ableist-term`, `ableist-term-advisory`, `vague-link-text`, `person-first`, `tech-inclusive`, `tech-inclusive-advisory`, `violent-metaphor`, `dated-term`. Microsoft pack — `microsoft-accessibility`, `microsoft-gender-bias`, `microsoft-contractions`, `microsoft-term-swap`, `microsoft-wordiness`, `microsoft-adverbs`, `microsoft-a-z`. Google pack — `google-latinism`, `google-american-spelling`, `google-directional`, `google-word-swap`, `google-minimizing`, `google-preannounce`. Plain pack — `plain-hidden-verb`, `plain-required-to`, `plain-legalese-phrase`, `plain-legalese-word`.
+
+Rules whose match set is not a plain word/phrase list — structural regexes that carry context (e.g. `manufactured-contrast`, `filler-phrase`, `vague-attribution`, `passive-voice`, `despite-challenges-closer`), the AP/Chicago directional micro-lists, and small hard-coded suppression sets (acronym allowlists, pack-overlap guards) — stay engine-internal and are not in the registry.
 
 ### 11.1 Family A — AI-slop tells
 

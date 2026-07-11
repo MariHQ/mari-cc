@@ -125,7 +125,7 @@ fn heading_end_punctuation(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const SWAPS: &[MapEntry] = &[
+pub const SWAPS: &[MapEntry] = &[
     me("leverage", "use"),
     me("e.g.", "for example"),
     me("i.e.", "that is"),
@@ -142,9 +142,8 @@ const SWAPS: &[MapEntry] = &[
 ];
 
 fn word_swap(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(SWAPS));
-    helpers::scan_fancy(ctx, re, |off, len, m| {
+    let re = ctx.lists.map_regex("style-swap");
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
         let lower = m.to_lowercase();
         if matches!(ctx.style_guide.as_str(), "microsoft") && (lower == "e.g." || lower == "i.e.") {
             return;
@@ -154,7 +153,7 @@ fn word_swap(ctx: &Ctx, em: &mut Emitter) {
         {
             return;
         }
-        if let Some(to) = helpers::map_lookup(SWAPS, m) {
+        if let Some(to) = ctx.lists.map_lookup("style-swap", m) {
             em.emit(
                 ctx,
                 "word-swap",
@@ -209,7 +208,7 @@ fn intro_comma(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const CONTRACTIONS: &[MapEntry] = &[
+pub const CONTRACTIONS: &[MapEntry] = &[
     me("do not", "don't"),
     me("does not", "doesn't"),
     me("did not", "didn't"),
@@ -228,10 +227,9 @@ const CONTRACTIONS: &[MapEntry] = &[
 ];
 
 fn use_contractions(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(CONTRACTIONS));
-    helpers::scan_fancy(ctx, re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(CONTRACTIONS, m) {
+    let re = ctx.lists.map_regex("contraction");
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
+        if let Some(to) = ctx.lists.map_lookup("contraction", m) {
             em.emit(
                 ctx,
                 "use-contractions",
@@ -284,22 +282,22 @@ fn present_tense(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const SINGULAR_THEY: &[MapEntry] = &[
+    me("he or she", "they"),
+    me("she or he", "they"),
+    me("his or her", "their"),
+    me("her or his", "their"),
+    me("him or her", "them"),
+    me("he/she", "they"),
+    me("(s)he", "they"),
+    me("s/he", "they"),
+    me("his/her", "their"),
+];
+
 fn singular_they(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    static MAP: &[MapEntry] = &[
-        me("he or she", "they"),
-        me("she or he", "they"),
-        me("his or her", "their"),
-        me("her or his", "their"),
-        me("him or her", "them"),
-        me("he/she", "they"),
-        me("(s)he", "they"),
-        me("s/he", "they"),
-        me("his/her", "their"),
-    ];
-    let re = RE.get_or_init(|| helpers::map_regex(MAP));
-    helpers::scan_fancy(ctx, re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(MAP, m) {
+    let re = ctx.lists.map_regex("singular-they");
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
+        if let Some(to) = ctx.lists.map_lookup("singular-they", m) {
             em.emit(
                 ctx,
                 "singular-they",
@@ -329,21 +327,19 @@ fn no_please_instructions(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const TERM_GROUPS: &[&[&str]] = &[
+    &["sign in", "log in", "login"],
+    &["email", "e-mail"],
+    &["dropdown", "drop-down"],
+    &["website", "web site"],
+    &["checkbox", "check box"],
+    &["filename", "file name"],
+    &["setup", "set-up"],
+    &["username", "user name"],
+];
+
 fn terminology_consistency(ctx: &Ctx, em: &mut Emitter) {
-    let mut groups = vec![
-        vec![
-            "sign in".to_string(),
-            "log in".to_string(),
-            "login".to_string(),
-        ],
-        vec!["email".to_string(), "e-mail".to_string()],
-        vec!["dropdown".to_string(), "drop-down".to_string()],
-        vec!["website".to_string(), "web site".to_string()],
-        vec!["checkbox".to_string(), "check box".to_string()],
-        vec!["filename".to_string(), "file name".to_string()],
-        vec!["setup".to_string(), "set-up".to_string()],
-        vec!["username".to_string(), "user name".to_string()],
-    ];
+    let mut groups: Vec<Vec<String>> = ctx.lists.groups("terminology-consistency").as_ref().clone();
     groups.extend(ctx.glossary_groups.clone());
     for group in groups {
         let terms: Vec<&str> = group.iter().map(|s| s.as_str()).collect();
@@ -542,29 +538,28 @@ fn double_space(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const REDUNDANT_ACRONYMS: &[&str] = &[
+    "ATM machine",
+    "PIN number",
+    "LCD display",
+    "HIV virus",
+    "RAM memory",
+    "PDF format",
+    "ISBN number",
+    "GPS system",
+    "CPU unit",
+    "UPC code",
+    "NIC card",
+    "please RSVP",
+    "HTTP protocol",
+    "IP protocol",
+    "SIN number",
+    "VIN number",
+];
+
 fn redundant_acronym(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "ATM machine",
-            "PIN number",
-            "LCD display",
-            "HIV virus",
-            "RAM memory",
-            "PDF format",
-            "ISBN number",
-            "GPS system",
-            "CPU unit",
-            "UPC code",
-            "NIC card",
-            "please RSVP",
-            "HTTP protocol",
-            "IP protocol",
-            "SIN number",
-            "VIN number",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("redundant-acronym");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "redundant-acronym",

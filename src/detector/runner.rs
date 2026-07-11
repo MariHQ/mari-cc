@@ -132,6 +132,8 @@ pub struct DetectorSettings {
     pub grammar: bool,
     pub glossary_groups: Vec<Vec<String>>,
     pub reading_grade_target: Option<f64>,
+    /// Config-resolved word/phrase lists (`detector.lists`), shared per run.
+    pub lists: std::sync::Arc<super::lists::Lists>,
 }
 
 pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettings {
@@ -188,6 +190,7 @@ pub fn settings(no_config: bool, style_override: Option<&str>) -> DetectorSettin
         grammar: det["grammar"].as_bool().unwrap_or(false),
         glossary_groups: crate::curation::glossary_groups(&workspace::work_root(), &cfg),
         reading_grade_target: None,
+        lists: super::lists::Lists::from_config(&det["lists"]),
     }
 }
 
@@ -205,6 +208,7 @@ pub fn test_settings(style: &str) -> DetectorSettings {
         grammar: false,
         glossary_groups: Vec::new(),
         reading_grade_target: None,
+        lists: super::lists::Lists::defaults(),
     }
 }
 
@@ -274,6 +278,7 @@ pub fn detect_text(path: &str, text: &str, s: &DetectorSettings) -> FileResult {
     let mut ctx = Ctx::build(path, text, &s.style_guide);
     ctx.glossary_groups = s.glossary_groups.clone();
     ctx.reading_grade_target = s.reading_grade_target;
+    ctx.lists = s.lists.clone();
     let mut em = Emitter::new(s.zero_tolerance.clone());
     let active_pack = s.style_guide.as_str();
     for rule in super::registry() {

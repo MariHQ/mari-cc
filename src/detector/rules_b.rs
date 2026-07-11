@@ -32,17 +32,11 @@ pub fn rules() -> Vec<Rule> {
     ]
 }
 
-fn emit_map(
-    ctx: &Ctx,
-    em: &mut Emitter,
-    id: &str,
-    severity: Severity,
-    re: &fancy_regex::Regex,
-    map: &[MapEntry],
-    label: &str,
-) {
-    helpers::scan_fancy(ctx, re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(map, m) {
+/// Emit `from → to` findings for a config-resolved `Map` list (`ctx.lists`).
+fn emit_map(ctx: &Ctx, em: &mut Emitter, id: &str, severity: Severity, label: &str) {
+    let re = ctx.lists.map_regex(id);
+    helpers::scan_fancy(ctx, &re, |off, len, m| {
+        if let Some(to) = ctx.lists.map_lookup(id, m) {
             em.emit(
                 ctx,
                 id,
@@ -148,7 +142,7 @@ fn long_sentence(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const WORDY: &[MapEntry] = &[
+pub const WORDY: &[MapEntry] = &[
     me("in order to", "to"),
     me("due to the fact that", "because"),
     me("at this point in time", "now"),
@@ -169,20 +163,10 @@ const WORDY: &[MapEntry] = &[
 ];
 
 fn wordy_phrase(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(WORDY));
-    emit_map(
-        ctx,
-        em,
-        "wordy-phrase",
-        Severity::Warn,
-        re,
-        WORDY,
-        "wordy phrase",
-    );
+    emit_map(ctx, em, "wordy-phrase", Severity::Warn, "wordy phrase");
 }
 
-const COMPLEX: &[MapEntry] = &[
+pub const COMPLEX: &[MapEntry] = &[
     me("utilize", "use"),
     me("utilizes", "use"),
     me("utilizing", "using"),
@@ -210,20 +194,10 @@ const COMPLEX: &[MapEntry] = &[
 ];
 
 fn complex_word(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(COMPLEX));
-    emit_map(
-        ctx,
-        em,
-        "complex-word",
-        Severity::Advisory,
-        re,
-        COMPLEX,
-        "complex word",
-    );
+    emit_map(ctx, em, "complex-word", Severity::Advisory, "complex word");
 }
 
-const NOMINAL: &[MapEntry] = &[
+pub const NOMINAL: &[MapEntry] = &[
     me("make a decision", "decide"),
     me("made a decision", "decided"),
     me("conduct an investigation", "investigate"),
@@ -240,39 +214,28 @@ const NOMINAL: &[MapEntry] = &[
 ];
 
 fn nominalization(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::map_regex(NOMINAL));
-    emit_map(
-        ctx,
-        em,
-        "nominalization",
-        Severity::Advisory,
-        re,
-        NOMINAL,
-        "nominalization",
-    );
+    emit_map(ctx, em, "nominalization", Severity::Advisory, "nominalization");
 }
 
+pub const WEASEL: &[&str] = &[
+    "very",
+    "really",
+    "quite",
+    "fairly",
+    "rather",
+    "somewhat",
+    "just",
+    "basically",
+    "actually",
+    "simply",
+    "literally",
+    "extremely",
+    "incredibly",
+    "totally",
+];
+
 fn weasel_word(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::word_list(&[
-            "very",
-            "really",
-            "quite",
-            "fairly",
-            "rather",
-            "somewhat",
-            "just",
-            "basically",
-            "actually",
-            "simply",
-            "literally",
-            "extremely",
-            "incredibly",
-            "totally",
-        ])
-    });
+    let re = ctx.lists.word_regex("weasel-word");
     let hits: Vec<_> = re.find_iter(&ctx.masked).collect();
     let rate = hits.len() as f64 / ctx.word_count.max(1) as f64 * 1000.0;
     if hits.len() >= 2 && (hits.len() >= 3 || rate >= 4.0) {
@@ -290,30 +253,29 @@ fn weasel_word(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const REDUNDANT_PAIRS: &[&str] = &[
+    "each and every",
+    "first and foremost",
+    "end result",
+    "free gift",
+    "past history",
+    "future plans",
+    "various different",
+    "absolutely essential",
+    "advance planning",
+    "close proximity",
+    "basic fundamentals",
+    "completely eliminate",
+    "final outcome",
+    "unexpected surprise",
+    "added bonus",
+    "new innovation",
+    "true fact",
+];
+
 fn redundant_pair(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "each and every",
-            "first and foremost",
-            "end result",
-            "free gift",
-            "past history",
-            "future plans",
-            "various different",
-            "absolutely essential",
-            "advance planning",
-            "close proximity",
-            "basic fundamentals",
-            "completely eliminate",
-            "final outcome",
-            "unexpected surprise",
-            "added bonus",
-            "new innovation",
-            "true fact",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("redundant-pair");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "redundant-pair",

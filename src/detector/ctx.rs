@@ -112,6 +112,8 @@ pub struct Ctx {
     pub glossary_groups: Vec<Vec<String>>,
     /// PRODUCT.md reading-grade target, if configured.
     pub reading_grade_target: Option<f64>,
+    /// Config-resolved word/phrase lists shared across the run (SPEC §11.0.8).
+    pub lists: std::sync::Arc<super::lists::Lists>,
 }
 
 const ABBREVIATIONS: &[&str] = &[
@@ -148,6 +150,7 @@ impl Ctx {
             style_guide: style_guide.to_string(),
             glossary_groups: Vec::new(),
             reading_grade_target: None,
+            lists: super::lists::Lists::defaults(),
         }
     }
 
