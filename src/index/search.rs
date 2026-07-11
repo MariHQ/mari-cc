@@ -215,6 +215,25 @@ pub fn top_docs(query: &str, k: usize) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
+/// Non-printing sibling of `run` for programmatic callers (the local console
+/// API): returns `{ query, hits }` as JSON instead of writing to stdout. Tag
+/// filters that fail validation and empty queries return an empty hit list.
+pub fn hits_json(args: &SearchArgs) -> Result<serde_json::Value> {
+    let cfg = config::resolve(Some(&workspace::work_root()));
+    if validate_tag_filters(&cfg, args.tag.as_deref(), args.no_tag.as_deref()).is_some() {
+        return Ok(json!({ "query": args.query, "hits": [] }));
+    }
+    let query_terms = weighted_terms(&args.query, &args.variants);
+    if query_terms.is_empty() {
+        return Ok(json!({ "query": args.query, "hits": [] }));
+    }
+    let limit = search_limit(args);
+    let catalogs = read_catalogs()?;
+    let catalog_refs: Vec<&Connection> = catalogs.iter().collect();
+    let hits = ranked_hits_across_catalogs(args, &query_terms, limit, &catalog_refs)?;
+    Ok(json!({ "query": args.query, "hits": hits }))
+}
+
 fn search_limit(args: &SearchArgs) -> usize {
     args.k
         .or_else(|| {

@@ -30,6 +30,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and an embedding-identity guard on vector search.
 - Claude Code plugin packaging: `.claude-plugin/plugin.json`, skills,
   standalone commands, and the post-edit hook.
+- `mari console`: a local, single-user web console served from the binary
+  (embedded Vite/React bundle, no Node at runtime) over a synchronous
+  `tiny_http` server. Read/write JSON API over the same catalog and config the
+  CLI uses — observe and curate documents, connectors, tags, lineage (a
+  React Flow graph), glossary, facts, config, cloud (S3/git sharing), and
+  status; edit connector tracked-refs, apply/remove tags, confirm/reject
+  lineage, edit config, manage cloud role and push/pull, and trigger syncs
+  from the browser. Switch between any workspace already indexed on the machine
+  (a `~/.mari/projects.json` registry maps them to paths); manage nudges and
+  edit-notify rules; browse and govern the full detector rule catalog
+  (zero-tolerance / ignore); scaffold document templates; generate a STYLE.md;
+  and manage the tag status vocabulary. The lineage view is a dagre-laid-out,
+  searchable/filterable graph; the overview has recharts summaries.
 
 ### Security
 - OCR model tiers require `ocr.accept_remote_code=true` (they run

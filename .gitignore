@@ -7,3 +7,9 @@
 /.crates2.json
 
 /dist/
+
+# Console web app: node deps are never committed; the built bundle
+# (console/dist) IS committed so `cargo build`/`cargo install` can embed it
+# without a Node toolchain present.
+/console/node_modules/
+/console/.vite/

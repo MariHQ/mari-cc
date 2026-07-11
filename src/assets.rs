@@ -117,6 +117,24 @@ const ARCHETYPES: &[Archetype] = &[
     },
 ];
 
+/// Archetype catalog as JSON for the console (id, title, target file, section
+/// outline, and the standard it's based on). These are the templates
+/// `mari asset scaffold <id>` produces.
+pub fn archetypes() -> Vec<serde_json::Value> {
+    ARCHETYPES
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "id": a.id,
+                "title": a.title,
+                "file": a.file,
+                "sections": a.sections,
+                "basis": a.basis,
+            })
+        })
+        .collect()
+}
+
 pub fn run(args: &[String], strict: bool, force: bool) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
         Some("detect") => {

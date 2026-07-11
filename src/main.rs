@@ -7,6 +7,7 @@ mod cloud;
 mod config;
 mod configcmd;
 mod connectors;
+mod console;
 mod curation;
 mod detector;
 mod docsite;
@@ -477,6 +478,14 @@ enum Cmd {
     Doctor,
     /// Post-edit hook entry point (called by the agent harness, never breaks the turn)
     Hook { args: Vec<String> },
+    /// Launch the local web console (dashboard over your knowledge base)
+    Console {
+        #[arg(long)]
+        port: Option<u16>,
+        /// Open the console in your default browser
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 fn main() {
@@ -807,5 +816,6 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
         Cmd::Model { args } => models::run(&args),
         Cmd::Doctor => statuscmd::doctor(),
         Cmd::Hook { args } => Ok(hook::run(&args)),
+        Cmd::Console { port, open } => console::run(port, open),
     }
 }
