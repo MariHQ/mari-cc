@@ -107,6 +107,7 @@ pub fn route(ctx: &Ctx) -> Result<(u16, Value)> {
         (Method::Get, ["detector"]) => ok(detector_get()?),
         (Method::Post, ["detector", "zero"]) => ok(detector_zero(ctx)?),
         (Method::Post, ["detector", "ignore"]) => ok(detector_ignore(ctx)?),
+        (Method::Post, ["detect"]) => ok(detect(ctx)?),
 
         (Method::Get, ["templates"]) => ok(templates_list()?),
         (Method::Post, ["templates", "scaffold"]) => ok(templates_scaffold(ctx)?),
@@ -1094,6 +1095,51 @@ fn detector_ignore(ctx: &Ctx) -> Result<Value> {
         _ => return Err(anyhow!("action must be add or remove")),
     }
     Ok(json!({ "ok": true }))
+}
+
+/// Run the deterministic detector on pasted text or a repo file and return the
+/// findings + slop score. Honors the repo's detector config (style guide,
+/// ignores, zero-tolerance) so the console shows what `mari detect` would.
+fn detect(ctx: &Ctx) -> Result<Value> {
+    let b = body_json(ctx)?;
+    let style = b["style"].as_str();
+    let settings = detector::runner::settings(false, style);
+    let (path, text) = if let Some(p) = b["path"].as_str().filter(|s| !s.is_empty()) {
+        let full = safe_join(&root(), p)?;
+        let text = std::fs::read_to_string(&full).map_err(|e| anyhow!("cannot read {p}: {e}"))?;
+        (p.to_string(), text)
+    } else if let Some(t) = b["text"].as_str() {
+        ("input.md".to_string(), t.to_string())
+    } else {
+        return Err(anyhow!("text or path required"));
+    };
+    let result = detector::runner::detect_text(&path, &text, &settings);
+    let score = detector::score::compute(&text, &result.findings, None);
+    // Finding's line/col are `#[serde(skip)]`, so build JSON explicitly to keep them.
+    let findings: Vec<Value> = result
+        .findings
+        .iter()
+        .map(|f| {
+            json!({
+                "ruleId": f.rule_id,
+                "family": serde_json::to_value(&f.family).unwrap_or_else(|_| json!("")),
+                "severity": serde_json::to_value(&f.severity).unwrap_or_else(|_| json!("")),
+                "message": f.message,
+                "span": f.span,
+                "offset": f.offset,
+                "length": f.length,
+                "line": f.line,
+                "col": f.col,
+            })
+        })
+        .collect();
+    Ok(json!({
+        "path": path,
+        "styleGuide": settings.style_guide,
+        "wordCount": result.word_count,
+        "score": score,
+        "findings": findings,
+    }))
 }
 
 fn remove_from_repo_array(dotted: &str, item: &str) -> Result<()> {

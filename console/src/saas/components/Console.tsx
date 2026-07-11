@@ -16,13 +16,13 @@ import { FactsGroup } from "./groups/FactsGroup";
 import { TemplatesGroup } from "./groups/TemplatesGroup";
 import { LocalizationGroup } from "./groups/LocalizationGroup";
 import { DocsiteGroup } from "./groups/DocsiteGroup";
+import { DetectGroup } from "./groups/DetectGroup";
 import { RulesGroup } from "./groups/RulesGroup";
 import { NudgesGroup } from "./groups/NudgesGroup";
 import { CloudGroup } from "./groups/CloudGroup";
 import { ConfigGroup } from "./groups/ConfigGroup";
 import { StatusGroup } from "./groups/StatusGroup";
 import { ProjectSwitcher } from "./ProjectSwitcher";
-import { Placeholder } from "./Placeholder";
 import { RenderCrashBoundary } from "./RenderCrashBoundary";
 import { CommandPalette } from "./CommandPalette";
 import { Toaster } from "./feedback";
@@ -43,12 +43,13 @@ const renderGroup = (step: Step) => {
     case "templates": return <TemplatesGroup />;
     case "localization": return <LocalizationGroup />;
     case "docsite":   return <DocsiteGroup />;
+    case "detect":    return <DetectGroup />;
     case "rules":     return <RulesGroup />;
     case "nudges":    return <NudgesGroup />;
     case "cloud":     return <CloudGroup />;
     case "config":    return <ConfigGroup />;
     case "status":    return <StatusGroup />;
-    default:          return <Placeholder step={step} />;
+    default:          return <OverviewGroup />;
   }
 };
 

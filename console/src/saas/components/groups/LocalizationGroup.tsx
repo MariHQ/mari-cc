@@ -7,17 +7,10 @@ import {
   type LocalizationCell,
   type CoverageResult,
 } from "@saas/lib/client";
-import { Page, Badge, Drawer, card, btn, focusRing } from "../console-ui";
+import { Page, Badge, card, btn, focusRing } from "../console-ui";
 import { toast } from "../feedback";
 
 const shortName = (p: string) => p.split("/").pop() || p;
-
-/* Status of one translation cell → tone + short label for the matrix. */
-function cellState(c: LocalizationCell): { label: string; tone: string } {
-  if (c.issues.length > 0) return { label: `${c.issues.length} issue${c.issues.length === 1 ? "" : "s"}`, tone: "blocked" };
-  if (c.stale) return { label: "stale", tone: "attention" };
-  return { label: "ok", tone: "ok" };
-}
 
 /* ── A collapsible file viewer that lazy-loads content on first open. ─────── */
 function FileViewer({ path }: { path: string }) {
@@ -156,11 +149,101 @@ function TranslationPanel({ source, lang, cell }: { source: string; lang: string
   );
 }
 
+/* ── A compact language status chip for the collapsed card header. ───────── */
+function LangChip({ lang, cell }: { lang: string; cell: LocalizationCell | undefined }) {
+  if (!cell) {
+    return (
+      <span className="inline-flex items-center gap-1 font-term text-[11px] text-ink/35 border border-ink/10 rounded-[3px] px-1.5 py-0.5">
+        {lang} —
+      </span>
+    );
+  }
+  const tone = cell.issues.length > 0 ? "blocked" : cell.stale ? "attention" : "ok";
+  const label = cell.issues.length > 0 ? `${cell.issues.length}` : cell.stale ? "stale" : "";
+  const cls =
+    tone === "blocked"
+      ? "text-espelette border-espelette/30 bg-espelette/[0.06]"
+      : tone === "attention"
+      ? "text-clay border-clay/35 bg-clay/[0.07]"
+      : "text-moss border-moss/30 bg-moss/[0.06]";
+  return (
+    <span className={`inline-flex items-center gap-1 font-term text-[11px] rounded-[3px] border px-1.5 py-0.5 ${cls}`}>
+      {lang}
+      {tone === "ok" ? <Check size={11} /> : <span>{label}</span>}
+    </span>
+  );
+}
+
+/* ── A collapsible per-source card (replaces the old modal). ─────────────── */
+function SourceCard({
+  src,
+  languages,
+  sourceLang,
+  open,
+  onToggle,
+}: {
+  src: LocalizationSource;
+  languages: string[];
+  sourceLang: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const missing = languages.filter((l) => !src.translations[l]);
+  return (
+    <div className={`${card} overflow-hidden`}>
+      <button
+        onClick={onToggle}
+        className={`w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-flysch/40 transition-colors ${focusRing}`}
+      >
+        <ChevronRight size={15} className={`text-ink/40 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} />
+        <span className="min-w-0 flex-1">
+          <span className="text-[13.5px] font-medium text-ink truncate block">{shortName(src.source)}</span>
+          <span className="font-term text-[11px] text-ink/45 truncate block">{src.source}</span>
+        </span>
+        <span className="flex items-center gap-1.5 flex-wrap justify-end">
+          {languages.map((l) => (
+            <LangChip key={l} lang={l} cell={src.translations[l]} />
+          ))}
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-ink/10 p-4 flex flex-col gap-4 bg-paper">
+          <div>
+            <div className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/55 mb-1">
+              Source ({sourceLang})
+            </div>
+            <FileViewer path={src.source} />
+          </div>
+          <div className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/55">
+            Translations ({Object.keys(src.translations).length})
+          </div>
+          {languages
+            .filter((l) => src.translations[l])
+            .map((l) => (
+              <TranslationPanel key={l} source={src.source} lang={l} cell={src.translations[l]} />
+            ))}
+          {missing.length > 0 && (
+            <div className="text-[12.5px] text-ink/55">
+              Missing:{" "}
+              {missing.map((l) => (
+                <span key={l} className="font-term text-ink/70 mr-1.5">
+                  {l}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function LocalizationGroup() {
   const [data, setData] = useState<Localization | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<LocalizationSource | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   function reload() {
     setLoading(true);
@@ -175,32 +258,42 @@ export function LocalizationGroup() {
   useEffect(reload, []);
 
   const stats = useMemo(() => {
-    if (!data) return { localized: 0, stale: 0, issues: 0, cells: 0 };
+    if (!data) return { localized: 0, stale: 0, issues: 0 };
     let stale = 0;
     let issues = 0;
-    let cells = 0;
     for (const s of data.sources) {
       for (const lang of Object.keys(s.translations)) {
         const c = s.translations[lang];
-        cells++;
         if (c.stale) stale++;
         issues += c.issues.length;
       }
     }
-    return { localized: data.sources.length, stale, issues, cells };
+    return { localized: data.sources.length, stale, issues };
   }, [data]);
 
-  // Keep the drawer's selection fresh across reloads.
-  const selectedLive = useMemo(
-    () => (selected ? data?.sources.find((s) => s.source === selected.source) ?? selected : null),
-    [selected, data],
-  );
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  const allOpen = !!data && data.sources.length > 0 && data.sources.every((s) => expanded.has(s.source));
+  const toggleAll = () =>
+    setExpanded(allOpen ? new Set() : new Set(data?.sources.map((s) => s.source) ?? []));
 
   return (
     <Page
       title="Localization"
-      subtitle="Translation coverage, structural drift, and deep attention coverage — click a doc to explore."
+      subtitle="Translation coverage, structural drift, and deep attention coverage — expand a doc to explore inline."
       kicker="docs"
+      actions={
+        data && data.sources.length > 0 ? (
+          <button onClick={toggleAll} className={btn}>
+            {allOpen ? "Collapse all" : "Expand all"}
+          </button>
+        ) : undefined
+      }
     >
       {loading && !data && (
         <div className="mt-6 grid place-items-center py-16 text-[13px] text-ink/50">Loading…</div>
@@ -237,119 +330,24 @@ export function LocalizationGroup() {
             <Stat label="Structure issues" value={stats.issues} tone={stats.issues > 0 ? "bad" : "ok"} />
           </div>
 
-          <div className={`${card} mt-5 overflow-hidden`}>
-            <div className="flex items-center gap-2 px-4 py-3 border-b border-ink/10">
-              <Languages size={15} className="text-biscay-2" />
-              <h4 className="text-[14px] font-semibold text-ink">Translation matrix</h4>
-              <span className="font-term text-[11px] font-medium text-ink/55 bg-flysch border border-ink/10 rounded-[3px] px-1.5 py-0.5">
-                {data.sources.length}
-              </span>
-              <span className="ml-auto font-term text-[11px] text-ink/45">click a row to explore</span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse" style={{ minWidth: 480 + data.languages.length * 96 }}>
-                <thead>
-                  <tr>
-                    <th className="font-term font-medium text-[11px] uppercase tracking-[0.08em] text-ink/60 px-4 py-2.5 border-b border-ink/10">
-                      Source doc
-                    </th>
-                    {data.languages.map((l) => (
-                      <th
-                        key={l}
-                        className="font-term font-medium text-[11px] uppercase tracking-[0.08em] text-ink/60 px-3 py-2.5 border-b border-ink/10 text-center"
-                      >
-                        {l}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.sources.map((s) => (
-                    <tr
-                      key={s.source}
-                      onClick={() => setSelected(s)}
-                      className="border-b border-ink/10 last:border-0 hover:bg-flysch/50 cursor-pointer group"
-                    >
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[13px] text-ink font-medium truncate max-w-[300px]" title={s.source}>
-                            {shortName(s.source)}
-                          </span>
-                          <ChevronRight size={13} className="text-ink/30 opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </div>
-                        <div className="font-term text-[11px] text-ink/45 truncate max-w-[320px]">{s.source}</div>
-                      </td>
-                      {data.languages.map((l) => {
-                        const cell = s.translations[l];
-                        if (!cell) {
-                          return (
-                            <td key={l} className="px-3 py-2.5 text-center text-ink/25">
-                              —
-                            </td>
-                          );
-                        }
-                        const st = cellState(cell);
-                        return (
-                          <td key={l} className="px-3 py-2.5 text-center">
-                            {st.tone === "ok" ? (
-                              <span title={cell.path} className="inline-flex text-moss">
-                                <Check size={16} />
-                              </span>
-                            ) : (
-                              <Badge label={st.label} tone={st.tone} />
-                            )}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          <div className="mt-5 flex flex-col gap-2.5">
+            {data.sources.map((s) => (
+              <SourceCard
+                key={s.source}
+                src={s}
+                languages={data.languages}
+                sourceLang={data.sourceLangs[0] ?? "en"}
+                open={expanded.has(s.source)}
+                onToggle={() => toggle(s.source)}
+              />
+            ))}
           </div>
           <p className="mt-3 font-term text-[11.5px] text-ink/45">
-            ✓ = present &amp; in sync · <span className="text-clay">stale</span> = source newer ·{" "}
-            <span className="text-espelette">issues</span> = structural drift · — = missing.
+            Chips: <span className="text-moss">lang ✓</span> in sync · <span className="text-clay">stale</span> source
+            newer · <span className="text-espelette">N</span> structure issues · lang — missing.
           </p>
         </>
       )}
-
-      <Drawer
-        open={!!selectedLive}
-        onClose={() => setSelected(null)}
-        title={selectedLive ? shortName(selectedLive.source) : ""}
-        subtitle={selectedLive?.source}
-        icon={<Languages size={18} className="text-biscay-2" />}
-      >
-        {selectedLive && data && (
-          <div className="flex flex-col gap-4">
-            <div>
-              <div className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/55 mb-1">Source ({data.sourceLangs[0]})</div>
-              <FileViewer path={selectedLive.source} />
-            </div>
-            <div className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/55">
-              Translations ({Object.keys(selectedLive.translations).length})
-            </div>
-            {data.languages
-              .filter((l) => selectedLive.translations[l])
-              .map((l) => (
-                <TranslationPanel key={l} source={selectedLive.source} lang={l} cell={selectedLive.translations[l]} />
-              ))}
-            {data.languages.filter((l) => !selectedLive.translations[l]).length > 0 && (
-              <div className="text-[12.5px] text-ink/55">
-                Missing:{" "}
-                {data.languages
-                  .filter((l) => !selectedLive.translations[l])
-                  .map((l) => (
-                    <span key={l} className="font-term text-ink/70 mr-1.5">
-                      {l}
-                    </span>
-                  ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Drawer>
     </Page>
   );
 }

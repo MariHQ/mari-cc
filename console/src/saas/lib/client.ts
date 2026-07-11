@@ -200,6 +200,36 @@ export type DetectorInfo = {
 
 export type Template = { id: string; title: string; file: string; sections: string[]; basis: string };
 
+export type DetectFinding = {
+  ruleId: string;
+  family: string;
+  severity: string;
+  message: string;
+  span: string;
+  offset: number;
+  length: number;
+  line: number;
+  col: number;
+};
+export type DetectScore = {
+  score: number;
+  band: string;
+  words: number;
+  findingCount: number;
+  per1k: number;
+  byFamily: Record<string, number>;
+  contractions: number;
+  firstPerson: number;
+  discount: number;
+};
+export type DetectResult = {
+  path: string;
+  styleGuide: string;
+  wordCount: number;
+  score: DetectScore;
+  findings: DetectFinding[];
+};
+
 export type LocalizationCell = {
   path: string;
   layout: string;
@@ -301,6 +331,8 @@ export const api = {
   discoverRules: () => post<{ rules: EditRule[] }>("/api/rules/discover"),
 
   detector: () => get<DetectorInfo>("/api/detector"),
+  detect: (input: { text?: string; path?: string; style?: string }) =>
+    post<DetectResult>("/api/detect", input),
   setZero: (rule: string, action: "add" | "remove") =>
     post<{ ok: boolean }>("/api/detector/zero", { rule, action }),
   setIgnore: (rule: string, action: "add" | "remove", reason?: string) =>

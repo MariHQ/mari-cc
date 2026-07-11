@@ -383,9 +383,14 @@ export function RulesGroup() {
             <Bell size={15} className="text-biscay-2" />
             <h3 className="text-[15px] font-semibold text-ink">Edit-notify rules</h3>
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={discover} disabled={discovering} className={`${btn} disabled:opacity-60`}>
+              <button
+                onClick={discover}
+                disabled={discovering}
+                title="Auto-detect edit-notify rules from the repo layout (e.g. src/ ↔ docs drift, changed manifests) and add them. Same as `mari rules discover --write`."
+                className={`${btn} disabled:opacity-60`}
+              >
                 <Sparkles size={14} />
-                {discovering ? "Discovering…" : "Discover"}
+                {discovering ? "Detecting…" : "Auto-detect"}
               </button>
               <button onClick={openDrawer} className={btnPrimary}>
                 <Plus size={14} />

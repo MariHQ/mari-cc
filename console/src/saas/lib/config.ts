@@ -4,11 +4,10 @@
 
 export type RuntimeConfig = {
   apiBase: string;
-  marketingUrl: string;
   local: boolean;
 };
 
-const FALLBACK: RuntimeConfig = { apiBase: "", marketingUrl: "", local: true };
+const FALLBACK: RuntimeConfig = { apiBase: "", local: true };
 
 let cached: RuntimeConfig | null = null;
 

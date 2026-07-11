@@ -33,17 +33,6 @@ export function Page({ title, subtitle, kicker, actions, children }: { title: st
   );
 }
 
-/* One brand treatment for every avatar — the per-owner rainbow added noise
-   to each table without carrying meaning. `color` is accepted (call sites
-   still pass it) but intentionally unused. */
-export function Avatar({ initials }: { initials: string; color?: string }) {
-  return (
-    <span className="inline-flex items-center justify-center w-[26px] h-[26px] rounded-full bg-flysch border border-ink/15 font-term text-[10px] font-semibold text-ink/80">
-      {initials}
-    </span>
-  );
-}
-
 /* Status tones — one semantic scale for the whole console:
      ok        things that are healthy/approved/synced/live
      attention pending, syncing, in review, needs update

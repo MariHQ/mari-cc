@@ -11,6 +11,7 @@ import {
   Languages,
   Globe,
   ScrollText,
+  SpellCheck,
   BellRing,
   SlidersHorizontal,
   Activity,
@@ -33,6 +34,7 @@ export type StepId =
   | "templates"
   | "localization"
   | "docsite"
+  | "detect"
   | "rules"
   | "nudges"
   | "cloud"
@@ -75,6 +77,8 @@ export const STEPS: Step[] = [
   { id: "docsite", name: "Docsite", icon: Globe, group: "Docs",
     description: "Docs-site readiness: platform, community files, and the build/keep-alive plan." },
 
+  { id: "detect", name: "Detector", icon: SpellCheck, group: "Governance",
+    description: "Run the deterministic prose detector on text or a file — findings, slop score, and one-click waivers." },
   { id: "rules", name: "Rules", icon: ScrollText, group: "Governance",
     description: "Edit-notify rules and the detector: waivers, zero-tolerance, and the full rule catalog." },
   { id: "nudges", name: "Nudges", icon: BellRing, group: "Governance",
