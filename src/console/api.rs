@@ -114,6 +114,8 @@ pub fn route(ctx: &Ctx) -> Result<(u16, Value)> {
         (Method::Post, ["tags", "statuses"]) => ok(tag_statuses_set(ctx)?),
 
         (Method::Get, ["localization"]) => ok(i18n::overview_json()),
+        (Method::Get, ["localization", "coverage"]) => ok(localization_coverage(ctx)?),
+        (Method::Get, ["localization", "file"]) => ok(repo_file(ctx)?),
         (Method::Get, ["docsite"]) => ok(json!({
             "plan": docsite::plan_json(),
             "status": docsite::status_json(),
@@ -1134,6 +1136,47 @@ fn templates_scaffold(ctx: &Ctx) -> Result<Value> {
         return Err(anyhow!("scaffold failed — the target file may already exist (use force)"));
     }
     Ok(json!({ "ok": true }))
+}
+
+/* ── localization explorer ───────────────────────────────────────────────── */
+
+fn localization_coverage(ctx: &Ctx) -> Result<Value> {
+    let root = root();
+    let source = query_param(&ctx.query, "source").ok_or_else(|| anyhow!("source required"))?;
+    let translation =
+        query_param(&ctx.query, "translation").ok_or_else(|| anyhow!("translation required"))?;
+    let src = safe_join(&root, &source)?;
+    let tr = safe_join(&root, &translation)?;
+    Ok(i18n::coverage_json(&src, &tr))
+}
+
+/// Read a repo-relative text file for the explorer. Path-traversal is rejected:
+/// the resolved path must stay inside the workspace root.
+fn repo_file(ctx: &Ctx) -> Result<Value> {
+    let root = root();
+    let rel = query_param(&ctx.query, "path").ok_or_else(|| anyhow!("path required"))?;
+    let path = safe_join(&root, &rel)?;
+    let content = std::fs::read_to_string(&path).map_err(|e| anyhow!("cannot read {rel}: {e}"))?;
+    // Cap very large files so the browser stays responsive.
+    let truncated = content.chars().count() > 200_000;
+    let body: String = if truncated {
+        content.chars().take(200_000).collect()
+    } else {
+        content
+    };
+    Ok(json!({ "path": rel, "content": body, "truncated": truncated }))
+}
+
+/// Join a repo-relative path onto the workspace root, rejecting anything that
+/// escapes the root (via `..`, absolute paths, or symlinks).
+fn safe_join(root: &std::path::Path, rel: &str) -> Result<PathBuf> {
+    let joined = root.join(rel);
+    let canon = std::fs::canonicalize(&joined).map_err(|_| anyhow!("no such path: {rel}"))?;
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if !canon.starts_with(&root_canon) {
+        return Err(anyhow!("path is outside the workspace"));
+    }
+    Ok(canon)
 }
 
 fn tag_statuses_set(ctx: &Ctx) -> Result<Value> {

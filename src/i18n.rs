@@ -104,6 +104,9 @@ pub fn overview_json() -> serde_json::Value {
             continue;
         }
         let src_mtime = mtime(p);
+        // Deterministic structural reference for the source (headings, code
+        // blocks, links) — compared against each translation with no model.
+        let src_struct = read_structure(p).ok();
         let mut cells = serde_json::Map::new();
         for t in &translations {
             langs.insert(t.lang.clone());
@@ -111,9 +114,19 @@ pub fn overview_json() -> serde_json::Value {
                 (Some(s), Some(tt)) => s > tt,
                 _ => false,
             };
+            let issues: Vec<String> = match (&src_struct, read_structure(&t.path).ok()) {
+                (Some(s), Some(tr)) => compare_structure(s, &tr),
+                _ => Vec::new(),
+            };
             cells.insert(
                 t.lang.clone(),
-                json!({ "path": rel(&t.path), "layout": t.layout, "stale": stale }),
+                json!({
+                    "path": rel(&t.path),
+                    "layout": t.layout,
+                    "stale": stale,
+                    "issues": issues,
+                    "ok": issues.is_empty() && !stale,
+                }),
             );
         }
         rows.push(json!({ "source": rel(p), "translations": serde_json::Value::Object(cells) }));
@@ -127,6 +140,49 @@ pub fn overview_json() -> serde_json::Value {
         "sources": rows,
         "sourceLangs": SOURCE_LANGS,
     })
+}
+
+/// Deep attention coverage for one source→translation pair, as JSON. Runs the
+/// local attention model (§17): source passages the translation barely covers
+/// are returned with their score and line. Deterministic (a forward pass, no
+/// randomness) but model-backed, so callers run it on demand. Leads, not
+/// verdicts.
+pub fn coverage_json(source: &Path, translation: &Path) -> serde_json::Value {
+    use serde_json::json;
+    let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
+        ["threshold"]
+        .as_f64()
+        .unwrap_or(0.3);
+    let (Ok(src_text), Ok(trans_text)) = (
+        std::fs::read_to_string(source),
+        std::fs::read_to_string(translation),
+    ) else {
+        return json!({ "flagged": [], "error": "unreadable file pair" });
+    };
+    match crate::attn::analyze(
+        &src_text,
+        &trans_text,
+        crate::attn::Mode::Coverage,
+        threshold,
+        None,
+    ) {
+        Ok(flagged) => {
+            let items: Vec<serde_json::Value> = flagged
+                .iter()
+                .map(|f| {
+                    let line = crate::attn::line_of_offset(&src_text, f.offset);
+                    let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    json!({
+                        "score": f.score,
+                        "line": line,
+                        "text": snippet.chars().take(280).collect::<String>(),
+                    })
+                })
+                .collect();
+            json!({ "flagged": items, "ok": items.is_empty() })
+        }
+        Err(e) => json!({ "flagged": [], "error": format!("{e:#}") }),
+    }
 }
 
 /// Localized translation files are skipped by the detector (SPEC §11.0.6).

@@ -200,9 +200,19 @@ export type DetectorInfo = {
 
 export type Template = { id: string; title: string; file: string; sections: string[]; basis: string };
 
-export type LocalizationCell = { path: string; layout: string; stale: boolean };
+export type LocalizationCell = {
+  path: string;
+  layout: string;
+  stale: boolean;
+  issues: string[];
+  ok: boolean;
+};
 export type LocalizationSource = { source: string; translations: Record<string, LocalizationCell> };
 export type Localization = { languages: string[]; sources: LocalizationSource[]; sourceLangs: string[] };
+
+export type CoverageFinding = { score: number; line: number; text: string };
+export type CoverageResult = { flagged: CoverageFinding[]; ok?: boolean; error?: string };
+export type RepoFile = { path: string; content: string; truncated: boolean };
 
 export type DocsitePhase = { phase: string; command: string; output: string };
 export type DocsiteStatus = {
@@ -303,6 +313,9 @@ export const api = {
   setTagStatuses: (statuses: string[]) => post<{ ok: boolean }>("/api/tags/statuses", { statuses }),
 
   localization: () => get<Localization>("/api/localization"),
+  localizationCoverage: (source: string, translation: string) =>
+    get<CoverageResult>(`/api/localization/coverage${qs({ source, translation })}`),
+  repoFile: (path: string) => get<RepoFile>(`/api/localization/file${qs({ path })}`),
   docsite: () => get<DocsiteInfo>("/api/docsite"),
 
   cloud: () => get<CloudStatus>("/api/cloud"),
