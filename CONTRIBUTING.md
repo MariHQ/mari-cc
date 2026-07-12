@@ -41,6 +41,10 @@ changing behavior. The remaining-work plan lives in `docs/`.
 - Changes with a runtime surface should be verified end-to-end, not just by
   unit tests.
 
+## Reporting bugs
+
+Open an issue on GitHub with the smallest reproduction you can manage: the command you ran, what you expected, and what happened. Include your operating system, the output of `mari --version`, and `mari doctor` when the problem touches models or optional tools. Search the open issues first so you are not filing a duplicate. For a security vulnerability, do not open a public issue. Follow `SECURITY.md` instead.
+
 ## Pull requests
 
 - Keep PRs focused; one logical change per PR.

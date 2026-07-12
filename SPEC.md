@@ -405,6 +405,22 @@ Attention pass: flag source passages the translation barely covers.
 
 The post-edit hook raises an i18n staleness note when a source-language file with siblings is edited (e.g. editing `docs/en/pricing.md` flags `docs/es/pricing.md`, `docs/fr/pricing.md`).
 
+### 5.8 Web console
+
+#### `mari console [--port <PORT>] [--open]`
+Launch a local web dashboard over the workspace knowledge base. Binds to `127.0.0.1` on `--port` (default `4319`) and serves the single-page app at `http://127.0.0.1:<port>/console` from the bundled `console/dist`. `--open` opens the URL in the default browser. The server is local-only and honors the §1.1 invariants: no external service, no external LLM calls, credentials never leave the machine.
+
+The console is a thin browser interface over the same catalog and config the CLI reads and writes. Its JSON API mirrors the command surface:
+- **Overview & status**: index summary, per-source state.
+- **Sources**: list, track, and sync.
+- **Documents & search**: list, open, and hybrid search over the index.
+- **Curation**: tags (list, apply, remove, edit the status set), facts ledger, glossary.
+- **Maintenance**: doc↔code lineage (list, add, confirm, reject), edit-notify rules (list, add, discover, remove), nudges, detector settings (zero-tolerance, ignores, ad-hoc `detect`).
+- **Projects**: list, switch, and register workspaces.
+- **Docs systems**: asset templates (list, scaffold), localization overview and coverage, docsite status.
+
+Every mutation writes through the same paths as the equivalent command, so console and CLI stay consistent. Exit `0` on clean shutdown (Ctrl-C).
+
 
 ---
 

@@ -1,0 +1,40 @@
+site_name: Mari Docs
+site_description: Local-first knowledge curation and prose-quality tooling for Claude Code.
+site_url: https://mari.guru/docs-preview/
+docs_dir: website
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.superfences
+nav:
+  - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - Quickstart: getting-started/quickstart.md
+  - How-to guides:
+      - Connect your sources: guides/connect-sources.md
+      - Search and explore: guides/search-knowledge.md
+      - Curate knowledge: guides/curate-knowledge.md
+      - Improve prose: guides/improve-prose.md
+      - Factcheck claims: guides/factcheck.md
+      - Generate a docs site: guides/generate-docs.md
+      - Keep docs fresh: guides/keep-docs-fresh.md
+      - Share with your team: guides/share-with-team.md
+  - Reference:
+      - CLI commands: reference/cli.md
+      - Slash commands: reference/slash-commands.md
+      - Configuration: reference/configuration.md
+      - Connectors: reference/connectors.md
+      - Detector rules: reference/detector-rules.md
+      - Models: reference/models.md
+  - Explanation:
+      - Architecture: explanation/architecture.md
+      - Curation model: explanation/curation-model.md
+      - Design decisions: explanation/design-decisions.md

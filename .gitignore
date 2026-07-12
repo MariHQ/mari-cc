@@ -13,3 +13,6 @@
 # without a Node toolchain present.
 /console/node_modules/
 /console/.vite/
+
+# MkDocs build output
+site/
