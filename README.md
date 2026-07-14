@@ -48,6 +48,8 @@ project waivers, zero-tolerance rules, and edit-notify rules in one place.
 
 ![The Mari Console Rules view showing the detector catalog, rule families, active status, zero-tolerance controls, and ignore controls](assets/mari-console-rules.png)
 
+Run `/mari console --open` in Claude Code to open the web console.
+
 ## Localization
 
 Mari recognizes common documentation layouts, including `README.es.md`,
