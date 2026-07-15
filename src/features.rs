@@ -79,7 +79,6 @@ fn catalog() -> Vec<Group> {
                 cap("public surface extraction", "mari surface [dir]"),
                 cap("document archetypes", "mari asset"),
                 cap("doc platform detection", "mari platform"),
-                cap("docsite readiness", "mari docsite <plan|status>"),
             ],
         },
     ]

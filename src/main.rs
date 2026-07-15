@@ -6,7 +6,6 @@ mod configcmd;
 mod console;
 mod curation;
 mod detector;
-mod docsite;
 mod features;
 mod hook;
 mod i18n;
@@ -167,12 +166,6 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Docsite flow plan and readiness status
-    Docsite {
-        args: Vec<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Whole-project docs validation
     Check {
         #[arg(long)]
@@ -317,7 +310,6 @@ fn run(cli: Cli) -> anyhow::Result<i32> {
             name,
             force,
         } => platform::run(&args, json, name.as_deref(), force),
-        Cmd::Docsite { args, json } => docsite::run(&args, json),
         Cmd::Check {
             json,
             strict,

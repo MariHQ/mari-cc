@@ -3,7 +3,6 @@ import {
   BookMarked,
   LayoutTemplate,
   Languages,
-  Globe,
   ScrollText,
   SpellCheck,
   BellRing,
@@ -19,7 +18,6 @@ export type StepId =
   | "glossary"
   | "templates"
   | "localization"
-  | "docsite"
   | "detect"
   | "rules"
   | "nudges"
@@ -45,9 +43,6 @@ export const STEPS: Step[] = [
 
   { id: "localization", name: "Localization", icon: Languages, group: "Docs",
     description: "Translation coverage across languages — which docs are localized, and which are stale." },
-  { id: "docsite", name: "Docsite", icon: Globe, group: "Docs",
-    description: "Docs-site readiness: platform, community files, and the build/keep-alive plan." },
-
   { id: "detect", name: "Detector", icon: SpellCheck, group: "Governance",
     description: "Run the deterministic prose detector on text or a file — findings, slop score, and one-click waivers." },
   { id: "rules", name: "Rules", icon: ScrollText, group: "Governance",

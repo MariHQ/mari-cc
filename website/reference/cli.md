@@ -33,7 +33,6 @@
 | `mari surface [dir]` | Extract public symbols, headings, and config keys. |
 | `mari asset ...` | Detect, check, or scaffold document archetypes. |
 | `mari platform ...` | Detect or scaffold a documentation platform. |
-| `mari docsite <plan\|status>` | Plan or inspect a repository documentation project. |
 | `mari check [--strict] [--anchors]` | Validate links, navigation, community files, and assets. |
 
 Use `mari <command> --help` for the complete flags and argument shapes.

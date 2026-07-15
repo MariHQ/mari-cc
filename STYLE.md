@@ -9,9 +9,10 @@
 
 ## Terminology
 
-| Term | Use | Do not use |
-|---|---|---|
-| word list | a configurable detector vocabulary | lexicon |
-| finding | one detector result tied to a passage | score event |
-| repository config | `.mari/config.json` | global config |
-| edit-notify rule | a rule that identifies related files after an edit | dependency graph |
+| Use | Not |
+|---|---|
+| dataset | data set |
+| word list | lexicon |
+| finding | score event |
+| repository config | global config |
+| edit-notify rule | dependency graph |

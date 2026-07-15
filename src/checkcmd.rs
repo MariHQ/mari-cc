@@ -81,68 +81,6 @@ pub fn run(json: bool, strict: bool, anchors: bool, limit: Option<usize>) -> Res
     }
 }
 
-/// §5.6 `mari docsite check`: the focused link validator — internal links and
-/// anchors resolve and nav↔files agree — scoped to the docs tree, without the
-/// community and asset passes the whole-project `mari check` also runs. When
-/// `anchors` is set it also validates in-page `#anchor`→`id` links in HTML/JSX.
-pub fn run_links(json: bool, strict: bool, anchors: bool) -> Result<i32> {
-    let root = workspace::work_root();
-    let cfg = config::resolve(Some(&root));
-    let ignored = ignored_rules(&cfg);
-    let mut findings = Vec::new();
-
-    if !ignored.contains("link-broken") {
-        let docs = markdown_files(&root);
-        findings.extend(link_findings(&root, &docs));
-    }
-    if !ignored.contains("nav-missing-target") || !ignored.contains("nav-orphan-page") {
-        let docs = markdown_files(&root);
-        findings.extend(nav_findings(
-            &root,
-            &docs,
-            !ignored.contains("nav-missing-target"),
-            !ignored.contains("nav-orphan-page"),
-        ));
-    }
-    if anchors && !ignored.contains("anchor-broken") {
-        findings.extend(anchor_in_code_findings(&root));
-    }
-
-    render_findings(json, &findings)?;
-    Ok(exit_code(&findings, strict))
-}
-
-fn render_findings(json: bool, findings: &[Finding]) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(findings)?);
-    } else if findings.is_empty() {
-        println!("check: ok");
-    } else {
-        for finding in findings {
-            let target = finding
-                .target
-                .as_ref()
-                .map(|t| format!(" -> {t}"))
-                .unwrap_or_default();
-            println!(
-                "{} {} {}{}",
-                finding.severity, finding.rule_id, finding.path, target
-            );
-            println!("  {}", finding.message);
-        }
-    }
-    Ok(())
-}
-
-fn exit_code(findings: &[Finding], strict: bool) -> i32 {
-    let has_error = findings.iter().any(|f| f.severity == "error");
-    if has_error || (strict && !findings.is_empty()) {
-        1
-    } else {
-        0
-    }
-}
-
 fn ignored_rules(cfg: &serde_json::Value) -> BTreeSet<String> {
     cfg["detector"]["ignoreRules"]
         .as_array()

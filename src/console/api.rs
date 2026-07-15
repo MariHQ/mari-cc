@@ -1,6 +1,6 @@
 //! JSON API for the repository-local console.
 
-use crate::{assets, config, curation, detector, docsite, i18n, rulescmd, workspace};
+use crate::{assets, config, curation, detector, i18n, rulescmd, workspace};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -58,10 +58,6 @@ pub fn route(ctx: &Ctx) -> Result<(u16, Value)> {
         (Method::Post, ["templates", "scaffold"]) => templates_scaffold(ctx)?,
         (Method::Get, ["localization"]) => i18n::overview_json(),
         (Method::Get, ["localization", "file"]) => repo_file(ctx)?,
-        (Method::Get, ["docsite"]) => json!({
-            "plan": docsite::plan_json(),
-            "status": docsite::status_json(),
-        }),
         _ => {
             return Ok((
                 404,

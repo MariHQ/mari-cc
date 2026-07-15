@@ -116,23 +116,6 @@ export type Localization = { languages: string[]; sources: LocalizationSource[];
 
 export type RepoFile = { path: string; content: string; truncated: boolean };
 
-export type DocsitePhase = { phase: string; command: string; output: string };
-export type DocsiteStatus = {
-  root: string;
-  platform: string | null;
-  docs_dir: boolean;
-  readme: boolean;
-  license: boolean;
-  contributing: boolean;
-  code_of_conduct: boolean;
-  security: boolean;
-  changelog: boolean;
-  hook_configured: boolean;
-  rules_configured: boolean;
-  next_commands: string[];
-};
-export type DocsiteInfo = { plan: { phases: DocsitePhase[] }; status: DocsiteStatus };
-
 export type ConfigPath = { path: string; type: string };
 export type ConfigResponse = {
   effective: Record<string, unknown>;
@@ -180,6 +163,4 @@ export const api = {
 
   localization: () => get<Localization>("/api/localization"),
   repoFile: (path: string) => get<RepoFile>(`/api/localization/file${qs({ path })}`),
-  docsite: () => get<DocsiteInfo>("/api/docsite"),
-
 };

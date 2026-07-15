@@ -9,7 +9,6 @@ import { OverviewGroup } from "./groups/OverviewGroup";
 import { GlossaryGroup } from "./groups/GlossaryGroup";
 import { TemplatesGroup } from "./groups/TemplatesGroup";
 import { LocalizationGroup } from "./groups/LocalizationGroup";
-import { DocsiteGroup } from "./groups/DocsiteGroup";
 import { DetectGroup } from "./groups/DetectGroup";
 import { RulesGroup } from "./groups/RulesGroup";
 import { NudgesGroup } from "./groups/NudgesGroup";
@@ -27,7 +26,6 @@ const renderGroup = (step: Step) => {
     case "glossary":  return <GlossaryGroup />;
     case "templates": return <TemplatesGroup />;
     case "localization": return <LocalizationGroup />;
-    case "docsite":   return <DocsiteGroup />;
     case "detect":    return <DetectGroup />;
     case "rules":     return <RulesGroup />;
     case "nudges":    return <NudgesGroup />;
