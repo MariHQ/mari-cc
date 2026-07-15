@@ -19,7 +19,7 @@ credentials never enter the repo.
 - **Curate.** Tag knowledge as canonical, stale, deprecated, draft, internal,
   customer-facing, or needs-review; keep a glossary and a facts ledger; audit
   the knowledge base.
-- **Improve AI-authored prose.** A deterministic ~230-rule detector for AI
+- **Improve AI-authored prose.** A deterministic ~170-rule detector for AI
   slop, clarity, house style (Microsoft/Google/AP/Chicago/plain), and
   inclusive language, plus editorial verbs (`deslop`, `tighten`, `clarify`,
   `sharpen`, `understate`, `critique`, `polish`, …) and an opt-in grammar pass.
