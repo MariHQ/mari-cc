@@ -44,7 +44,7 @@ function familyTone(family: string): string {
   return "neutral";
 }
 
-function ListRow({ list, scope, onSaved }: { list: DetectorList; scope: "repo" | "global"; onSaved: () => void }) {
+function ListRow({ list, scope, onSaved }: { list: DetectorList; scope: "repo"; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState(() => toEditor(list));
   const [busy, setBusy] = useState(false);
@@ -141,7 +141,7 @@ export function DetectorLists() {
   const [lists, setLists] = useState<DetectorList[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"repo" | "global">("repo");
+  const scope = "repo" as const;
 
   async function load() {
     try {
@@ -175,20 +175,7 @@ export function DetectorLists() {
           {lists?.length ?? 0} lists{overridden > 0 ? ` · ${overridden} overridden` : ""}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <div className="inline-flex rounded-[4px] border border-ink/20 overflow-hidden">
-            {(["repo", "global"] as const).map((sc) => (
-              <button
-                key={sc}
-                onClick={() => setScope(sc)}
-                className={`h-8 px-2.5 text-[12px] font-medium ${focusRing} ${
-                  scope === sc ? "bg-biscay text-white" : "text-ink/65 hover:text-ink"
-                }`}
-                title={sc === "repo" ? "Write to <repo>/.mari/config.json (team-shared)" : "Write to ~/.mari/config.json (personal)"}
-              >
-                {sc}
-              </button>
-            ))}
-          </div>
+          <span className="font-term text-[11px] text-ink/50">repository config</span>
           <div className="relative">
             <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-ink/40" />
             <input

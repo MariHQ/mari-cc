@@ -1,4 +1,4 @@
-//! Capability catalog (SPEC §5.1).
+//! Catalog of Mari's prose-quality capabilities.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -40,187 +40,56 @@ fn catalog() -> Vec<Group> {
         Group {
             intent: "setup",
             capabilities: vec![
-                cap(
-                    "initialize workspace config",
-                    "mari init [search|style|all]",
-                    "implemented",
-                ),
-                cap("show workspace status", "mari status", "implemented"),
-                cap("inspect/set config", "mari config", "implemented"),
-                cap(
-                    "provider credentials",
-                    "mari auth <provider>",
-                    "implemented",
-                ),
-                cap(
-                    "source scope",
-                    "mari scope [source] [global|local]",
-                    "implemented",
-                ),
-                cap(
-                    "capability catalog",
-                    "mari features [--json]",
-                    "implemented",
-                ),
-            ],
-        },
-        Group {
-            intent: "knowledge",
-            capabilities: vec![
-                cap(
-                    "track source refs",
-                    "mari track <source> <add|remove|list> [ref] [--list-key <key>]",
-                    "implemented",
-                ),
-                cap(
-                    "sync catalog sources",
-                    "mari sync [source] [--rebuild] [--since N]",
-                    "implemented",
-                ),
-                cap(
-                    "hybrid keyword search",
-                    "mari search <query>",
-                    "implemented",
-                ),
-                cap(
-                    "repository explorer",
-                    "mari explore <question-or-file>",
-                    "deterministic surface",
-                ),
-                cap(
-                    "public surface extraction",
-                    "mari surface [dir]",
-                    "implemented",
-                ),
-                cap("recent documents", "mari recent", "implemented"),
-                cap("document lookup", "mari doc <ref>", "implemented"),
-                cap("thread lookup", "mari thread <ref>", "implemented"),
-                cap(
-                    "neighbor chunks",
-                    "mari neighbors <chunk-id>",
-                    "implemented",
-                ),
-                cap("related documents", "mari related <ref>", "implemented"),
-                cap(
-                    "read-only catalog SQL",
-                    "mari sql \"SELECT ...\"",
-                    "implemented",
-                ),
-            ],
-        },
-        Group {
-            intent: "curation",
-            capabilities: vec![
-                cap("tags", "mari tag", "implemented"),
-                cap("glossary", "mari glossary", "implemented"),
-                cap("facts ledger", "mari facts", "implemented"),
-                cap("fact extraction candidates", "mari extract", "implemented"),
-                cap("knowledge-base audit", "mari audit kb", "implemented"),
-                cap(
-                    "fact checking",
-                    "mari factcheck <file>",
-                    "deterministic surface",
-                ),
-                cap(
-                    "lineage curation",
-                    "mari lineage <list|add|confirm|reject>",
-                    "implemented",
-                ),
+                cap("initialize repository config", "mari init [style|all]"),
+                cap("show repository status", "mari status"),
+                cap("inspect or set config", "mari config"),
+                cap("capability catalog", "mari features [--json]"),
+                cap("local web console", "mari console"),
             ],
         },
         Group {
             intent: "prose quality",
             capabilities: vec![
-                cap("deterministic detector", "mari detect", "implemented"),
-                cap("human audit report", "mari audit <file>", "implemented"),
+                cap("deterministic detector", "mari detect"),
+                cap("human audit report", "mari audit <file>"),
                 cap(
                     "narrative questionnaire",
                     "mari narrative <questions|score>",
-                    "implemented",
                 ),
-                cap("style waivers", "mari ignores", "implemented"),
-                cap("zero-tolerance rules", "mari zero", "implemented"),
-                cap(
-                    "grammar pass (Harper)",
-                    "mari detect --grammar",
-                    "implemented",
-                ),
-                cap(
-                    "ML tier 1 (NLI/slop-spans)",
-                    "mari detect --models",
-                    "not in this build",
-                ),
-                cap(
-                    "attention tier (coverage/grounding/focus)",
-                    "mari factcheck --deep | check --deep | explore --focus",
-                    "implemented",
-                ),
+                cap("style waivers", "mari ignores"),
+                cap("zero-tolerance rules", "mari zero"),
+                cap("grammar pass", "mari detect --grammar"),
+                cap("glossary", "mari glossary"),
             ],
         },
         Group {
             intent: "maintenance",
             capabilities: vec![
-                cap(
-                    "deep i18n coverage (attention)",
-                    "mari i18n coverage <source> [translation]",
-                    "implemented",
-                ),
-                cap("hooks", "mari hooks", "implemented"),
-                cap("post-edit hook entry", "mari hook run", "implemented"),
-                cap("edit-notify rules", "mari rules", "implemented"),
-                cap(
-                    "nudges",
-                    "mari nudge <list|add|remove|check>",
-                    "implemented",
-                ),
-                cap(
-                    "i18n structure checks",
-                    "mari i18n / mari localize",
-                    "implemented",
-                ),
-                cap(
-                    "whole-project validation",
-                    "mari check",
-                    "deterministic surface",
-                ),
+                cap("hooks", "mari hooks"),
+                cap("post-edit hook entry", "mari hook run"),
+                cap("edit-notify rules", "mari rules"),
+                cap("nudges", "mari nudge <list|add|remove|check>"),
+                cap("localization checks", "mari i18n / mari localize"),
+                cap("whole-project validation", "mari check"),
             ],
         },
         Group {
-            intent: "publishing",
+            intent: "documentation",
             capabilities: vec![
-                cap("asset archetypes", "mari asset", "deterministic surface"),
-                cap(
-                    "doc platform detection",
-                    "mari platform",
-                    "deterministic surface",
-                ),
-                cap(
-                    "docsite flow plan/status",
-                    "mari docsite <plan|status>",
-                    "deterministic surface",
-                ),
-                cap(
-                    "git-backed cloud sharing",
-                    "mari cloud init|connect --backend git [--force]",
-                    "implemented",
-                ),
-                cap(
-                    "s3-backed cloud sharing",
-                    "mari cloud init|connect --bucket B [--force]",
-                    "implemented",
-                ),
-                cap("cloud pull", "mari pull", "implemented"),
-                cap("humanizer vendoring", "mari humanize update", "implemented"),
+                cap("public surface extraction", "mari surface [dir]"),
+                cap("document archetypes", "mari asset"),
+                cap("doc platform detection", "mari platform"),
+                cap("docsite readiness", "mari docsite <plan|status>"),
             ],
         },
     ]
 }
 
-fn cap(capability: &'static str, command: &'static str, status: &'static str) -> Capability {
+fn cap(capability: &'static str, command: &'static str) -> Capability {
     Capability {
         capability,
         command,
-        status,
+        status: "implemented",
     }
 }
 
@@ -229,64 +98,14 @@ mod tests {
     use super::catalog;
 
     #[test]
-    fn track_and_sync_capabilities_match_spec_signatures() {
-        let groups = catalog();
-        let track = groups
+    fn catalog_matches_available_commands() {
+        let commands = catalog()
             .iter()
             .flat_map(|group| &group.capabilities)
-            .find(|cap| cap.capability == "track source refs")
-            .expect("track capability");
-        let sync = groups
-            .iter()
-            .flat_map(|group| &group.capabilities)
-            .find(|cap| cap.capability == "sync catalog sources")
-            .expect("sync capability");
-
-        assert_eq!(
-            track.command,
-            "mari track <source> <add|remove|list> [ref] [--list-key <key>]"
-        );
-        assert_eq!(sync.command, "mari sync [source] [--rebuild] [--since N]");
-        assert_eq!(track.status, "implemented");
-        assert_eq!(sync.status, "implemented");
-    }
-
-    #[test]
-    fn read_capabilities_include_thread_alias() {
-        let groups = catalog();
-        let thread = groups
-            .iter()
-            .flat_map(|group| &group.capabilities)
-            .find(|cap| cap.capability == "thread lookup")
-            .expect("thread capability");
-
-        assert_eq!(thread.command, "mari thread <ref>");
-        assert_eq!(thread.status, "implemented");
-    }
-
-    #[test]
-    fn cloud_init_capabilities_show_force_safety_flag() {
-        let groups = catalog();
-        let commands = groups
-            .iter()
-            .flat_map(|group| &group.capabilities)
-            .filter(|cap| cap.capability.contains("cloud sharing"))
             .map(|cap| cap.command)
             .collect::<Vec<_>>();
-
-        assert!(commands.iter().all(|command| command.contains("[--force]")));
-    }
-
-    #[test]
-    fn nudge_capability_includes_ci_check() {
-        let groups = catalog();
-        let nudge = groups
-            .iter()
-            .flat_map(|group| &group.capabilities)
-            .find(|cap| cap.capability == "nudges")
-            .expect("nudge capability");
-
-        assert_eq!(nudge.command, "mari nudge <list|add|remove|check>");
-        assert_eq!(nudge.status, "implemented");
+        assert!(commands.contains(&"mari detect"));
+        assert!(commands.contains(&"mari config"));
+        assert!(commands.contains(&"mari console"));
     }
 }

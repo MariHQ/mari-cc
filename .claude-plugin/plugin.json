@@ -1,18 +1,15 @@
 {
   "name": "mari",
   "displayName": "Mari",
-  "description": "Curate, search, and share your team's product knowledge layer \u2014 local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, Granola, git history, and local files \u2014 plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
-  "version": "0.3.0",
+  "description": "Deterministic prose-quality tooling, editorial workflows, localization checks, and post-edit guidance for Claude Code.",
+  "version": "0.4.0",
   "author": {
     "name": "Mari"
   },
   "homepage": "https://github.com/MariHQ/mari-cc",
   "keywords": [
-    "knowledge",
-    "search",
     "editorial",
     "deslop",
-    "factcheck",
     "documentation"
   ],
   "repository": "https://github.com/MariHQ/mari-cc"

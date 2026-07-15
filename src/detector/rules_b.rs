@@ -214,7 +214,13 @@ pub const NOMINAL: &[MapEntry] = &[
 ];
 
 fn nominalization(ctx: &Ctx, em: &mut Emitter) {
-    emit_map(ctx, em, "nominalization", Severity::Advisory, "nominalization");
+    emit_map(
+        ctx,
+        em,
+        "nominalization",
+        Severity::Advisory,
+        "nominalization",
+    );
 }
 
 pub const WEASEL: &[&str] = &[

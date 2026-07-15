@@ -18,8 +18,6 @@ pub struct DetectArgs {
     pub strict: bool,
     pub quiet: bool,
     pub style: Option<String>,
-    pub models: bool,
-    pub slop_spans: bool,
     pub grammar: bool,
     pub no_config: bool,
     /// `--strings <dir>`: lint user-facing copy extracted from code (§5.4).
@@ -485,9 +483,6 @@ pub fn run_over(paths: &[String], s: &DetectorSettings) -> Vec<FileResult> {
 
 pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     let s = settings(args.no_config, args.style.as_deref());
-    if args.slop_spans {
-        eprintln!("note: zero-shot slop-span extraction is not available in this build (--slop-spans ignored)");
-    }
     // A named path that doesn't exist is a usage error, not silent "clean" —
     // otherwise a typo'd path reads as a passing file.
     if !args.stdin && !args.paths.is_empty() {
@@ -548,21 +543,7 @@ pub fn cmd_detect(args: DetectArgs) -> Result<i32> {
     }
     results.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // Machine-likelihood blend (§12 step 5): compute per-file only when the
-    // model tier is requested with the score. One model load reused per file.
-    let machine: Vec<Option<f64>> = if args.models && args.score {
-        results
-            .iter()
-            .map(|r| super::super::attn::machine_likelihood(&r.text))
-            .collect()
-    } else {
-        if args.models && !args.score {
-            eprintln!(
-                "note: --models augments --score; add --score to see the machine-likelihood blend"
-            );
-        }
-        vec![None; results.len()]
-    };
+    let machine = vec![None; results.len()];
 
     let has_error = results
         .iter()

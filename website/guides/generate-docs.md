@@ -27,7 +27,7 @@ Scaffolding writes a minimal, valid site and refuses to overwrite an existing se
 mari surface
 ```
 
-Claude reads the surface, plus `mari explore` and the catalog, so each page traces back to real code rather than to guesswork.
+Claude reads the surface and the relevant source files, so each page traces back to real code rather than guesswork.
 
 ## Run the docsite flow
 
@@ -51,4 +51,4 @@ The CLI never writes prose. Page authoring stays with Claude.
 mari check --strict
 ```
 
-Add `--deep` for the opt-in attention passes: public symbols the docs never mention, and doc sentences anchored to no code. Cap the cost with `--limit N`. See [Keep docs and code in sync](keep-docs-fresh.md) for the maintenance loop that keeps the site current.
+Use `mari surface` to compare the finished pages with the repository's public symbols and configuration keys. See [Keep docs and code in sync](keep-docs-fresh.md) for the maintenance loop that keeps the site current.

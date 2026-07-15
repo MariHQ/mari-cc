@@ -140,7 +140,9 @@ impl ListDef {
             Kind::Weighted => Value::Array(
                 self.weighted_default
                     .iter()
-                    .map(|(w, b, wt)| Value::Array(vec![Value::from(*w), Value::from(*b), Value::from(*wt)]))
+                    .map(|(w, b, wt)| {
+                        Value::Array(vec![Value::from(*w), Value::from(*b), Value::from(*wt)])
+                    })
                     .collect(),
             ),
             Kind::Map => Value::Array(
@@ -169,67 +171,377 @@ pub fn registry() -> &'static [ListDef] {
     REG.get_or_init(|| {
         vec![
             // ── Family A — AI-slop tells ──────────────────────────────────
-            ListDef::weighted("overused-word", "AI-overused words", AiSlop, None, rules_a::OVERUSED),
-            ListDef::words("marketing-buzzword", "Marketing buzzwords", AiSlop, None, Phrases, rules_a::MARKETING),
-            ListDef::words("cliche-opener", "Cliché openers", AiSlop, None, Phrases, rules_a::CLICHE_OPENER),
-            ListDef::words("significance-boilerplate", "Significance boilerplate", AiSlop, None, Phrases, rules_a::SIGNIFICANCE_BOILERPLATE),
-            ListDef::words("sycophancy", "Sycophancy", AiSlop, None, Phrases, rules_a::SYCOPHANCY),
-            ListDef::words("hedge-overuse", "Hedge phrases", AiSlop, None, Phrases, rules_a::HEDGES),
-            ListDef::words("conversational-scaffolding", "Conversational scaffolding", AiSlop, None, Phrases, rules_a::CONVERSATIONAL_SCAFFOLDING),
-            ListDef::words("hype-intensifier", "Hype intensifiers", AiSlop, None, Phrases, rules_a::HYPE_INTENSIFIER),
-            ListDef::words("serves-as-copula", "Inflated copulas", AiSlop, None, Phrases, rules_a::SERVES_AS_COPULA),
-            ListDef::words("media-coverage-boilerplate", "Media-coverage boilerplate", AiSlop, None, Phrases, rules_a::MEDIA_COVERAGE),
-            ListDef::words("future-outlook-speculation", "Future-outlook speculation", AiSlop, None, Phrases, rules_a::FUTURE_OUTLOOK),
-            ListDef::words("conclusion-restate", "Conclusion markers", AiSlop, None, Words, rules_a::CONCLUSION_MARKERS),
-            ListDef::words("transition-scaffolding", "Transition scaffolding", AiSlop, None, Words, rules_a::TRANSITIONS),
-
+            ListDef::weighted(
+                "overused-word",
+                "AI-overused words",
+                AiSlop,
+                None,
+                rules_a::OVERUSED,
+            ),
+            ListDef::words(
+                "marketing-buzzword",
+                "Marketing buzzwords",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::MARKETING,
+            ),
+            ListDef::words(
+                "cliche-opener",
+                "Cliché openers",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::CLICHE_OPENER,
+            ),
+            ListDef::words(
+                "significance-boilerplate",
+                "Significance boilerplate",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::SIGNIFICANCE_BOILERPLATE,
+            ),
+            ListDef::words(
+                "sycophancy",
+                "Sycophancy",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::SYCOPHANCY,
+            ),
+            ListDef::words(
+                "hedge-overuse",
+                "Hedge phrases",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::HEDGES,
+            ),
+            ListDef::words(
+                "conversational-scaffolding",
+                "Conversational scaffolding",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::CONVERSATIONAL_SCAFFOLDING,
+            ),
+            ListDef::words(
+                "hype-intensifier",
+                "Hype intensifiers",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::HYPE_INTENSIFIER,
+            ),
+            ListDef::words(
+                "serves-as-copula",
+                "Inflated copulas",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::SERVES_AS_COPULA,
+            ),
+            ListDef::words(
+                "media-coverage-boilerplate",
+                "Media-coverage boilerplate",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::MEDIA_COVERAGE,
+            ),
+            ListDef::words(
+                "future-outlook-speculation",
+                "Future-outlook speculation",
+                AiSlop,
+                None,
+                Phrases,
+                rules_a::FUTURE_OUTLOOK,
+            ),
+            ListDef::words(
+                "conclusion-restate",
+                "Conclusion markers",
+                AiSlop,
+                None,
+                Words,
+                rules_a::CONCLUSION_MARKERS,
+            ),
+            ListDef::words(
+                "transition-scaffolding",
+                "Transition scaffolding",
+                AiSlop,
+                None,
+                Words,
+                rules_a::TRANSITIONS,
+            ),
             // ── Family B — clarity & concision ────────────────────────────
-            ListDef::map("wordy-phrase", "Wordy phrases", Clarity, None, rules_b::WORDY),
-            ListDef::map("complex-word", "Complex words", Clarity, None, rules_b::COMPLEX),
-            ListDef::map("nominalization", "Nominalizations", Clarity, None, rules_b::NOMINAL),
-            ListDef::words("weasel-word", "Weasel words", Clarity, None, Words, rules_b::WEASEL),
-            ListDef::words("redundant-pair", "Redundant pairs", Clarity, None, Phrases, rules_b::REDUNDANT_PAIRS),
-
+            ListDef::map(
+                "wordy-phrase",
+                "Wordy phrases",
+                Clarity,
+                None,
+                rules_b::WORDY,
+            ),
+            ListDef::map(
+                "complex-word",
+                "Complex words",
+                Clarity,
+                None,
+                rules_b::COMPLEX,
+            ),
+            ListDef::map(
+                "nominalization",
+                "Nominalizations",
+                Clarity,
+                None,
+                rules_b::NOMINAL,
+            ),
+            ListDef::words(
+                "weasel-word",
+                "Weasel words",
+                Clarity,
+                None,
+                Words,
+                rules_b::WEASEL,
+            ),
+            ListDef::words(
+                "redundant-pair",
+                "Redundant pairs",
+                Clarity,
+                None,
+                Phrases,
+                rules_b::REDUNDANT_PAIRS,
+            ),
             // ── Family C — shared style ───────────────────────────────────
-            ListDef::map("style-swap", "Style term swaps", Style, None, rules_c::SWAPS),
-            ListDef::map("contraction", "Contractions", Style, None, rules_c::CONTRACTIONS),
-            ListDef::map("singular-they", "Singular they", Style, None, rules_c::SINGULAR_THEY),
-            ListDef::words("redundant-acronym", "Redundant acronyms", Style, None, Phrases, rules_c::REDUNDANT_ACRONYMS),
-            ListDef::groups("terminology-consistency", "Terminology variants", Style, None, rules_c::TERM_GROUPS),
-
+            ListDef::map(
+                "style-swap",
+                "Style term swaps",
+                Style,
+                None,
+                rules_c::SWAPS,
+            ),
+            ListDef::map(
+                "contraction",
+                "Contractions",
+                Style,
+                None,
+                rules_c::CONTRACTIONS,
+            ),
+            ListDef::map(
+                "singular-they",
+                "Singular they",
+                Style,
+                None,
+                rules_c::SINGULAR_THEY,
+            ),
+            ListDef::words(
+                "redundant-acronym",
+                "Redundant acronyms",
+                Style,
+                None,
+                Phrases,
+                rules_c::REDUNDANT_ACRONYMS,
+            ),
+            ListDef::groups(
+                "terminology-consistency",
+                "Terminology variants",
+                Style,
+                None,
+                rules_c::TERM_GROUPS,
+            ),
             // ── Family D — inclusive & accessible ─────────────────────────
-            ListDef::map("gendered-noun", "Gendered nouns", Inclusive, None, rules_d::GENDERED),
-            ListDef::map("ableist-term", "Ableist terms (warn)", Inclusive, None, rules_d::ABLEIST_WARN),
-            ListDef::map("ableist-term-advisory", "Ableist terms (advisory)", Inclusive, None, rules_d::ABLEIST_ADVISORY),
-            ListDef::words("vague-link-text", "Vague link text", Inclusive, None, Words, rules_d::VAGUE_LINK),
-            ListDef::map("person-first", "Person-first language", Inclusive, None, rules_d::PERSON_FIRST),
-            ListDef::map("tech-inclusive", "Non-inclusive tech (warn)", Inclusive, None, rules_d::TECH_WARN),
-            ListDef::map("tech-inclusive-advisory", "Non-inclusive tech (advisory)", Inclusive, None, rules_d::TECH_ADVISORY),
-            ListDef::map("violent-metaphor", "Violent metaphors", Inclusive, None, rules_d::VIOLENT),
-            ListDef::map("dated-term", "Dated / biased terms", Inclusive, None, rules_d::AGEIST),
-
+            ListDef::map(
+                "gendered-noun",
+                "Gendered nouns",
+                Inclusive,
+                None,
+                rules_d::GENDERED,
+            ),
+            ListDef::map(
+                "ableist-term",
+                "Ableist terms (warn)",
+                Inclusive,
+                None,
+                rules_d::ABLEIST_WARN,
+            ),
+            ListDef::map(
+                "ableist-term-advisory",
+                "Ableist terms (advisory)",
+                Inclusive,
+                None,
+                rules_d::ABLEIST_ADVISORY,
+            ),
+            ListDef::words(
+                "vague-link-text",
+                "Vague link text",
+                Inclusive,
+                None,
+                Words,
+                rules_d::VAGUE_LINK,
+            ),
+            ListDef::map(
+                "person-first",
+                "Person-first language",
+                Inclusive,
+                None,
+                rules_d::PERSON_FIRST,
+            ),
+            ListDef::map(
+                "tech-inclusive",
+                "Non-inclusive tech (warn)",
+                Inclusive,
+                None,
+                rules_d::TECH_WARN,
+            ),
+            ListDef::map(
+                "tech-inclusive-advisory",
+                "Non-inclusive tech (advisory)",
+                Inclusive,
+                None,
+                rules_d::TECH_ADVISORY,
+            ),
+            ListDef::map(
+                "violent-metaphor",
+                "Violent metaphors",
+                Inclusive,
+                None,
+                rules_d::VIOLENT,
+            ),
+            ListDef::map(
+                "dated-term",
+                "Dated / biased terms",
+                Inclusive,
+                None,
+                rules_d::AGEIST,
+            ),
             // ── Microsoft pack ────────────────────────────────────────────
-            ListDef::words("microsoft-accessibility", "Accessibility terms", Inclusive, Some("microsoft"), Phrases, pack_microsoft::ACCESSIBILITY_TERMS),
-            ListDef::map("microsoft-gender-bias", "Gender-biased terms", Inclusive, Some("microsoft"), pack_microsoft::GENDER_BIAS),
-            ListDef::map("microsoft-contractions", "Microsoft contractions", Style, Some("microsoft"), pack_microsoft::MS_CONTRACTIONS),
-            ListDef::map("microsoft-term-swap", "Microsoft term swaps", Style, Some("microsoft"), pack_microsoft::TERM_SWAPS),
-            ListDef::map("microsoft-wordiness", "Microsoft wordiness", Clarity, Some("microsoft"), pack_microsoft::MS_WORDINESS),
-            ListDef::words("microsoft-adverbs", "Microsoft adverbs", Clarity, Some("microsoft"), Words, pack_microsoft::MS_ADVERBS),
-            ListDef::words("microsoft-a-z", "Microsoft A–Z watch words", Style, Some("microsoft"), Words, pack_microsoft::AZ_WORDLIST),
-
+            ListDef::words(
+                "microsoft-accessibility",
+                "Accessibility terms",
+                Inclusive,
+                Some("microsoft"),
+                Phrases,
+                pack_microsoft::ACCESSIBILITY_TERMS,
+            ),
+            ListDef::map(
+                "microsoft-gender-bias",
+                "Gender-biased terms",
+                Inclusive,
+                Some("microsoft"),
+                pack_microsoft::GENDER_BIAS,
+            ),
+            ListDef::map(
+                "microsoft-contractions",
+                "Microsoft contractions",
+                Style,
+                Some("microsoft"),
+                pack_microsoft::MS_CONTRACTIONS,
+            ),
+            ListDef::map(
+                "microsoft-term-swap",
+                "Microsoft term swaps",
+                Style,
+                Some("microsoft"),
+                pack_microsoft::TERM_SWAPS,
+            ),
+            ListDef::map(
+                "microsoft-wordiness",
+                "Microsoft wordiness",
+                Clarity,
+                Some("microsoft"),
+                pack_microsoft::MS_WORDINESS,
+            ),
+            ListDef::words(
+                "microsoft-adverbs",
+                "Microsoft adverbs",
+                Clarity,
+                Some("microsoft"),
+                Words,
+                pack_microsoft::MS_ADVERBS,
+            ),
+            ListDef::words(
+                "microsoft-a-z",
+                "Microsoft A–Z watch words",
+                Style,
+                Some("microsoft"),
+                Words,
+                pack_microsoft::AZ_WORDLIST,
+            ),
             // ── Google pack ───────────────────────────────────────────────
-            ListDef::map("google-latinism", "Latinisms", Style, Some("google"), pack_google::LATINISMS),
-            ListDef::map("google-american-spelling", "British → American", Style, Some("google"), pack_google::AMERICAN),
-            ListDef::map("google-directional", "Directional references", Style, Some("google"), pack_google::DIRECTIONAL),
-            ListDef::map("google-word-swap", "Google word swaps", Style, Some("google"), pack_google::GOOGLE_WORDS),
-            ListDef::words("google-minimizing", "Minimizing words", Clarity, Some("google"), Words, pack_google::MINIMIZING),
-            ListDef::words("google-preannounce", "Time-sensitive wording", Style, Some("google"), Phrases, pack_google::PREANNOUNCE),
-
+            ListDef::map(
+                "google-latinism",
+                "Latinisms",
+                Style,
+                Some("google"),
+                pack_google::LATINISMS,
+            ),
+            ListDef::map(
+                "google-american-spelling",
+                "British → American",
+                Style,
+                Some("google"),
+                pack_google::AMERICAN,
+            ),
+            ListDef::map(
+                "google-directional",
+                "Directional references",
+                Style,
+                Some("google"),
+                pack_google::DIRECTIONAL,
+            ),
+            ListDef::map(
+                "google-word-swap",
+                "Google word swaps",
+                Style,
+                Some("google"),
+                pack_google::GOOGLE_WORDS,
+            ),
+            ListDef::words(
+                "google-minimizing",
+                "Minimizing words",
+                Clarity,
+                Some("google"),
+                Words,
+                pack_google::MINIMIZING,
+            ),
+            ListDef::words(
+                "google-preannounce",
+                "Time-sensitive wording",
+                Style,
+                Some("google"),
+                Phrases,
+                pack_google::PREANNOUNCE,
+            ),
             // ── Plain-language pack ───────────────────────────────────────
-            ListDef::map("plain-hidden-verb", "Hidden verbs", Clarity, Some("plain"), pack_plain::HIDDEN_VERBS),
-            ListDef::map("plain-required-to", "Required-to phrases", Clarity, Some("plain"), pack_plain::REQUIRED_TO),
-            ListDef::map("plain-legalese-phrase", "Legalese phrases", Clarity, Some("plain"), pack_plain::LEGALESE_PHRASES),
-            ListDef::words("plain-legalese-word", "Legalese words", Clarity, Some("plain"), Words, pack_plain::LEGALESE_WORDS),
+            ListDef::map(
+                "plain-hidden-verb",
+                "Hidden verbs",
+                Clarity,
+                Some("plain"),
+                pack_plain::HIDDEN_VERBS,
+            ),
+            ListDef::map(
+                "plain-required-to",
+                "Required-to phrases",
+                Clarity,
+                Some("plain"),
+                pack_plain::REQUIRED_TO,
+            ),
+            ListDef::map(
+                "plain-legalese-phrase",
+                "Legalese phrases",
+                Clarity,
+                Some("plain"),
+                pack_plain::LEGALESE_PHRASES,
+            ),
+            ListDef::words(
+                "plain-legalese-word",
+                "Legalese words",
+                Clarity,
+                Some("plain"),
+                Words,
+                pack_plain::LEGALESE_WORDS,
+            ),
         ]
     })
 }
@@ -238,12 +550,14 @@ fn def(id: &str) -> Option<&'static ListDef> {
     registry().iter().find(|d| d.id == id)
 }
 
+type WeightedEntry = (String, String, f64);
+
 #[derive(Default)]
 struct Cache {
     words: HashMap<String, Arc<Vec<String>>>,
     word_re: HashMap<String, Arc<regex::Regex>>,
     phrase_re: HashMap<String, Arc<fancy_regex::Regex>>,
-    weighted: HashMap<String, Arc<Vec<(String, String, f64)>>>,
+    weighted: HashMap<String, Arc<Vec<WeightedEntry>>>,
     map: HashMap<String, Arc<Vec<(String, String)>>>,
     map_re: HashMap<String, Arc<fancy_regex::Regex>>,
     groups: HashMap<String, Arc<Vec<Vec<String>>>>,
@@ -261,7 +575,11 @@ impl Lists {
     /// Build from the `detector.lists` config subtree (any non-object → none).
     pub fn from_config(lists: &Value) -> Arc<Lists> {
         Arc::new(Lists {
-            over: if lists.is_object() { lists.clone() } else { Value::Null },
+            over: if lists.is_object() {
+                lists.clone()
+            } else {
+                Value::Null
+            },
             cache: Mutex::new(Cache::default()),
         })
     }
@@ -295,7 +613,11 @@ impl Lists {
                 .unwrap_or_default(),
         };
         let arc = Arc::new(resolved);
-        self.cache.lock().unwrap().words.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .words
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -306,7 +628,11 @@ impl Lists {
         }
         let words = self.words(id);
         let arc = Arc::new(helpers::word_list(&words));
-        self.cache.lock().unwrap().word_re.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .word_re
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -317,7 +643,11 @@ impl Lists {
         }
         let words = self.words(id);
         let arc = Arc::new(helpers::phrase_list(&words));
-        self.cache.lock().unwrap().phrase_re.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .phrase_re
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -347,7 +677,11 @@ impl Lists {
                 .unwrap_or_default(),
         };
         let arc = Arc::new(resolved);
-        self.cache.lock().unwrap().weighted.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .weighted
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -376,7 +710,11 @@ impl Lists {
                 .unwrap_or_default(),
         };
         let arc = Arc::new(resolved);
-        self.cache.lock().unwrap().map.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .map
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -388,7 +726,11 @@ impl Lists {
         let map = self.map(id);
         let froms: Vec<&str> = map.iter().map(|(f, _)| f.as_str()).collect();
         let arc = Arc::new(helpers::phrase_list(&froms));
-        self.cache.lock().unwrap().map_re.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .map_re
+            .insert(id.to_string(), arc.clone());
         arc
     }
 
@@ -430,7 +772,11 @@ impl Lists {
                 .unwrap_or_default(),
         };
         let arc = Arc::new(resolved);
-        self.cache.lock().unwrap().groups.insert(id.to_string(), arc.clone());
+        self.cache
+            .lock()
+            .unwrap()
+            .groups
+            .insert(id.to_string(), arc.clone());
         arc
     }
 }
@@ -457,22 +803,50 @@ mod tests {
         for d in registry() {
             assert!(seen.insert(d.id), "duplicate list id {}", d.id);
         }
+        assert_eq!(registry().len(), 49, "update the README and console count");
     }
 
     #[test]
     fn phrase_override_replaces_default() {
         // "synergy" is a default marketing buzzword; "wombat" is not.
-        assert_eq!(count("Pure synergy here.", "plain", json!({}), "marketing-buzzword"), 1);
+        assert_eq!(
+            count(
+                "Pure synergy here.",
+                "plain",
+                json!({}),
+                "marketing-buzzword"
+            ),
+            1
+        );
         // Full-replace: synergy no longer flagged, wombat now is.
         let over = json!({ "marketing-buzzword": ["wombat"] });
-        assert_eq!(count("Pure synergy here.", "plain", over.clone(), "marketing-buzzword"), 0);
-        assert_eq!(count("A wild wombat appears.", "plain", over, "marketing-buzzword"), 1);
+        assert_eq!(
+            count(
+                "Pure synergy here.",
+                "plain",
+                over.clone(),
+                "marketing-buzzword"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                "A wild wombat appears.",
+                "plain",
+                over,
+                "marketing-buzzword"
+            ),
+            1
+        );
     }
 
     #[test]
     fn empty_override_disables_a_list() {
         let over = json!({ "marketing-buzzword": [] });
-        assert_eq!(count("Pure synergy here.", "plain", over, "marketing-buzzword"), 0);
+        assert_eq!(
+            count("Pure synergy here.", "plain", over, "marketing-buzzword"),
+            0
+        );
     }
 
     #[test]
@@ -482,7 +856,11 @@ mod tests {
         s.lists = Lists::from_config(&json!({ "complex-word": [["gonzo", "plain"]] }));
         let f = detect_text("t.md", "We gonzo the tool. We utilize it.", &s).findings;
         let complex: Vec<_> = f.iter().filter(|f| f.rule_id == "complex-word").collect();
-        assert_eq!(complex.len(), 1, "only the overridden term fires: {complex:?}");
+        assert_eq!(
+            complex.len(),
+            1,
+            "only the overridden term fires: {complex:?}"
+        );
         assert!(complex[0].message.ends_with("'plain'"));
     }
 
@@ -490,7 +868,10 @@ mod tests {
     fn malformed_override_falls_back_to_default() {
         // A non-array value is ignored; the built-in list still applies.
         let over = json!({ "marketing-buzzword": "not an array" });
-        assert_eq!(count("Pure synergy here.", "plain", over, "marketing-buzzword"), 1);
+        assert_eq!(
+            count("Pure synergy here.", "plain", over, "marketing-buzzword"),
+            1
+        );
     }
 
     #[test]
@@ -498,7 +879,22 @@ mod tests {
         // Replace the overused list with a single high-weight word.
         let over = json!({ "overused-word": [["frobnicate", "frobnicate", 30.0]] });
         // Two distinct default words would normally fire; now only frobnicate counts.
-        assert_eq!(count("We delve and showcase.", "plain", over.clone(), "overused-word"), 0);
-        assert!(count("Frobnicate the frobnicate now.", "plain", over, "overused-word") >= 1);
+        assert_eq!(
+            count(
+                "We delve and showcase.",
+                "plain",
+                over.clone(),
+                "overused-word"
+            ),
+            0
+        );
+        assert!(
+            count(
+                "Frobnicate the frobnicate now.",
+                "plain",
+                over,
+                "overused-word"
+            ) >= 1
+        );
     }
 }

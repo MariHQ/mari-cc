@@ -37,8 +37,7 @@ impl Severity {
     }
 }
 
-/// Rule families per SPEC §11: A ai-slop, B clarity, C style, D inclusive,
-/// grounding, grammar.
+/// Rule families: AI slop, clarity, style, inclusive language, and grammar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Family {
     #[serde(rename = "ai-slop")]
@@ -49,9 +48,6 @@ pub enum Family {
     Style,
     #[serde(rename = "inclusive")]
     Inclusive,
-    #[serde(rename = "grounding")]
-    #[allow(dead_code)] // §11.10 family; factcheck currently renders its own findings
-    Grounding,
     #[serde(rename = "grammar")]
     Grammar,
 }
@@ -63,7 +59,6 @@ impl Family {
             Family::Clarity => "clarity",
             Family::Style => "style",
             Family::Inclusive => "inclusive",
-            Family::Grounding => "grounding",
             Family::Grammar => "grammar",
         }
     }

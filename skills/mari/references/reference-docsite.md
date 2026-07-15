@@ -116,17 +116,10 @@ deterministic; healing the surrounding prose is yours.
 
 Then:
 
-- **Completeness + staleness (attention):** `mari check --deep --limit 0`.
-  Coverage flags public symbols the docs never engage — each one is either a page to write
-  or a deliberate omission to note. Grounding flags doc sentences that engage none of the
-  surface — re-verify each against the code (renamed flag, removed command, invented
-  behavior). Treat both as leads, not verdicts: conceptual prose legitimately floats above
-  the surface. Opt-in cost: ~3s per doc/chunk; needs the native attention binary + a GGUF
-  model, and degrades gracefully to a skip message without them.
 - Build the site with the platform's own command (the scaffold printed it, e.g.
   `mkdocs build --strict`) so the generator verifies what Mari can't.
 - If translations exist: `mari i18n conform docs`.
-- Optionally `factcheck` the top-level claims against `FACTS.md` if the project keeps one.
+- Verify names, numbers, and product claims against the repository's source material.
 
 ## Phase 7 — keep it alive
 

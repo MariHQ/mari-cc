@@ -1,12 +1,6 @@
 import {
   LayoutGrid,
-  Plug,
-  Library,
-  Search,
-  Tag,
-  Share2,
   BookMarked,
-  ListChecks,
   LayoutTemplate,
   Languages,
   Globe,
@@ -14,8 +8,6 @@ import {
   SpellCheck,
   BellRing,
   SlidersHorizontal,
-  Activity,
-  Cloud,
   type LucideIcon,
 } from "lucide-react";
 
@@ -24,22 +16,14 @@ import {
 // listed here — there is no auth, billing, org, or hosted governance.
 export type StepId =
   | "overview"
-  | "sources"
-  | "documents"
-  | "search"
-  | "lineage"
-  | "tags"
   | "glossary"
-  | "facts"
   | "templates"
   | "localization"
   | "docsite"
   | "detect"
   | "rules"
   | "nudges"
-  | "cloud"
-  | "config"
-  | "status";
+  | "config";
 
 export interface Step {
   id: StepId;
@@ -52,23 +36,10 @@ export interface Step {
 
 export const STEPS: Step[] = [
   { id: "overview", name: "Overview", icon: LayoutGrid,
-    description: "Your knowledge base at a glance: documents, connectors, freshness, and recent syncs." },
+    description: "Your deterministic prose system at a glance." },
 
-  { id: "sources", name: "Sources", icon: Plug, group: "Content",
-    description: "Connectors, what they track, and their sync status. Track refs and sync from here." },
-  { id: "documents", name: "Documents", icon: Library, group: "Content",
-    description: "Every indexed document. Read the body, see its chunks, tag it, trace its lineage." },
-  { id: "search", name: "Search", icon: Search, group: "Content",
-    description: "Hybrid semantic + keyword search across the whole knowledge base." },
-  { id: "lineage", name: "Lineage", icon: Share2, group: "Content",
-    description: "Span-to-span maintenance edges. Confirm or reject proposed couplings." },
-
-  { id: "tags", name: "Tags", icon: Tag, group: "Curation",
-    description: "Curation tags — canonical, stale, deprecated, draft — and the status vocabulary." },
   { id: "glossary", name: "Glossary", icon: BookMarked, group: "Curation",
     description: "Preferred terms and their variants, from STYLE.md. Generate a STYLE.md here." },
-  { id: "facts", name: "Facts", icon: ListChecks, group: "Curation",
-    description: "The claims ledger from FACTS.md that factcheck grounds against." },
   { id: "templates", name: "Templates", icon: LayoutTemplate, group: "Curation",
     description: "Document archetypes (runbook, ADR, RFC, …). Scaffold a new doc from a template." },
 
@@ -84,12 +55,8 @@ export const STEPS: Step[] = [
   { id: "nudges", name: "Nudges", icon: BellRing, group: "Governance",
     description: "Hand-declared maintenance couplings: when this changes, remember to update that." },
 
-  { id: "cloud", name: "Cloud", icon: Cloud, pinBottom: true,
-    description: "Team sharing: push and pull the knowledge base to an S3 (or git) warehouse." },
   { id: "config", name: "Config", icon: SlidersHorizontal, pinBottom: true,
-    description: "Effective configuration, clustered by area. Edit repo or global values." },
-  { id: "status", name: "Status", icon: Activity, pinBottom: true,
-    description: "Workspace, embedding model, catalog, and cloud status." },
+    description: "Effective repository configuration, clustered by area." },
 ];
 
 export const stepById = (id: StepId): Step => STEPS.find((s) => s.id === id) ?? STEPS[0];

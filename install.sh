@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install the `mari` binary that the Claude Code plugin wraps:
 #   curl -fsSL https://raw.githubusercontent.com/MariHQ/mari-cc/main/install.sh | sh
-# It's a single self-contained binary (DuckDB + llama.cpp statically linked).
+# It installs as a single self-contained binary.
 set -euo pipefail
 
 REPO="MariHQ/mari-cc"

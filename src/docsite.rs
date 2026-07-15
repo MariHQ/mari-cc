@@ -81,9 +81,9 @@ fn build_plan() -> DocsitePlan {
                 output: "document archetypes and required sections for generated pages",
             },
             DocsitePhase {
-                phase: "ground pages",
-                command: "mari explore <question-or-file> --k 8",
-                output: "indexed source snippets for each page claim",
+                phase: "inspect surface",
+                command: "mari surface",
+                output: "exported code and documentation surface",
             },
             DocsitePhase {
                 phase: "community files",
@@ -92,8 +92,8 @@ fn build_plan() -> DocsitePlan {
             },
             DocsitePhase {
                 phase: "validate",
-                command: "mari check --strict --deep",
-                output: "links, nav, archetype structure, and API surface coverage",
+                command: "mari check --strict",
+                output: "links, nav, and archetype structure",
             },
             DocsitePhase {
                 phase: "keep alive",
@@ -458,9 +458,9 @@ mod tests {
                     output: "ia",
                 },
                 DocsitePhase {
-                    phase: "ground pages",
-                    command: "mari explore <question-or-file> --k 8",
-                    output: "grounding",
+                    phase: "inspect surface",
+                    command: "mari surface",
+                    output: "surface",
                 },
                 DocsitePhase {
                     phase: "community files",
@@ -469,7 +469,7 @@ mod tests {
                 },
                 DocsitePhase {
                     phase: "validate",
-                    command: "mari check --strict --deep",
+                    command: "mari check --strict",
                     output: "validation",
                 },
                 DocsitePhase {
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn real_commands_come_from_the_clap_definition() {
         let cmds = real_commands();
-        for expected in ["detect", "docsite", "check", "surface", "sync"] {
+        for expected in ["detect", "docsite", "check", "surface"] {
             assert!(
                 cmds.contains(&expected.to_string()),
                 "missing {expected} in {cmds:?}"
@@ -505,7 +505,6 @@ mod tests {
     #[test]
     fn config_keys_flatten_to_dotted_leaf_paths() {
         let keys = config_keys();
-        assert!(keys.iter().any(|k| k == "search.k"));
         assert!(keys.iter().any(|k| k == "detector.styleGuide"));
         assert!(keys.iter().any(|k| k == "detector.ignoreSpans"));
     }

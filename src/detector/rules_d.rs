@@ -36,7 +36,14 @@ pub fn rules() -> Vec<Rule> {
 /// Emit one finding per match of a config-resolved `Map` list; `rule_id` is the
 /// finding's rule, `list_id` the `detector.lists` key. Message ends with the
 /// replacement in single quotes.
-fn run_map(ctx: &Ctx, em: &mut Emitter, rule_id: &str, list_id: &str, severity: Severity, label: &str) {
+fn run_map(
+    ctx: &Ctx,
+    em: &mut Emitter,
+    rule_id: &str,
+    list_id: &str,
+    severity: Severity,
+    label: &str,
+) {
     let re = ctx.lists.map_regex(list_id);
     helpers::scan_fancy(ctx, &re, |off, len, m| {
         if let Some(to) = ctx.lists.map_lookup(list_id, m) {
@@ -149,8 +156,22 @@ pub const ABLEIST_ADVISORY: &[MapEntry] = &[
 ];
 
 fn ableist_language(ctx: &Ctx, em: &mut Emitter) {
-    run_map(ctx, em, "ableist-language", "ableist-term", Severity::Warn, "ableist term");
-    run_map(ctx, em, "ableist-language", "ableist-term-advisory", Severity::Advisory, "ableist idiom");
+    run_map(
+        ctx,
+        em,
+        "ableist-language",
+        "ableist-term",
+        Severity::Warn,
+        "ableist term",
+    );
+    run_map(
+        ctx,
+        em,
+        "ableist-language",
+        "ableist-term-advisory",
+        Severity::Advisory,
+        "ableist idiom",
+    );
 }
 
 // ---------------------------------------------------------------- vague links
@@ -238,7 +259,14 @@ pub const PERSON_FIRST: &[MapEntry] = &[
 ];
 
 fn person_first_language(ctx: &Ctx, em: &mut Emitter) {
-    run_map(ctx, em, "person-first-language", "person-first", Severity::Warn, "person-first language");
+    run_map(
+        ctx,
+        em,
+        "person-first-language",
+        "person-first",
+        Severity::Warn,
+        "person-first language",
+    );
 }
 
 // ---------------------------------------------------------------- gendered address
@@ -390,7 +418,14 @@ pub const AGEIST: &[MapEntry] = &[
 ];
 
 fn ageist_classist_cultural(ctx: &Ctx, em: &mut Emitter) {
-    run_map(ctx, em, "ageist-classist-cultural", "dated-term", Severity::Advisory, "loaded term");
+    run_map(
+        ctx,
+        em,
+        "ageist-classist-cultural",
+        "dated-term",
+        Severity::Advisory,
+        "loaded term",
+    );
 }
 
 // ---------------------------------------------------------------- alt text

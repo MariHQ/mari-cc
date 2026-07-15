@@ -6,23 +6,14 @@ import { STEPS, stepById, type StepId, type Step } from "@saas/lib/pipeline";
 import { focusRing } from "./console-ui";
 
 import { OverviewGroup } from "./groups/OverviewGroup";
-import { SourcesGroup } from "./groups/SourcesGroup";
-import { DocumentsGroup } from "./groups/DocumentsGroup";
-import { SearchGroup } from "./groups/SearchGroup";
-import { TagsGroup } from "./groups/TagsGroup";
-import { LineageGroup } from "./groups/LineageGroup";
 import { GlossaryGroup } from "./groups/GlossaryGroup";
-import { FactsGroup } from "./groups/FactsGroup";
 import { TemplatesGroup } from "./groups/TemplatesGroup";
 import { LocalizationGroup } from "./groups/LocalizationGroup";
 import { DocsiteGroup } from "./groups/DocsiteGroup";
 import { DetectGroup } from "./groups/DetectGroup";
 import { RulesGroup } from "./groups/RulesGroup";
 import { NudgesGroup } from "./groups/NudgesGroup";
-import { CloudGroup } from "./groups/CloudGroup";
 import { ConfigGroup } from "./groups/ConfigGroup";
-import { StatusGroup } from "./groups/StatusGroup";
-import { ProjectSwitcher } from "./ProjectSwitcher";
 import { RenderCrashBoundary } from "./RenderCrashBoundary";
 import { CommandPalette } from "./CommandPalette";
 import { Toaster } from "./feedback";
@@ -33,22 +24,14 @@ const DEFAULT_STEP: StepId = "overview";
 const renderGroup = (step: Step) => {
   switch (step.id) {
     case "overview":  return <OverviewGroup />;
-    case "sources":   return <SourcesGroup />;
-    case "documents": return <DocumentsGroup />;
-    case "search":    return <SearchGroup />;
-    case "tags":      return <TagsGroup />;
-    case "lineage":   return <LineageGroup />;
     case "glossary":  return <GlossaryGroup />;
-    case "facts":     return <FactsGroup />;
     case "templates": return <TemplatesGroup />;
     case "localization": return <LocalizationGroup />;
     case "docsite":   return <DocsiteGroup />;
     case "detect":    return <DetectGroup />;
     case "rules":     return <RulesGroup />;
     case "nudges":    return <NudgesGroup />;
-    case "cloud":     return <CloudGroup />;
     case "config":    return <ConfigGroup />;
-    case "status":    return <StatusGroup />;
     default:          return <OverviewGroup />;
   }
 };
@@ -147,7 +130,9 @@ export const Console = () => {
           <Menu className="h-4 w-4" />
         </button>
         <Logo />
-        <ProjectSwitcher />
+        <span className="hidden sm:inline-flex items-center rounded-full bg-biscay-2/[0.08] px-2 py-1 font-term text-[10px] font-semibold uppercase tracking-[0.08em] text-biscay-2">
+          49 word lists
+        </span>
         <span className="hidden md:inline font-term text-[12px] text-ink/55 lowercase"><span className="text-ink/30 mr-1.5">/</span>{active.name}</span>
 
         <div className="flex-1" />

@@ -40,145 +40,6 @@ const qs = (params: Record<string, string | number | undefined | null>) => {
 
 /* ── types ───────────────────────────────────────────────────────────────── */
 
-export type Status = {
-  workspace: string;
-  catalog: string;
-  lastSync: string | null;
-  embeddingModel: string;
-  staleDays: number;
-  counts: { documents: number; chunks: number; tags: number; lineageEdges: number };
-  cloudEnabled: boolean;
-};
-
-export type TagCount = { status: string; n: number };
-export type SyncEvent = {
-  source_id: string;
-  status: string;
-  started_at: string | null;
-  finished_at: string | null;
-  docs_seen: number;
-  docs_changed: number;
-  error: string | null;
-};
-export type Overview = {
-  kpis: { documents: number; sourcesConnected: number; proposedLineage: number; tags: number };
-  tagCounts: TagCount[];
-  freshness: { fresh: number; stale: number };
-  perSource: { provider: string; documents: number }[];
-  recentSyncs: SyncEvent[];
-};
-
-export type TrackedRefs = { key: string; refs: string[] };
-export type Source = {
-  source: string;
-  authProvider: string | null;
-  credentialFree: boolean;
-  connected: boolean;
-  scope: string;
-  tracked: TrackedRefs[];
-  indexedDocuments: number;
-  lastSyncAt: string | null;
-  lastError: string | null;
-  config: Record<string, unknown>;
-};
-
-export type DocumentRow = {
-  doc_id: string;
-  title: string | null;
-  path: string | null;
-  canonical_ref: string;
-  url: string | null;
-  provider: string;
-  kind: string;
-  updated_at: string | null;
-  author_name: string | null;
-  tag: string | null;
-};
-
-export type DocumentDetail = {
-  document: DocumentRow & {
-    mime_type: string | null;
-    created_at: string | null;
-    body: string;
-    metadata_json: string;
-    tagNote: string | null;
-  };
-  chunks: {
-    chunk_id: string;
-    chunk_index: number;
-    heading_path: string;
-    start_line: number;
-    end_line: number;
-    token_count: number;
-  }[];
-  lineage: {
-    id: string;
-    status: string;
-    rel: string;
-    confidence: number;
-    by: string;
-    fromRef: string;
-    toRef: string;
-  }[];
-};
-
-export type SearchHit = {
-  doc_id: string;
-  chunk_id: string;
-  source: string;
-  canonical_ref: string;
-  title: string | null;
-  path: string | null;
-  url: string | null;
-  author: string | null;
-  updated_at: string | null;
-  heading_path: string;
-  start_line: number;
-  end_line: number;
-  score: number;
-  tag: string | null;
-  tag_note: string | null;
-  replacement: string | null;
-  matched_terms: string[];
-  text: string;
-};
-
-export type TagRow = {
-  target_type: string;
-  target_id: string;
-  status: string;
-  note: string;
-  by: string;
-  at: string;
-  ref: string;
-  title: string | null;
-};
-
-export type LineageEdge = {
-  id: string;
-  status: string;
-  rel: string;
-  confidence: number;
-  by: string;
-  metadata: string;
-  fromPath: string;
-  fromStart: number;
-  fromEnd: number;
-  toPath: string;
-  toStart: number;
-  toEnd: number;
-};
-
-export type Project = {
-  id: string;
-  slug: string;
-  documents: number;
-  lastSync: string | null;
-  path: string | null;
-  active: boolean;
-};
-export type ProjectsResponse = { projects: Project[]; activeId: string; activePath: string };
-
 export type Nudge = {
   name: string;
   when: unknown;
@@ -253,8 +114,6 @@ export type LocalizationCell = {
 export type LocalizationSource = { source: string; translations: Record<string, LocalizationCell> };
 export type Localization = { languages: string[]; sources: LocalizationSource[]; sourceLangs: string[] };
 
-export type CoverageFinding = { score: number; line: number; text: string };
-export type CoverageResult = { flagged: CoverageFinding[]; ok?: boolean; error?: string };
 export type RepoFile = { path: string; content: string; truncated: boolean };
 
 export type DocsitePhase = { phase: string; command: string; output: string };
@@ -274,63 +133,22 @@ export type DocsiteStatus = {
 };
 export type DocsiteInfo = { plan: { phases: DocsitePhase[] }; status: DocsiteStatus };
 
-export type CloudStatus = {
-  enabled: boolean;
-  role: string;
-  lastPull: string | null;
-  cloud: { enabled?: boolean; backend?: string; bucket?: string; prefix?: string; region?: string };
-  storage: { backend?: string; path?: string; region?: string; retain_snapshots?: number };
-};
-
 export type ConfigPath = { path: string; type: string };
 export type ConfigResponse = {
   effective: Record<string, unknown>;
   paths: ConfigPath[];
-  global: Record<string, unknown>;
   repo: Record<string, unknown>;
 };
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 export const api = {
-  status: () => get<Status>("/api/status"),
-  overview: () => get<Overview>("/api/overview"),
-
-  sources: () => get<{ sources: Source[] }>("/api/sources"),
-  track: (source: string, reference: string, action: "add" | "remove", listKey?: string) =>
-    post<{ ok: boolean }>("/api/sources/track", { source, ref: reference, action, listKey }),
-  sync: (source?: string) => post<{ ok: boolean; exitCode: number }>("/api/sources/sync", { source }),
-
-  documents: (opts: { q?: string; source?: string; tag?: string; limit?: number } = {}) =>
-    get<{ documents: DocumentRow[] }>(`/api/documents${qs(opts)}`),
-  document: (id: string) => get<DocumentDetail>(`/api/documents/${encodeURIComponent(id)}`),
-
-  search: (opts: { q: string; k?: number; source?: string; tag?: string }) =>
-    get<{ query: string; hits: SearchHit[] }>(`/api/search${qs(opts)}`),
-
-  tags: () => get<{ tags: TagRow[]; statuses: string[] }>("/api/tags"),
-  applyTag: (reference: string, status: string, note?: string, supersededBy?: string) =>
-    post<{ ok: boolean }>("/api/tags", { ref: reference, status, note, supersededBy }),
-  removeTag: (reference: string) =>
-    del<{ ok: boolean }>(`/api/tags${qs({ ref: reference })}`),
-
-  lineage: () => get<{ edges: LineageEdge[] }>("/api/lineage"),
-  addLineage: (from: string, to: string, by?: string, note?: string) =>
-    post<{ ok: boolean }>("/api/lineage", { from, to, by, note }),
-  confirmLineage: (id: string) => post<{ ok: boolean }>(`/api/lineage/${id}/confirm`),
-  rejectLineage: (id: string) => post<{ ok: boolean }>(`/api/lineage/${id}/reject`),
-
-  facts: () => get<{ file: string; items: { claim: string }[]; raw: string }>("/api/facts"),
   glossary: () => get<{ file: string; terms: { use: string; variants: string[] }[] }>("/api/glossary"),
 
   config: () => get<ConfigResponse>("/api/config"),
-  setConfig: (path: string, value: unknown, scope: "repo" | "global" = "repo") =>
+  setConfig: (path: string, value: unknown, scope: "repo" = "repo") =>
     put<{ ok: boolean; rebuildReminder: boolean }>("/api/config", { path, value, scope }),
 
-  projects: () => get<ProjectsResponse>("/api/projects"),
-  switchProject: (target: { path?: string; workspaceId?: string }) =>
-    post<{ ok: boolean; activeId: string; path: string }>("/api/projects/switch", target),
-  registerProject: (path: string) => post<{ ok: boolean; id: string }>("/api/projects/register", { path }),
 
   nudges: () => get<{ nudges: Nudge[] }>("/api/nudges"),
   addNudge: (n: { name: string; when: string; edit: string[]; message?: string; exclude?: string }) =>
@@ -351,30 +169,17 @@ export const api = {
   setIgnore: (rule: string, action: "add" | "remove", reason?: string) =>
     post<{ ok: boolean }>("/api/detector/ignore", { rule, action, reason }),
   detectorLists: () => get<{ lists: DetectorList[] }>("/api/detector/lists"),
-  setDetectorList: (id: string, value: unknown[], scope: "repo" | "global") =>
+  setDetectorList: (id: string, value: unknown[], scope: "repo") =>
     put<{ ok: boolean }>("/api/detector/lists", { id, value, scope }),
-  resetDetectorList: (id: string, scope: "repo" | "global") =>
+  resetDetectorList: (id: string, scope: "repo") =>
     put<{ ok: boolean; reset: boolean }>("/api/detector/lists", { id, reset: true, scope }),
 
   templates: () => get<{ templates: Template[] }>("/api/templates"),
   scaffoldTemplate: (type: string, title?: string, force?: boolean) =>
     post<{ ok: boolean }>("/api/templates/scaffold", { type, title, force }),
 
-  setTagStatuses: (statuses: string[]) => post<{ ok: boolean }>("/api/tags/statuses", { statuses }),
-
   localization: () => get<Localization>("/api/localization"),
-  localizationCoverage: (source: string, translation: string) =>
-    get<CoverageResult>(`/api/localization/coverage${qs({ source, translation })}`),
   repoFile: (path: string) => get<RepoFile>(`/api/localization/file${qs({ path })}`),
   docsite: () => get<DocsiteInfo>("/api/docsite"),
 
-  cloud: () => get<CloudStatus>("/api/cloud"),
-  cloudPull: () => post<{ ok: boolean; exitCode: number }>("/api/cloud/pull"),
-  cloudSync: (opts: { compact?: boolean; noPush?: boolean; retain?: number } = {}) =>
-    post<{ ok: boolean; exitCode: number }>("/api/cloud/sync", opts),
-  cloudRole: (role: "writer" | "consumer") => post<{ ok: boolean }>("/api/cloud/role", { role }),
-  cloudConnect: (o: { backend: string; bucket: string; prefix?: string; region?: string }) =>
-    post<{ ok: boolean }>("/api/cloud/connect", o),
-  cloudInit: (o: { backend: string; bucket: string; prefix?: string; region?: string; force?: boolean }) =>
-    post<{ ok: boolean }>("/api/cloud/init", o),
 };
