@@ -3,21 +3,14 @@ import {
   Search,
   Sliders,
   RotateCcw,
-  Cpu,
-  Scissors,
-  RefreshCw,
-  Plug,
   ScanLine,
-  Tags,
-  Database,
-  ScanText,
   Wrench,
 } from "lucide-react";
 import { api, type ConfigResponse, type ConfigPath } from "@saas/lib/client";
 import { Page, Badge, card, btn, btnPrimary, focusRing } from "../console-ui";
 import { toast } from "../feedback";
 
-type Scope = "repo" | "global";
+type Scope = "repo";
 
 /* ── Categories ──────────────────────────────────────────────────────────
    Cluster the ~100 dotted paths into a small set of friendly, ordered areas.
@@ -27,66 +20,23 @@ type Category = {
   id: string;
   name: string;
   icon: ComponentType<{ size?: number | string; className?: string }>;
-  /* Prefixes are matched against the dotted path as whole segments:
-     "search" matches "search" and "search.k"; "model" also matches
-     "models" (handled via prefix test below). */
+  /* Prefixes are matched against the dotted path's leading segment. */
   prefixes: string[];
   /* When true, this category swallows everything not yet matched. */
   catchAll?: boolean;
 };
 
 const CATEGORIES: Category[] = [
-  { id: "search", name: "Search", icon: Search, prefixes: ["search"] },
-  {
-    id: "embedding",
-    name: "Embedding & models",
-    icon: Cpu,
-    prefixes: ["embedding", "attention", "model", "humanizer"],
-  },
-  { id: "chunking", name: "Chunking", icon: Scissors, prefixes: ["chunking"] },
-  { id: "sync", name: "Sync & freshness", icon: RefreshCw, prefixes: ["sync", "audit"] },
-  {
-    id: "connectors",
-    name: "Connectors",
-    icon: Plug,
-    prefixes: [
-      "slack",
-      "discord",
-      "gdocs",
-      "google",
-      "github",
-      "git",
-      "confluence",
-      "jira",
-      "zendesk",
-      "salesforce",
-      "hubspot",
-      "microsoft",
-      "linear",
-      "granola",
-      "localfiles",
-      "scan",
-    ],
-  },
   {
     id: "detector",
     name: "Detector & style",
     icon: ScanLine,
-    prefixes: ["detector", "hook", "glossary", "facts"],
+    prefixes: ["detector", "hook", "glossary"],
   },
-  { id: "tags", name: "Tags", icon: Tags, prefixes: ["tags"] },
-  {
-    id: "storage",
-    name: "Storage & cloud",
-    icon: Database,
-    prefixes: ["storage", "cloud", "knowledge_base"],
-  },
-  { id: "ocr", name: "OCR", icon: ScanText, prefixes: ["ocr"] },
   { id: "advanced", name: "Advanced", icon: Wrench, prefixes: [], catchAll: true },
 ];
 
-/* Match a category prefix against a path's leading segment.
-   "model" matches segments "model" and "models" (prefix on the first seg). */
+/* Match a category prefix against a path's leading segment. */
 function firstSegment(path: string): string {
   const dot = path.indexOf(".");
   return dot === -1 ? path : path.slice(0, dot);
@@ -103,7 +53,7 @@ function categoryFor(path: string): Category {
   return CATEGORIES[CATEGORIES.length - 1];
 }
 
-/* Resolve a dotted path ("search.k") against a nested object. */
+/* Resolve a dotted path against a nested object. */
 function getByPath(obj: unknown, path: string): unknown {
   if (obj == null) return undefined;
   let cur: unknown = obj;
@@ -116,9 +66,8 @@ function getByPath(obj: unknown, path: string): unknown {
 }
 
 /* Which layer supplies the effective value for this path. */
-function sourceOf(cfg: ConfigResponse, path: string): "repo" | "global" | "default" {
+function sourceOf(cfg: ConfigResponse, path: string): "repo" | "default" {
   if (getByPath(cfg.repo, path) !== undefined) return "repo";
-  if (getByPath(cfg.global, path) !== undefined) return "global";
   return "default";
 }
 
@@ -167,7 +116,7 @@ function ConfigRow({
 
   const changed = draft !== initial;
   const src = sourceOf(cfg, path);
-  const srcTone = src === "repo" ? "info" : src === "global" ? "neutral" : "muted";
+  const srcTone = src === "repo" ? "info" : "muted";
 
   async function save() {
     let value: unknown;
@@ -195,7 +144,7 @@ function ConfigRow({
     try {
       const res = await api.setConfig(path, value, scope);
       toast("Saved", "success");
-      if (res.rebuildReminder) toast("Change needs `mari sync --rebuild`", "default");
+      void res;
       onSaved();
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : String(e), "error");
@@ -277,7 +226,7 @@ export function ConfigGroup() {
   const [data, setData] = useState<ConfigResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [scope, setScope] = useState<Scope>("repo");
+  const scope: Scope = "repo";
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string>(CATEGORIES[0].id);
 
@@ -325,24 +274,11 @@ export function ConfigGroup() {
 
   const active = buckets.find((b) => b.cat.id === activeId) ?? buckets[0];
 
-  const scopeToggle = (
-    <div className="flex items-center gap-1.5">
-      <span className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/50 mr-0.5">Write to</span>
-      <button onClick={() => setScope("repo")} className={scope === "repo" ? btnPrimary : btn}>
-        Repo
-      </button>
-      <button onClick={() => setScope("global")} className={scope === "global" ? btnPrimary : btn}>
-        Global
-      </button>
-    </div>
-  );
-
   return (
     <Page
       title="Config"
-      subtitle="Effective configuration, clustered by area. Edit repo or global values."
+      subtitle="Repository configuration from .mari/config.json."
       kicker="system"
-      actions={scopeToggle}
     >
       {loading && !data && (
         <div className="mt-6 grid place-items-center py-16 text-[13px] text-ink/50">Loading…</div>

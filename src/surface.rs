@@ -1,6 +1,6 @@
-//! Repo surface extraction and explore wrapper (SPEC §5.2/§5.6).
+//! Repository surface extraction (SPEC §5.6).
 
-use crate::{index, workspace};
+use crate::workspace;
 use anyhow::Result;
 use ignore::WalkBuilder;
 use regex::Regex;
@@ -57,72 +57,6 @@ pub fn collect_surface(root: &Path, start: &Path) -> Vec<SurfaceItem> {
         items.extend(extract_file(root, &file, &text));
     }
     items
-}
-
-pub fn explore(
-    query_or_file: &str,
-    k: Option<usize>,
-    json: bool,
-    deep: bool,
-    focus: bool,
-) -> Result<i32> {
-    let query = if Path::new(query_or_file).exists() {
-        file_query(Path::new(query_or_file))
-    } else {
-        query_or_file.to_string()
-    };
-    let rc = index::search::run(index::search::SearchArgs {
-        query: query.clone(),
-        full: Some(500),
-        variants: Vec::new(),
-        k,
-        source: None,
-        doc: None,
-        author: None,
-        since: None,
-        before: None,
-        tag: None,
-        no_tag: None,
-        expand: None,
-        json,
-    })?;
-    if deep || focus {
-        // §17 Tier 2 focus: for the top hits, show where in each document
-        // the attention mass concentrates for this query.
-        let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
-            ["threshold"]
-            .as_f64()
-            .unwrap_or(0.3);
-        let top = index::search::top_docs(&query, k.unwrap_or(3).min(5))?;
-        if top.is_empty() {
-            eprintln!("(--focus: no indexed documents to attend over)");
-        }
-        for (cref, body) in top {
-            println!("\n⌖ focus: {cref}");
-            match crate::attn::analyze(&body, &query, crate::attn::Mode::Focus, threshold, None) {
-                Ok(flagged) if flagged.is_empty() => {
-                    println!("  (attention is diffuse — no concentrated region)")
-                }
-                Ok(flagged) => {
-                    for f in flagged.iter().take(3) {
-                        let snippet: String =
-                            f.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                        println!(
-                            "  {:.0}%  ≈L{}  {}",
-                            f.score * 100.0,
-                            crate::attn::line_of_offset(&body, f.offset),
-                            snippet.chars().take(110).collect::<String>()
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!("✗ focus attention failed: {e:#}");
-                    break;
-                }
-            }
-        }
-    }
-    Ok(rc)
 }
 
 fn files(root: &Path) -> Vec<PathBuf> {
@@ -489,22 +423,6 @@ fn config_item(rel: &str, line: usize, name: &str, signature: &str) -> SurfaceIt
         line,
         signature: signature.into(),
     }
-}
-
-fn file_query(path: &Path) -> String {
-    let mut parts = Vec::new();
-    if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-        parts.push(name.replace(['-', '_'], " "));
-    }
-    if let Ok(text) = std::fs::read_to_string(path) {
-        parts.extend(
-            extract_file(&workspace::work_root(), path, &text)
-                .into_iter()
-                .take(12)
-                .map(|i| i.name),
-        );
-    }
-    parts.join(" ")
 }
 
 #[cfg(test)]

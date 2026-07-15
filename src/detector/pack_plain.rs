@@ -50,7 +50,7 @@ fn long_sentence(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const HIDDEN_VERBS: &[MapEntry] = &[
+pub const HIDDEN_VERBS: &[MapEntry] = &[
     me("make a determination", "determine"),
     me("provide an explanation", "explain"),
     me("conduct a review", "review"),
@@ -66,7 +66,7 @@ const HIDDEN_VERBS: &[MapEntry] = &[
 ];
 
 fn hidden_verb(ctx: &Ctx, em: &mut Emitter) {
-    map_rule(ctx, em, "plain-hidden-verb", HIDDEN_VERBS, "hidden verb");
+    map_rule(ctx, em, "plain-hidden-verb", "hidden verb");
 }
 
 fn shall(ctx: &Ctx, em: &mut Emitter) {
@@ -90,45 +90,38 @@ fn shall(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const REQUIRED_TO: &[MapEntry] = &[
+pub const REQUIRED_TO: &[MapEntry] = &[
     me("is required to", "must"),
     me("are required to", "must"),
     me("will be required to", "must"),
 ];
 
 fn required_to(ctx: &Ctx, em: &mut Emitter) {
-    map_rule(ctx, em, "plain-required-to", REQUIRED_TO, "plain language");
+    map_rule(ctx, em, "plain-required-to", "plain language");
 }
 
-const LEGALESE_PHRASES: &[MapEntry] = &[
+pub const LEGALESE_PHRASES: &[MapEntry] = &[
     me("pursuant to", "under"),
     me("in accordance with", "under"),
     me("prior to", "before"),
 ];
 
 fn legalese_phrase(ctx: &Ctx, em: &mut Emitter) {
-    map_rule(
-        ctx,
-        em,
-        "plain-legalese-phrase",
-        LEGALESE_PHRASES,
-        "legalese",
-    );
+    map_rule(ctx, em, "plain-legalese-phrase", "legalese");
 }
 
+pub const LEGALESE_WORDS: &[&str] = &[
+    "herein",
+    "thereof",
+    "aforementioned",
+    "heretofore",
+    "notwithstanding",
+    "hereinafter",
+];
+
 fn legalese_word(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::word_list(&[
-            "herein",
-            "thereof",
-            "aforementioned",
-            "heretofore",
-            "notwithstanding",
-            "hereinafter",
-        ])
-    });
-    helpers::scan(ctx, re, |off, len, _| {
+    let re = ctx.lists.word_regex("plain-legalese-word");
+    helpers::scan(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "plain-legalese-word",
@@ -187,10 +180,11 @@ fn reading_grade(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-fn map_rule(ctx: &Ctx, em: &mut Emitter, id: &str, map: &[MapEntry], label: &str) {
-    let re = helpers::map_regex(map);
+/// The finding's rule `id` doubles as its `detector.lists` key here.
+fn map_rule(ctx: &Ctx, em: &mut Emitter, id: &str, label: &str) {
+    let re = ctx.lists.map_regex(id);
     helpers::scan_fancy(ctx, &re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(map, m) {
+        if let Some(to) = ctx.lists.map_lookup(id, m) {
             em.emit(
                 ctx,
                 id,

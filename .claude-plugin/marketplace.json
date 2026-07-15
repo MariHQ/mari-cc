@@ -1,11 +1,11 @@
 {
   "name": "mari",
-  "description": "Curate, search, and share your team's product knowledge layer — local hybrid search over Slack, GitHub, Google Drive, Jira, Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear, Granola, git history, and local files — plus a deterministic prose-quality detector, editorial verbs, factchecking, and post-edit hooks.",
+  "description": "Deterministic prose-quality tooling and editorial workflows for Claude Code.",
   "owner": { "name": "Daniel Henneberger" },
   "plugins": [
     {
       "name": "mari",
-      "description": "Local-first knowledge curation and prose-quality plugin. /search, /sync, /tag, /factcheck, /audit, /deslop, /tighten, /clarify, and more. Wraps the `mari` binary; data stays under ~/.mari.",
+      "description": "Prose-quality plugin with /audit, /deslop, /tighten, /clarify, and other editorial workflows. Repository settings live in .mari/config.json.",
       "author": { "name": "Daniel Henneberger" },
       "category": "productivity",
       "source": "./"

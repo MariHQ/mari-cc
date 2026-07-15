@@ -25,7 +25,7 @@ pub struct Score {
 
 fn fam_weight(f: Family) -> f64 {
     match f {
-        Family::AiSlop | Family::Grounding => 1.0,
+        Family::AiSlop => 1.0,
         Family::Inclusive => 0.5,
         Family::Clarity => 0.4,
         Family::Style | Family::Grammar => 0.3,

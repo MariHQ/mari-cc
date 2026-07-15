@@ -92,7 +92,7 @@ fn no_link_in_heading(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const LATINISMS: &[MapEntry] = &[
+pub const LATINISMS: &[MapEntry] = &[
     me("e.g.", "for example"),
     me("i.e.", "that is"),
     me("etc.", "and so on"),
@@ -108,29 +108,28 @@ fn latinism_abbreviation(ctx: &Ctx, em: &mut Emitter) {
         em,
         "latinism-abbreviation",
         Severity::Warn,
-        LATINISMS,
+        "google-latinism",
         "Google style",
     );
 }
 
+pub const MINIMIZING: &[&str] = &[
+    "easy",
+    "easily",
+    "simple",
+    "simply",
+    "just",
+    "quick",
+    "quickly",
+    "obviously",
+    "of course",
+    "merely",
+    "trivial",
+];
+
 fn minimizing_words(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::word_list(&[
-            "easy",
-            "easily",
-            "simple",
-            "simply",
-            "just",
-            "quick",
-            "quickly",
-            "obviously",
-            "of course",
-            "merely",
-            "trivial",
-        ])
-    });
-    helpers::scan(ctx, re, |off, len, _| {
+    let re = ctx.lists.word_regex("google-minimizing");
+    helpers::scan(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "minimizing-words",
@@ -214,7 +213,7 @@ fn no_exclamation(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const AMERICAN: &[MapEntry] = &[
+pub const AMERICAN: &[MapEntry] = &[
     me("colour", "color"),
     me("colours", "colors"),
     me("favour", "favor"),
@@ -245,27 +244,26 @@ fn american_spelling(ctx: &Ctx, em: &mut Emitter) {
         em,
         "american-spelling",
         Severity::Warn,
-        AMERICAN,
+        "google-american-spelling",
         "Google style",
     );
 }
 
+pub const PREANNOUNCE: &[&str] = &[
+    "currently",
+    "presently",
+    "at this time",
+    "latest",
+    "newest",
+    "brand-new",
+    "soon",
+    "in the near future",
+    "upcoming",
+];
+
 fn no_preannounce(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "currently",
-            "presently",
-            "at this time",
-            "latest",
-            "newest",
-            "brand-new",
-            "soon",
-            "in the near future",
-            "upcoming",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("google-preannounce");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "no-preannounce",
@@ -278,7 +276,7 @@ fn no_preannounce(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
-const DIRECTIONAL: &[MapEntry] = &[me("above", "preceding"), me("below", "following")];
+pub const DIRECTIONAL: &[MapEntry] = &[me("above", "preceding"), me("below", "following")];
 
 fn no_directional(ctx: &Ctx, em: &mut Emitter) {
     map_rule(
@@ -286,22 +284,15 @@ fn no_directional(ctx: &Ctx, em: &mut Emitter) {
         em,
         "no-directional",
         Severity::Advisory,
-        DIRECTIONAL,
+        "google-directional",
         "directional reference",
     );
 }
 
-fn map_rule(
-    ctx: &Ctx,
-    em: &mut Emitter,
-    id: &str,
-    severity: Severity,
-    map: &[MapEntry],
-    label: &str,
-) {
-    let re = helpers::map_regex(map);
+fn map_rule(ctx: &Ctx, em: &mut Emitter, id: &str, severity: Severity, list_id: &str, label: &str) {
+    let re = ctx.lists.map_regex(list_id);
     helpers::scan_fancy(ctx, &re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(map, m) {
+        if let Some(to) = ctx.lists.map_lookup(list_id, m) {
             em.emit(
                 ctx,
                 id,
@@ -696,7 +687,7 @@ fn avoid_will_future_tense(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const GOOGLE_WORDS: &[MapEntry] = &[
+pub const GOOGLE_WORDS: &[MapEntry] = &[
     me("dev key", "API key"),
     me("developer key", "API key"),
     me("api console key", "API key"),
@@ -747,9 +738,10 @@ const GOOGLE_WORDS: &[MapEntry] = &[
 ];
 
 fn google_word_list(ctx: &Ctx, em: &mut Emitter) {
-    let re = helpers::map_regex(GOOGLE_WORDS);
+    let re = ctx.lists.map_regex("google-word-swap");
     helpers::scan_fancy(ctx, &re, |off, len, m| {
-        if let Some(to) = helpers::map_lookup(GOOGLE_WORDS, m) {
+        if let Some(to) = ctx.lists.map_lookup("google-word-swap", m) {
+            let to = to.as_str();
             // Case-only entries (ajax→AJAX) skip when already preferred.
             if m == to {
                 return;

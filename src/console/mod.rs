@@ -2,10 +2,7 @@
 //!
 //! A synchronous, thread-per-connection HTTP server that serves the built web
 //! console (embedded from `console/dist`) plus a small JSON API over the same
-//! catalog/config the CLI uses. It is single-user and localhost-only: there is
-//! no auth, no multi-tenancy, no cloud. Reads open the published Iceberg
-//! snapshot; writes reuse the CLI's tag/lineage/config write paths (each opens
-//! an in-memory catalog and republishes). See `api.rs` for the endpoints.
+//! repository configuration the CLI uses. It is single-user and localhost-only.
 
 mod api;
 
@@ -24,18 +21,18 @@ pub fn run(port: Option<u16>, open: bool) -> Result<i32> {
     let server = Server::http(&addr)
         .map_err(|e| anyhow::anyhow!("could not bind {addr}: {e}"))
         .context("failed to start the console server")?;
-    // Remember this project so it can be switched back to from any other.
     api::register_current();
     let url = format!("http://{addr}/console");
     println!("mari console → {url}");
-    println!("  serving the local knowledge base; press Ctrl-C to stop");
+    println!(
+        "  {} word lists; press Ctrl-C to stop",
+        crate::detector::lists::registry().len()
+    );
     if open {
         open_browser(&url);
     }
 
-    // Thread-per-request. DuckDB opens are per-request and lock-free for reads;
-    // writes serialize through Iceberg optimistic concurrency. For a local
-    // single user this is more than enough and keeps the model blocking.
+    // The console is local and low-volume, so a thread per request is sufficient.
     for request in server.incoming_requests() {
         std::thread::spawn(move || {
             if let Err(e) = dispatch(request) {
@@ -75,7 +72,10 @@ fn handle_api(
     query: &str,
 ) -> Result<()> {
     // Read the body up front for mutating verbs.
-    let body = if matches!(method, Method::Post | Method::Put | Method::Delete | Method::Patch) {
+    let body = if matches!(
+        method,
+        Method::Post | Method::Put | Method::Delete | Method::Patch
+    ) {
         let mut s = String::new();
         std::io::Read::read_to_string(request.as_reader(), &mut s).ok();
         s

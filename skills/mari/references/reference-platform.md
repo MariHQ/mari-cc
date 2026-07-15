@@ -46,7 +46,8 @@ user. Never scaffold a platform the user hasn't picked.
 
 The CLI stops at a plain, valid scaffold. Brand theming and responsive polish need design
 judgment and have **no deterministic hook**, so you own them — there is no `mari platform theme`,
-`restyle`, or `enhance` subcommand. Ground the work in `mari surface` and `mari docsite check`.
+`restyle`, or `enhance` subcommand. Ground the work in `mari surface` and
+`mari check --strict --anchors`.
 
 - **Brand theme.** Read a token source (a Tailwind config, a tokens CSS file, or a live site) and
   write the platform's theme: map tokens onto its theme variables (mdBook `--bg`/`--fg`/`--links`,

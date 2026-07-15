@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Languages, Check, FileText, Sparkles, ChevronRight, AlertTriangle } from "lucide-react";
+import { Languages, Check, FileText, ChevronRight, AlertTriangle } from "lucide-react";
 import {
   api,
   type Localization,
   type LocalizationSource,
   type LocalizationCell,
-  type CoverageResult,
 } from "@saas/lib/client";
-import { Page, Badge, card, btn, focusRing } from "../console-ui";
-import { toast } from "../feedback";
+import { Page, Badge, card, focusRing } from "../console-ui";
 
 const shortName = (p: string) => p.split("/").pop() || p;
 
@@ -59,23 +57,9 @@ function FileViewer({ path }: { path: string }) {
   );
 }
 
-/* ── Per-language panel: structure issues + on-demand attention coverage. ── */
+/* ── Per-language structural comparison. ───────────────────────────────── */
 function TranslationPanel({ source, lang, cell }: { source: string; lang: string; cell: LocalizationCell }) {
-  const [cov, setCov] = useState<CoverageResult | null>(null);
-  const [running, setRunning] = useState(false);
-
-  async function runCoverage() {
-    setRunning(true);
-    try {
-      const r = await api.localizationCoverage(source, cell.path);
-      setCov(r);
-      if (r.error) toast(r.error, "error");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : String(e), "error");
-    } finally {
-      setRunning(false);
-    }
-  }
+  void source;
 
   return (
     <div className={`${card} p-3.5`}>
@@ -107,44 +91,6 @@ function TranslationPanel({ source, lang, cell }: { source: string; lang: string
 
       <FileViewer path={cell.path} />
 
-      {/* Deep attention coverage (on demand) */}
-      <div className="mt-3 border-t border-ink/10 pt-2.5">
-        <div className="flex items-center gap-2">
-          <span className="font-term text-[10.5px] uppercase tracking-[0.08em] text-ink/50">Deep coverage</span>
-          <button onClick={runCoverage} disabled={running} className={`${btn} h-7 px-2 text-[12px] disabled:opacity-60 ml-auto`}>
-            <Sparkles size={12} />
-            {running ? "Analyzing…" : cov ? "Re-run" : "Run"}
-          </button>
-        </div>
-        {cov && !cov.error && cov.flagged.length === 0 && (
-          <div className="mt-2 flex items-center gap-1.5 text-[12.5px] text-moss">
-            <Check size={14} /> Prose coverage complete — nothing under-covered.
-          </div>
-        )}
-        {cov && cov.flagged.length > 0 && (
-          <>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {cov.flagged.map((f, i) => (
-                <div key={i} className="rounded-[4px] border border-clay/25 bg-clay/[0.05] px-2.5 py-1.5">
-                  <div className="flex items-center gap-2 font-term text-[11px] text-ink/55">
-                    <span className="text-clay font-semibold">{Math.round(f.score * 100)}% covered</span>
-                    <span>≈ L{f.line}</span>
-                  </div>
-                  <div className="mt-0.5 text-[12.5px] text-ink/80">{f.text}</div>
-                </div>
-              ))}
-            </div>
-            <p className="mt-1.5 font-term text-[11px] text-ink/45">
-              Barely-covered source passages — leads, not verdicts; idiom legitimately drifts.
-            </p>
-          </>
-        )}
-        {!cov && (
-          <p className="mt-1.5 font-term text-[11px] text-ink/45">
-            Runs the local attention model to find source passages the translation barely covers.
-          </p>
-        )}
-      </div>
     </div>
   );
 }
@@ -285,7 +231,7 @@ export function LocalizationGroup() {
   return (
     <Page
       title="Localization"
-      subtitle="Translation coverage, structural drift, and deep attention coverage — expand a doc to explore inline."
+      subtitle="Translation structure and staleness across common documentation layouts."
       kicker="docs"
       actions={
         data && data.sources.length > 0 ? (

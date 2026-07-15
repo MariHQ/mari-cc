@@ -41,7 +41,6 @@ Run them from Claude Code as slash commands (`/deslop README.md`) or through `/m
 ## Deeper passes
 
 - **Narrative tier.** `deslop --narrative` adds a whole-document pass over structural tells that survive surface editing, such as stated morals and flat time. `mari narrative score <file>` prints the review metric behind it.
-- **Humanize.** `mari humanize` applies the vendored external humanizer skill, then re-detects.
 - **Grammar.** The grammar pass is opt-in. Add `--grammar` to a detect run or enable `detector.grammar` in config.
 
 ## What the detector will not do

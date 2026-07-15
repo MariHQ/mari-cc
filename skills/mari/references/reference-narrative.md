@@ -91,7 +91,7 @@ fabricating mess to flip an item, is Goodharting — the guardrails below outran
 ## Guardrails
 
 - **Never fabricate the mess.** No invented anecdotes, flaws, or specificity. The truth
-  constraint beats every dimension; if a pass added names or numbers, run `factcheck` after.
+  constraint beats every dimension; if a pass added names or numbers, verify them against the source material.
 - **One instance per human move.** A concession in every paragraph is just a new template.
 - **Whole-document judgments only.** One triad is style; five triads are a voice. Never flag a
   single sentence.

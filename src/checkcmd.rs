@@ -1,6 +1,6 @@
 //! Whole-project docs validation (SPEC §5.6).
 
-use crate::{assets, config, surface, workspace};
+use crate::{assets, config, workspace};
 use anyhow::Result;
 use ignore::WalkBuilder;
 use pulldown_cmark::{Event, Options, Parser, Tag};
@@ -17,14 +17,7 @@ struct Finding {
     target: Option<String>,
 }
 
-pub fn run(
-    json: bool,
-    strict: bool,
-    deep: bool,
-    anchors: bool,
-    limit: Option<usize>,
-    _threshold: Option<f64>,
-) -> Result<i32> {
+pub fn run(json: bool, strict: bool, anchors: bool, limit: Option<usize>) -> Result<i32> {
     let root = workspace::work_root();
     let cfg = config::resolve(Some(&root));
     let ignored = ignored_rules(&cfg);
@@ -61,17 +54,6 @@ pub fn run(
         let docs = markdown_files(&root);
         findings.extend(asset_findings(&root, &docs, &ignored));
     }
-    if deep && !ignored.contains("undocumented-symbol") {
-        findings.extend(undocumented_symbol_findings(&root, limit));
-    }
-    if deep && !ignored.contains("doc-unanchored") {
-        findings.extend(unanchored_doc_findings(
-            &root,
-            limit,
-            _threshold.unwrap_or(0.3),
-        ));
-    }
-
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else if findings.is_empty() {
@@ -96,68 +78,6 @@ pub fn run(
         Ok(1)
     } else {
         Ok(0)
-    }
-}
-
-/// §5.6 `mari docsite check`: the focused link validator — internal links and
-/// anchors resolve and nav↔files agree — scoped to the docs tree, without the
-/// community/asset/deep passes the whole-project `mari check` also runs. When
-/// `anchors` is set it also validates in-page `#anchor`→`id` links in HTML/JSX.
-pub fn run_links(json: bool, strict: bool, anchors: bool) -> Result<i32> {
-    let root = workspace::work_root();
-    let cfg = config::resolve(Some(&root));
-    let ignored = ignored_rules(&cfg);
-    let mut findings = Vec::new();
-
-    if !ignored.contains("link-broken") {
-        let docs = markdown_files(&root);
-        findings.extend(link_findings(&root, &docs));
-    }
-    if !ignored.contains("nav-missing-target") || !ignored.contains("nav-orphan-page") {
-        let docs = markdown_files(&root);
-        findings.extend(nav_findings(
-            &root,
-            &docs,
-            !ignored.contains("nav-missing-target"),
-            !ignored.contains("nav-orphan-page"),
-        ));
-    }
-    if anchors && !ignored.contains("anchor-broken") {
-        findings.extend(anchor_in_code_findings(&root));
-    }
-
-    render_findings(json, &findings)?;
-    Ok(exit_code(&findings, strict))
-}
-
-fn render_findings(json: bool, findings: &[Finding]) -> Result<()> {
-    if json {
-        println!("{}", serde_json::to_string_pretty(findings)?);
-    } else if findings.is_empty() {
-        println!("check: ok");
-    } else {
-        for finding in findings {
-            let target = finding
-                .target
-                .as_ref()
-                .map(|t| format!(" -> {t}"))
-                .unwrap_or_default();
-            println!(
-                "{} {} {}{}",
-                finding.severity, finding.rule_id, finding.path, target
-            );
-            println!("  {}", finding.message);
-        }
-    }
-    Ok(())
-}
-
-fn exit_code(findings: &[Finding], strict: bool) -> i32 {
-    let has_error = findings.iter().any(|f| f.severity == "error");
-    if has_error || (strict && !findings.is_empty()) {
-        1
-    } else {
-        0
     }
 }
 
@@ -427,116 +347,6 @@ fn asset_findings(root: &Path, docs: &[PathBuf], ignored: &BTreeSet<String>) -> 
     out
 }
 
-fn undocumented_symbol_findings(root: &Path, limit: Option<usize>) -> Vec<Finding> {
-    let docs = markdown_files(root);
-    let docs_text = docs
-        .iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .to_ascii_lowercase();
-    if docs_text.trim().is_empty() {
-        return Vec::new();
-    }
-
-    let mut symbols = surface::collect_surface(root, root)
-        .into_iter()
-        .filter(|item| is_code_surface_kind(&item.kind))
-        .filter(|item| !is_test_or_fixture_path(&item.file))
-        .filter(|item| !item.name.starts_with('_'))
-        .collect::<Vec<_>>();
-    symbols.sort_by(|a, b| {
-        a.file
-            .cmp(&b.file)
-            .then(a.line.cmp(&b.line))
-            .then(a.name.cmp(&b.name))
-    });
-    if let Some(limit) = limit {
-        if limit > 0 {
-            symbols.truncate(limit);
-        }
-    }
-
-    symbols
-        .into_iter()
-        .filter(|item| !docs_text.contains(&item.name.to_ascii_lowercase()))
-        .map(|item| Finding {
-            rule_id: "undocumented-symbol",
-            severity: "warn",
-            path: item.file,
-            message: format!(
-                "exported {} symbol `{}` is not mentioned in project markdown",
-                item.kind, item.name
-            ),
-            target: Some(format!("{}:{}", item.name, item.line)),
-        })
-        .collect()
-}
-
-/// §5.6 --deep, attention half: doc sentences anchored to nothing in the
-/// public surface (Grounding — surface as context, each doc page as query).
-/// Conceptual prose legitimately floats above the surface: leads, not verdicts.
-fn unanchored_doc_findings(root: &Path, limit: Option<usize>, threshold: f64) -> Vec<Finding> {
-    let mut symbols = surface::collect_surface(root, root)
-        .into_iter()
-        .filter(|item| is_code_surface_kind(&item.kind))
-        .filter(|item| !is_test_or_fixture_path(&item.file))
-        .collect::<Vec<_>>();
-    symbols.sort_by(|a, b| a.file.cmp(&b.file).then(a.line.cmp(&b.line)));
-    if symbols.is_empty() {
-        return Vec::new();
-    }
-    let mut surface_text = String::new();
-    for item in &symbols {
-        surface_text.push_str(&format!(
-            "{} {}  ({}:{})\n",
-            item.kind, item.name, item.file, item.line
-        ));
-    }
-    surface_text.truncate(48_000); // keep the attention window tractable
-
-    let mut docs = markdown_files(root);
-    docs.truncate(limit.unwrap_or(8).max(1));
-    let mut out = Vec::new();
-    for doc in docs {
-        let Ok(text) = std::fs::read_to_string(&doc) else {
-            continue;
-        };
-        if text.trim().len() < 40 {
-            continue;
-        }
-        match crate::attn::analyze(
-            &surface_text,
-            &text,
-            crate::attn::Mode::Grounding,
-            threshold,
-            None,
-        ) {
-            Ok(flagged) => {
-                for f in flagged {
-                    let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    out.push(Finding {
-                        rule_id: "doc-unanchored",
-                        severity: "advisory",
-                        path: rel(root, &doc),
-                        message: format!(
-                            "passage barely attends to the public surface ({:.0}% of peak) — re-verify against the code: {}",
-                            f.score * 100.0,
-                            snippet.chars().take(90).collect::<String>()
-                        ),
-                        target: Some(format!("≈L{}", crate::attn::line_of_offset(&text, f.offset))),
-                    });
-                }
-            }
-            Err(e) => {
-                eprintln!("✗ check --deep attention pass failed: {e:#}");
-                break;
-            }
-        }
-    }
-    out
-}
-
 /// §5.6 `--anchors`: extend anchor validation beyond markdown to in-page
 /// `#anchor`→`id` links in HTML and JSX (code-based sites). Deterministic
 /// static parse: each `href="#x"` must resolve to an `id="x"` in the same file.
@@ -628,20 +438,6 @@ fn code_hash_hrefs(text: &str) -> Vec<(String, usize)> {
         }
     }
     out
-}
-
-fn is_code_surface_kind(kind: &str) -> bool {
-    matches!(kind, "rust" | "js-ts" | "python" | "go")
-}
-
-fn is_test_or_fixture_path(path: &str) -> bool {
-    path.contains("/tests/")
-        || path.starts_with("tests/")
-        || path.contains("/fixtures/")
-        || path.starts_with("fixtures/")
-        || path.contains("__fixtures__")
-        || path.contains("/testdata/")
-        || path.starts_with("testdata/")
 }
 
 fn is_nav_candidate(root: &Path, doc: &Path) -> bool {
@@ -1041,27 +837,5 @@ mod tests {
         .unwrap();
 
         assert!(anchor_in_code_findings(root).is_empty());
-    }
-
-    #[test]
-    fn deep_check_reports_undocumented_exported_symbols() {
-        let dir = tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(
-            root.join("src/lib.rs"),
-            "pub fn documented_api() {}\npub fn missing_api() {}\n",
-        )
-        .unwrap();
-        std::fs::write(root.join("README.md"), "# API\n\nUse documented_api.\n").unwrap();
-
-        let findings = undocumented_symbol_findings(root, None);
-        assert!(findings
-            .iter()
-            .any(|f| f.rule_id == "undocumented-symbol" && f.path == "src/lib.rs"));
-        assert!(findings.iter().any(|f| f.message.contains("missing_api")));
-        assert!(!findings
-            .iter()
-            .any(|f| f.message.contains("documented_api")));
     }
 }

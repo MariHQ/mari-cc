@@ -27,21 +27,25 @@ Scaffolding writes a minimal, valid site and refuses to overwrite an existing se
 mari surface
 ```
 
-Claude reads the surface, plus `mari explore` and the catalog, so each page traces back to real code rather than to guesswork.
+Claude reads the surface and the relevant source files, so each page traces back to real code rather than guesswork.
 
-## Run the docsite flow
+## Build the documentation set
 
-`mari docsite plan` prints the seven phases, and `mari docsite status` inspects what the repo already has:
+Use the focused commands directly as you work through the repository:
 
 1. Survey the codebase.
 2. Choose and scaffold a platform.
 3. Design the information architecture on the Diátaxis frame (tutorial, how-to, reference, explanation).
 4. Write every page, grounded in the code.
-5. Add the community-health files. The license is copied verbatim, everything else is a template.
+5. Add the community-health files. Keep the license verbatim and scaffold
+   contributing, code-of-conduct, governance, and security files with
+   `mari asset scaffold <type>`.
 6. Validate with `mari check --strict`.
 7. Keep it alive with the hook, discovered rules, and a continuous-integration gate.
 
-The CLI never writes prose. Page authoring stays with Claude.
+The scaffold templates provide the required structure, but page authoring and
+placeholder replacement stay with Claude. Put team-specific versions in
+`.mari/templates/<type>.md`; Mari uses them for both scaffolding and checks.
 
 ## Validate
 
@@ -51,4 +55,4 @@ The CLI never writes prose. Page authoring stays with Claude.
 mari check --strict
 ```
 
-Add `--deep` for the opt-in attention passes: public symbols the docs never mention, and doc sentences anchored to no code. Cap the cost with `--limit N`. See [Keep docs and code in sync](keep-docs-fresh.md) for the maintenance loop that keeps the site current.
+Use `mari surface` to compare the finished pages with the repository's public symbols and configuration keys. See [Keep docs and code in sync](keep-docs-fresh.md) for the maintenance loop that keeps the site current.

@@ -3,6 +3,7 @@ import { SpellCheck, Play, Ban, EyeOff, FileText, Type } from "lucide-react";
 import { api, type DetectResult, type DetectFinding } from "@saas/lib/client";
 import { Page, Badge, card, btn, btnPrimary, focusRing } from "../console-ui";
 import { toast } from "../feedback";
+import { DetectorLists } from "./DetectorLists";
 
 /* Detector severity → badge tone. */
 function sevTone(sev: string): string {
@@ -223,6 +224,9 @@ export function DetectGroup() {
           )}
         </>
       )}
+
+      {/* Editable trigger lists (detector.lists) */}
+      <DetectorLists />
     </Page>
   );
 }

@@ -36,58 +36,104 @@ Mari is a Rust binary. Prebuilt binaries and an install channel are being set
 up (see `docs/05-distribution.md`); until then, build from source:
 
 ```sh
-# Requires a Rust toolchain and cmake (llama.cpp builds from source).
-cargo install --path .
-# or
-cargo build --release   # binary at target/release/mari
+/plugin marketplace add MariHQ/mari-cc
+/plugin install mari@mari
 ```
 
-As a Claude Code plugin, the `skills/`, `commands/`, and `hooks/` directories
-plus `.claude-plugin/plugin.json` wrap the `mari` binary; ensure `mari` is on
-your `PATH`.
+Mari is an AI prose manager for Claude Code. It catches weak writing as Claude
+edits, rewrites it in your project's voice, and enforces your house style.
 
-## Quickstart
+The detector is deterministic and runs locally. It flags concrete passages and
+named rules instead of guessing whether text "sounds AI-written." Then Claude handles
+the rewrite.
+
+## Manage AI-written prose
+
+- **Catch problems after every edit.** The Claude Code hook checks new prose for
+  AI slop, unclear language, grammar, inclusive language, and house-style
+  violations while the writing is still in context.
+- **Rewrite with editorial intent.** Use `/deslop`, `/tighten`, `/clarify`,
+  `/sharpen`, `/understate`, `/critique`, and `/polish` instead of asking for a
+  vague "make this better" pass.
+- **Enforce your voice.** Choose Microsoft, Google, AP, Chicago, or plain style.
+  Add project terminology and forbidden phrasing, then configure waivers and
+  zero-tolerance rules.
+- **Keep documentation current.** Edit-notify rules, localization checks, and
+  nudges tell Claude what else must change with an edit.
+
+## Rules
+
+Mari's 170+ deterministic rules and 49 configurable word lists identify the
+passage, the problem, and the applicable style guidance. The Rules console
+shows the complete catalog, project waivers, zero-tolerance rules, and
+edit-notify rules in one place.
+
+![The Mari Console Rules view showing 49 word lists, the streamlined navigation, detector families, and rule controls](assets/mari-console-rules.png)
+
+Run `/mari console --open` in Claude Code to open the web console.
+
+## Glossary
+
+Keep preferred terms and discouraged variants in the `Terminology` table in
+`STYLE.md`. For example, this repository uses `dataset`, not `data set`:
+
+```markdown
+| Use | Not |
+|---|---|
+| dataset | data set |
+```
+
+Add an approved term from the CLI with
+`mari glossary add dataset --not "data set"`. `mari glossary list` prints the
+active glossary, and the detector flags discouraged variants in new prose.
+
+## Templates
+
+Mari includes templates for runbooks, architecture decision records,
+postmortems, requests for comments, contributing guides, codes of conduct,
+governance documents, and security policies. Scaffold a document, fill in its
+placeholders, then check that its required sections are present:
 
 ```sh
-mari init                 # assistant-guided setup (sources + editorial style)
-mari track localfiles add ./docs
-mari sync                 # index tracked sources (first run downloads the
-                          #   embedding model, ~640 MB, one-time)
-mari search "why did we change pricing tiers"
-mari detect README.md     # prose-quality findings
-mari factcheck pricing.md --source PRODUCT.md
+mari asset scaffold runbook "Restore the API"
+mari asset check RUNBOOK.md --strict
 ```
 
-From Claude Code, the standalone commands work directly:
-`/search`, `/sync`, `/tag`, `/factcheck`, `/audit`, `/deslop`, `/tighten`,
-`/clarify`, `/sharpen`, `/understate`, `/critique`, `/polish`, `/draft`.
+Use `mari asset detect <file>` when you are unsure which template matches an
+existing document. To enforce a team-specific structure, add
+`.mari/templates/<type>.md`. Mari uses that file for both scaffolding and
+structural checks. The console's Templates panel lists every available type,
+its output file, required sections, and source standard.
 
-## Models
+## Localization
 
-Mari uses two small local models, downloaded on first use into `~/.mari/models`
-(verify status with `mari model status`, provision explicitly with
-`mari model pull all`):
+Mari recognizes common documentation layouts, including `README.es.md`,
+language directories such as `docs/{en,fr}/`, Hugo's `content.zh`, and
+Docusaurus `i18n/<lang>/...` trees.
 
-- **Embeddings** — `Qwen3-Embedding-0.6B` (Apache-2.0), ~640 MB.
-- **Attention** (deep grounding/coverage/focus, opt-in via `--deep`) —
-  `Qwen3.5-0.8B` (Apache-2.0), ~520 MB.
+Ask Claude "Are the translations in sync?" to run the conformance workflow.
+For a repository-wide check, use `/mari i18n conform docs`.
 
-An optional OCR tier for scanned PDFs uses `baidu/Unlimited-OCR`; it is off by
-default (the default PDF path is pure-Rust text extraction) and requires an
-explicit opt-in because it executes code from the model repo — see
-`SECURITY.md`.
+### Remind Claude to update related docs
 
-## Documentation
+Add a nudge when a source change should prompt a specific documentation edit:
 
-- `SPEC.md` — the complete behavioral specification (every command, rule, and
-  config key) and §22 implementation decisions.
-- `docs/` — the roadmap and remaining-work plan.
-- `skills/mari/references/` — the editorial and workflow reference flows.
+```sh
+mari nudge add cli-docs \
+  --when "src/main.rs" \
+  --edit "website/reference/cli.md" \
+  --message "Update the CLI reference for this change."
+```
 
-Run `mari doctor` to see which optional tools and models are available, and
-`mari features` for the full capability catalog.
+The post-edit hook shows the nudge whenever a matching file changes. Run
+`mari nudge list` to review configured nudges and `mari nudge check` to verify
+their file and symbol targets.
+
+## Local by default
+
+Mari runs on deterministic rules and repository-local files. Project
+configuration lives in `.mari/config.json` at the repository root.
 
 ## License
 
-MIT — see `LICENSE`. Bundled models carry their own permissive licenses
-(Qwen: Apache-2.0; Unlimited-OCR: MIT).
+MIT. See `LICENSE`.

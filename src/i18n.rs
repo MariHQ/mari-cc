@@ -43,10 +43,10 @@ struct Structure {
     links: Vec<String>,
 }
 
-pub fn run(args: &[String], deep: bool, limit: Option<usize>, strict: bool) -> Result<i32> {
+pub fn run(args: &[String], limit: Option<usize>, strict: bool) -> Result<i32> {
     match args.first().map(|s| s.as_str()) {
         None => {
-            eprintln!("usage: mari i18n <file> | mari i18n conform <file|dir> | mari i18n coverage <source> [translation]");
+            eprintln!("usage: mari i18n <file> | mari i18n conform <file|dir>");
             Ok(2)
         }
         Some("conform") => {
@@ -54,14 +54,7 @@ pub fn run(args: &[String], deep: bool, limit: Option<usize>, strict: bool) -> R
                 eprintln!("usage: mari i18n conform <file|dir>");
                 return Ok(2);
             };
-            conform(Path::new(target), limit, strict, deep)
-        }
-        Some("coverage") => {
-            let Some(source) = args.get(1) else {
-                eprintln!("usage: mari i18n coverage <source> [translation]");
-                return Ok(2);
-            };
-            coverage(Path::new(source), args.get(2).map(Path::new), strict)
+            conform(Path::new(target), limit, strict)
         }
         Some(file) => list(Path::new(file)),
     }
@@ -79,9 +72,7 @@ pub fn overview_json() -> serde_json::Value {
     fn mtime(p: &Path) -> Option<std::time::SystemTime> {
         std::fs::metadata(p).and_then(|m| m.modified()).ok()
     }
-    let rel = |p: &Path| -> String {
-        p.strip_prefix(&root).unwrap_or(p).display().to_string()
-    };
+    let rel = |p: &Path| -> String { p.strip_prefix(&root).unwrap_or(p).display().to_string() };
 
     let mut langs: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<serde_json::Value> = Vec::new();
@@ -132,7 +123,10 @@ pub fn overview_json() -> serde_json::Value {
         rows.push(json!({ "source": rel(p), "translations": serde_json::Value::Object(cells) }));
     }
     rows.sort_by(|a, b| {
-        a["source"].as_str().unwrap_or("").cmp(b["source"].as_str().unwrap_or(""))
+        a["source"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["source"].as_str().unwrap_or(""))
     });
 
     json!({
@@ -140,49 +134,6 @@ pub fn overview_json() -> serde_json::Value {
         "sources": rows,
         "sourceLangs": SOURCE_LANGS,
     })
-}
-
-/// Deep attention coverage for one source→translation pair, as JSON. Runs the
-/// local attention model (§17): source passages the translation barely covers
-/// are returned with their score and line. Deterministic (a forward pass, no
-/// randomness) but model-backed, so callers run it on demand. Leads, not
-/// verdicts.
-pub fn coverage_json(source: &Path, translation: &Path) -> serde_json::Value {
-    use serde_json::json;
-    let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
-        ["threshold"]
-        .as_f64()
-        .unwrap_or(0.3);
-    let (Ok(src_text), Ok(trans_text)) = (
-        std::fs::read_to_string(source),
-        std::fs::read_to_string(translation),
-    ) else {
-        return json!({ "flagged": [], "error": "unreadable file pair" });
-    };
-    match crate::attn::analyze(
-        &src_text,
-        &trans_text,
-        crate::attn::Mode::Coverage,
-        threshold,
-        None,
-    ) {
-        Ok(flagged) => {
-            let items: Vec<serde_json::Value> = flagged
-                .iter()
-                .map(|f| {
-                    let line = crate::attn::line_of_offset(&src_text, f.offset);
-                    let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                    json!({
-                        "score": f.score,
-                        "line": line,
-                        "text": snippet.chars().take(280).collect::<String>(),
-                    })
-                })
-                .collect();
-            json!({ "flagged": items, "ok": items.is_empty() })
-        }
-        Err(e) => json!({ "flagged": [], "error": format!("{e:#}") }),
-    }
 }
 
 /// Localized translation files are skipped by the detector (SPEC §11.0.6).
@@ -228,50 +179,7 @@ fn list(path: &Path) -> Result<i32> {
     Ok(0)
 }
 
-/// Run attention coverage for one source→translation pair and print the
-/// barely-covered source passages, indented under the current line.
-/// Findings are leads, not verdicts; failures are loud but non-fatal.
-fn attention_coverage_under(source: &Path, translation: &Path) {
-    let threshold = crate::config::resolve(Some(&crate::workspace::work_root()))["attention"]
-        ["threshold"]
-        .as_f64()
-        .unwrap_or(0.3);
-    let (Ok(src_text), Ok(trans_text)) = (
-        std::fs::read_to_string(source),
-        std::fs::read_to_string(translation),
-    ) else {
-        println!("    · attention skipped: unreadable file pair");
-        return;
-    };
-    match crate::attn::analyze(
-        &src_text,
-        &trans_text,
-        crate::attn::Mode::Coverage,
-        threshold,
-        None,
-    ) {
-        Ok(flagged) if flagged.is_empty() => {
-            println!("    ✓ prose coverage complete (attention)");
-        }
-        Ok(flagged) => {
-            for f in flagged {
-                let line = crate::attn::line_of_offset(&src_text, f.offset);
-                let snippet: String = f.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                println!(
-                    "    ↘ {:.0}% covered  (≈L{line})  {}",
-                    f.score * 100.0,
-                    snippet.chars().take(70).collect::<String>()
-                );
-            }
-            println!(
-                "    Treat these as leads, not verdicts — style and idiom legitimately drift."
-            );
-        }
-        Err(e) => println!("    · attention skipped: {e:#}"),
-    }
-}
-
-fn conform(target: &Path, limit: Option<usize>, strict: bool, deep: bool) -> Result<i32> {
+fn conform(target: &Path, limit: Option<usize>, strict: bool) -> Result<i32> {
     if !target.exists() {
         eprintln!("✗ i18n target does not exist: {}", target.display());
         return Ok(1);
@@ -325,68 +233,7 @@ fn conform(target: &Path, limit: Option<usize>, strict: bool, deep: bool) -> Res
                     println!("    - {issue}");
                 }
             }
-            if deep {
-                attention_coverage_under(Path::new(&report.source), Path::new(&t.path));
-            }
         }
-    }
-
-    if strict && issue_count > 0 {
-        Ok(1)
-    } else {
-        Ok(0)
-    }
-}
-
-fn coverage(source: &Path, translation: Option<&Path>, strict: bool) -> Result<i32> {
-    if !source.exists() {
-        eprintln!("✗ i18n source does not exist: {}", source.display());
-        return Ok(1);
-    }
-    if let Some(translation) = translation {
-        if !translation.exists() {
-            eprintln!(
-                "✗ i18n translation does not exist: {}",
-                translation.display()
-            );
-            return Ok(1);
-        }
-    }
-    let source = source_for(source);
-    let translations = match translation {
-        Some(t) => vec![Translation {
-            path: t.to_path_buf(),
-            lang: detected_language(t).unwrap_or_else(|| "unknown".into()),
-            layout: "explicit".into(),
-        }],
-        None => find_translations(&source),
-    };
-    if translations.is_empty() {
-        println!("i18n coverage: no translation siblings found");
-        return Ok(0);
-    }
-
-    let source_structure = read_structure(&source)?;
-    let mut issue_count = 0usize;
-    for t in translations {
-        let other = read_structure(&t.path)?;
-        let issues = compare_structure(&source_structure, &other);
-        issue_count += issues.len();
-        if issues.is_empty() {
-            println!(
-                "✓ {} structurally covers {}",
-                t.path.display(),
-                source.display()
-            );
-        } else {
-            println!("✗ {} differs from {}", t.path.display(), source.display());
-            for issue in issues {
-                println!("  - {issue}");
-            }
-        }
-        // Attention pass (§5.7): flag source passages the translation barely
-        // covers. Coverage mode — SOURCE as context, TRANSLATION as query.
-        attention_coverage_under(&source, &t.path);
     }
 
     if strict && issue_count > 0 {
@@ -808,14 +655,7 @@ mod tests {
 
     #[test]
     fn missing_i18n_operands_return_usage_exit_2() {
-        assert_eq!(
-            run(&[String::from("conform")], false, None, false).unwrap(),
-            2
-        );
-        assert_eq!(
-            run(&[String::from("coverage")], false, None, false).unwrap(),
-            2
-        );
+        assert_eq!(run(&[String::from("conform")], None, false).unwrap(), 2);
     }
 
     #[test]
@@ -825,21 +665,11 @@ mod tests {
         let missing_arg = missing.to_string_lossy().to_string();
 
         assert_eq!(
-            run(std::slice::from_ref(&missing_arg), false, None, false).unwrap(),
+            run(std::slice::from_ref(&missing_arg), None, false).unwrap(),
             1
         );
         assert_eq!(
-            run(
-                &[String::from("conform"), missing_arg.clone()],
-                false,
-                None,
-                false
-            )
-            .unwrap(),
-            1
-        );
-        assert_eq!(
-            run(&[String::from("coverage"), missing_arg], false, None, false).unwrap(),
+            run(&[String::from("conform"), missing_arg.clone()], None, false).unwrap(),
             1
         );
     }

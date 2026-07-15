@@ -54,7 +54,7 @@ pub fn rules() -> Vec<Rule> {
     ]
 }
 
-const OVERUSED: &[(&str, &str, f64)] = &[
+pub const OVERUSED: &[(&str, &str, f64)] = &[
     ("delve", "delve", 28.0),
     ("delves", "delve", 28.0),
     ("delving", "delve", 28.0),
@@ -98,19 +98,21 @@ const OVERUSED: &[(&str, &str, f64)] = &[
 ];
 
 fn overused_word(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let words: Vec<&str> = OVERUSED.iter().map(|(w, _, _)| *w).collect();
-    let re = RE.get_or_init(|| helpers::word_list(&words));
+    let entries = ctx.lists.weighted("overused-word");
+    let words: Vec<&str> = entries.iter().map(|(w, _, _)| w.as_str()).collect();
+    let re = helpers::word_list(&words);
     let mut hits = Vec::new();
     let mut distinct = HashSet::new();
-    let weight_by: HashMap<&str, (&str, f64)> =
-        OVERUSED.iter().map(|(w, b, wt)| (*w, (*b, *wt))).collect();
+    let weight_by: HashMap<&str, (&str, f64)> = entries
+        .iter()
+        .map(|(w, b, wt)| (w.as_str(), (b.as_str(), *wt)))
+        .collect();
     let mut score = 0.0;
-    helpers::scan(ctx, re, |off, len, m| {
+    helpers::scan(ctx, &re, |off, len, m| {
         let key = m.to_lowercase();
         if let Some((base, wt)) = weight_by.get(key.as_str()) {
-            hits.push((off, len, *base));
-            distinct.insert(*base);
+            hits.push((off, len, (*base).to_string()));
+            distinct.insert((*base).to_string());
             score += *wt;
         }
     });
@@ -140,7 +142,7 @@ fn overused_word(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
-const MARKETING: &[&str] = &[
+pub const MARKETING: &[&str] = &[
     "streamline",
     "streamlines",
     "streamlining",
@@ -177,9 +179,8 @@ const MARKETING: &[&str] = &[
 ];
 
 fn marketing_buzzword(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| helpers::phrase_list(MARKETING));
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("marketing-buzzword");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "marketing-buzzword",
@@ -192,36 +193,40 @@ fn marketing_buzzword(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const CLICHE_OPENER: &[&str] = &[
+    "in today's fast-paced world",
+    "in today's fast-paced age",
+    "in today's modern world",
+    "in today's modern age",
+    "in today's digital world",
+    "in today's digital age",
+    "in today’s fast-paced world",
+    "in today’s fast-paced age",
+    "in today’s modern world",
+    "in today’s modern age",
+    "in today’s digital world",
+    "in today’s digital age",
+    "in the ever-evolving landscape of",
+    "in the ever-evolving world of",
+    "in the ever-changing landscape of",
+    "in the ever-changing world of",
+    "in the rapidly changing landscape of",
+    "in the rapidly changing world of",
+    "in the realm of",
+    "in the digital age",
+    "in an era of",
+    "in an age of",
+    "when it comes to",
+    "at its core",
+    "in the world of",
+];
+
 fn cliche_opener(ctx: &Ctx, em: &mut Emitter) {
     let lower = ctx.masked.to_lowercase();
-    let phrases = [
-        "in today's fast-paced world",
-        "in today's fast-paced age",
-        "in today's modern world",
-        "in today's modern age",
-        "in today's digital world",
-        "in today's digital age",
-        "in today’s fast-paced world",
-        "in today’s fast-paced age",
-        "in today’s modern world",
-        "in today’s modern age",
-        "in today’s digital world",
-        "in today’s digital age",
-        "in the ever-evolving landscape of",
-        "in the ever-evolving world of",
-        "in the ever-changing landscape of",
-        "in the ever-changing world of",
-        "in the rapidly changing landscape of",
-        "in the rapidly changing world of",
-        "in the realm of",
-        "in the digital age",
-        "in an era of",
-        "in an age of",
-        "when it comes to",
-        "at its core",
-        "in the world of",
-    ];
-    for phrase in phrases {
+    let phrases = ctx.lists.words("cliche-opener");
+    for phrase in phrases.iter() {
+        let phrase = phrase.to_lowercase();
+        let phrase = phrase.as_str();
         let mut from = 0usize;
         while let Some(pos) = lower[from..].find(phrase) {
             let off = from + pos;
@@ -277,12 +282,33 @@ fn manufactured_contrast(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const CONCLUSION_MARKERS: &[&str] = &[
+    "In conclusion",
+    "In summary",
+    "To sum up",
+    "In essence",
+    "Overall",
+    "Ultimately",
+    "All in all",
+];
+
+/// `(?m)^[ \t>]*(w1|w2|…)\b`, case-insensitive, built from a resolved word list;
+/// a never-match regex when the list is empty.
+fn line_start_alternation(words: &[String]) -> regex::Regex {
+    if words.is_empty() {
+        return helpers::never_match();
+    }
+    let alts: Vec<String> = words.iter().map(|w| regex::escape(w)).collect();
+    regex::RegexBuilder::new(&format!(r"(?m)^[ \t>]*({})\b", alts.join("|")))
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|_| helpers::never_match())
+}
+
 fn conclusion_restate(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| regex::RegexBuilder::new(
-        r"(?m)^[ \t>]*(In conclusion|In summary|To sum up|In essence|Overall|Ultimately|All in all)\b"
-    ).case_insensitive(true).build().unwrap());
-    helpers::scan(ctx, re, |off, len, _| {
+    let words = ctx.lists.words("conclusion-restate");
+    let re = line_start_alternation(&words);
+    helpers::scan(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "conclusion-restate",
@@ -340,29 +366,28 @@ fn despite_challenges_closer(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const SIGNIFICANCE_BOILERPLATE: &[&str] = &[
+    "stands as a testament",
+    "marking a pivotal moment",
+    "leaving an indelible mark",
+    "enduring legacy",
+    "key turning point",
+    "plays a vital role",
+    "plays a crucial role",
+    "plays a pivotal role",
+    "plays a key role",
+    "plays a significant role",
+    "rich history",
+    "rich tapestry",
+    "rich tradition",
+    "navigating the complexities of",
+    "navigate the complexities of",
+    "navigating the complex landscape of",
+];
+
 fn significance_boilerplate(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "stands as a testament",
-            "marking a pivotal moment",
-            "leaving an indelible mark",
-            "enduring legacy",
-            "key turning point",
-            "plays a vital role",
-            "plays a crucial role",
-            "plays a pivotal role",
-            "plays a key role",
-            "plays a significant role",
-            "rich history",
-            "rich tapestry",
-            "rich tradition",
-            "navigating the complexities of",
-            "navigate the complexities of",
-            "navigating the complex landscape of",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("significance-boilerplate");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "significance-boilerplate",
@@ -461,18 +486,17 @@ fn assistant_meta(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const SYCOPHANCY: &[&str] = &[
+    "Great question",
+    "You're absolutely right",
+    "That's a great point",
+    "Excellent question",
+    "What a fascinating",
+];
+
 fn sycophancy(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "Great question",
-            "You're absolutely right",
-            "That's a great point",
-            "Excellent question",
-            "What a fascinating",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("sycophancy");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "sycophancy",
@@ -485,28 +509,27 @@ fn sycophancy(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const HEDGES: &[&str] = &[
+    "it could be argued",
+    "arguably",
+    "to some extent",
+    "in many ways",
+    "in some ways",
+    "more often than not",
+    "generally speaking",
+    "broadly speaking",
+    "in a sense",
+    "for all intents and purposes",
+    "tends to",
+    "somewhat",
+    "sort of",
+    "kind of",
+];
+
 fn hedge_overuse(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "it could be argued",
-            "arguably",
-            "to some extent",
-            "in many ways",
-            "in some ways",
-            "more often than not",
-            "generally speaking",
-            "broadly speaking",
-            "in a sense",
-            "for all intents and purposes",
-            "tends to",
-            "somewhat",
-            "sort of",
-            "kind of",
-        ])
-    });
+    let re = ctx.lists.phrase_regex("hedge-overuse");
     let mut hits = Vec::new();
-    helpers::scan_fancy(ctx, re, |off, len, _| hits.push((off, len)));
+    helpers::scan_fancy(ctx, &re, |off, len, _| hits.push((off, len)));
     let rate = hits.len() as f64 / ctx.word_count.max(1) as f64 * 1000.0;
     if hits.len() >= 2 && (hits.len() >= 3 || rate >= 3.0) {
         let sev = if hits.len() >= 4 {
@@ -528,29 +551,28 @@ fn hedge_overuse(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const CONVERSATIONAL_SCAFFOLDING: &[&str] = &[
+    "let's delve into",
+    "let's break this down",
+    "let's dive in",
+    "let's explore",
+    "let's unpack",
+    "deep dive into",
+    "take a deep dive",
+    "think of it as",
+    "think of it like",
+    "imagine a world where",
+    "to put it simply",
+    "here's the kicker",
+    "here's the thing",
+    "buckle up",
+    "spoiler alert",
+    "plot twist",
+];
+
 fn conversational_scaffolding(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "let's delve into",
-            "let's break this down",
-            "let's dive in",
-            "let's explore",
-            "let's unpack",
-            "deep dive into",
-            "take a deep dive",
-            "think of it as",
-            "think of it like",
-            "imagine a world where",
-            "to put it simply",
-            "here's the kicker",
-            "here's the thing",
-            "buckle up",
-            "spoiler alert",
-            "plot twist",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("conversational-scaffolding");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "conversational-scaffolding",
@@ -584,14 +606,18 @@ fn superficial_ing_participle(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const TRANSITIONS: &[&str] = &[
+    "Additionally",
+    "Moreover",
+    "Furthermore",
+    "However",
+    "Consequently",
+    "Nevertheless",
+];
+
 fn transition_scaffolding(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<regex::Regex> = OnceLock::new();
-    let re =
-        RE.get_or_init(|| {
-            regex::RegexBuilder::new(
-        r"(?m)^[ \t>]*(Additionally|Moreover|Furthermore|However|Consequently|Nevertheless)\b"
-    ).case_insensitive(true).build().unwrap()
-        });
+    let words = ctx.lists.words("transition-scaffolding");
+    let re = line_start_alternation(&words);
     let hits: Vec<_> = re.find_iter(&ctx.masked).collect();
     if hits.len() >= 2 {
         for m in hits {
@@ -677,27 +703,26 @@ fn emphasis_as_heading(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const HYPE_INTENSIFIER: &[&str] = &[
+    "greatly",
+    "vastly",
+    "hugely",
+    "immensely",
+    "enormously",
+    "tremendously",
+    "remarkably",
+    "crucial",
+    "crucially",
+    "pivotal",
+    "paramount",
+    "invaluable",
+    "one of the most",
+    "a great deal of",
+];
+
 fn hype_intensifier(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "greatly",
-            "vastly",
-            "hugely",
-            "immensely",
-            "enormously",
-            "tremendously",
-            "remarkably",
-            "crucial",
-            "crucially",
-            "pivotal",
-            "paramount",
-            "invaluable",
-            "one of the most",
-            "a great deal of",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("hype-intensifier");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "hype-intensifier",
@@ -917,23 +942,22 @@ fn tricolon_overuse(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const SERVES_AS_COPULA: &[&str] = &[
+    "serves as",
+    "serve as",
+    "stands as",
+    "stand as",
+    "acts as",
+    "functions as",
+    "represents a",
+    "exemplifies",
+    "embodies",
+];
+
 fn serves_as_copula(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "serves as",
-            "serve as",
-            "stands as",
-            "stand as",
-            "acts as",
-            "functions as",
-            "represents a",
-            "exemplifies",
-            "embodies",
-        ])
-    });
+    let re = ctx.lists.phrase_regex("serves-as-copula");
     let mut hits: Vec<(usize, usize)> = Vec::new();
-    helpers::scan_fancy(ctx, re, |off, len, _| hits.push((off, len)));
+    helpers::scan_fancy(ctx, &re, |off, len, _| hits.push((off, len)));
     if hits.len() >= 2 {
         for (off, len) in hits {
             em.emit(
@@ -949,21 +973,20 @@ fn serves_as_copula(ctx: &Ctx, em: &mut Emitter) {
     }
 }
 
+pub const MEDIA_COVERAGE: &[&str] = &[
+    "featured in",
+    "profiled in",
+    "has been featured",
+    "and other prominent outlets",
+    "maintains a strong",
+    "a strong social media presence",
+    "an active digital presence",
+    "garnered attention",
+];
+
 fn media_coverage_boilerplate(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "featured in",
-            "profiled in",
-            "has been featured",
-            "and other prominent outlets",
-            "maintains a strong",
-            "a strong social media presence",
-            "an active digital presence",
-            "garnered attention",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("media-coverage-boilerplate");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "media-coverage-boilerplate",
@@ -976,21 +999,20 @@ fn media_coverage_boilerplate(ctx: &Ctx, em: &mut Emitter) {
     });
 }
 
+pub const FUTURE_OUTLOOK: &[&str] = &[
+    "the future of",
+    "evolving landscape",
+    "continues to evolve",
+    "is poised to",
+    "on the horizon",
+    "in the years to come",
+    "only time will tell",
+    "the road ahead",
+];
+
 fn future_outlook_speculation(ctx: &Ctx, em: &mut Emitter) {
-    static RE: OnceLock<fancy_regex::Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        helpers::phrase_list(&[
-            "the future of",
-            "evolving landscape",
-            "continues to evolve",
-            "is poised to",
-            "on the horizon",
-            "in the years to come",
-            "only time will tell",
-            "the road ahead",
-        ])
-    });
-    helpers::scan_fancy(ctx, re, |off, len, _| {
+    let re = ctx.lists.phrase_regex("future-outlook-speculation");
+    helpers::scan_fancy(ctx, &re, |off, len, _| {
         em.emit(
             ctx,
             "future-outlook-speculation",

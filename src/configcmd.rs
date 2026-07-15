@@ -19,7 +19,7 @@ pub fn run(
                 println!("{}", serde_json::to_string_pretty(&resolved)?);
             } else {
                 println!(
-                    "# effective config (DEFAULTS → ~/.mari/config.json → {}/.mari/config.json → config.local.json)",
+                    "# effective config (DEFAULTS → {}/.mari/config.json → config.local.json)",
                     root.display()
                 );
                 for p in config::known_paths() {
@@ -52,12 +52,6 @@ pub fn run(
                 eprintln!("usage: mari config set <dotted.path> <value>");
                 return Ok(2);
             };
-            if p == "embedding.model" && raw != "jina-embeddings-v5-text-nano" {
-                eprintln!(
-                    "✗ embedding.model must be jina-embeddings-v5-text-nano; no other embedding identity is supported"
-                );
-                return Ok(2);
-            }
             if !config::known_paths().iter().any(|k| k == p) {
                 // Allow subtree paths that exist as objects (e.g. slack.chunking).
                 let d = config::defaults();
@@ -67,11 +61,8 @@ pub fn run(
                 }
             }
             let coerced = config::coerce(p, raw)?;
-            config::set_global(p, coerced.clone())?;
+            config::set_repo(&root, p, coerced.clone())?;
             println!("✓ {p} = {coerced}");
-            if config::needs_rebuild_reminder(p) {
-                println!("note: this changes indexing — run `mari sync --rebuild` to re-embed.");
-            }
             Ok(0)
         }
         Some(other) => {
@@ -92,7 +83,7 @@ fn format_config_line(path: &str, value: &Value, root: &Path) -> String {
     format!(
         "{path} = {value}  # source: {}; set: {}",
         effective_source(path, root),
-        config::global_config_path().display()
+        config::repo_config_path(root).display()
     )
 }
 
@@ -102,10 +93,6 @@ fn effective_source(path: &str, root: &Path) -> String {
     if config::get_path(&defaults, path).is_some() {
         layers.push("defaults");
     }
-    let global = config::read_json(&config::global_config_path());
-    if config::get_path(&global, path).is_some() {
-        layers.push("global");
-    }
     let repo = config::read_json(&config::repo_config_path(root));
     if config::get_path(&repo, path).is_some() {
         layers.push("repo");
@@ -114,48 +101,22 @@ fn effective_source(path: &str, root: &Path) -> String {
     if config::get_path(&local, path).is_some() {
         layers.push("repo-local");
     }
-    source_label(&layers, config::is_tracked_ref_dotted(path))
+    source_label(&layers)
 }
 
-fn source_label(layers: &[&str], union_list: bool) -> String {
+fn source_label(layers: &[&str]) -> String {
     if layers.is_empty() {
         return "unknown".into();
     }
-    if union_list {
-        layers.join("+")
-    } else {
-        layers.last().unwrap().to_string()
-    }
+    layers.last().unwrap().to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{run, source_label};
+    use super::source_label;
 
     #[test]
     fn scalar_source_label_uses_last_overlay() {
-        assert_eq!(source_label(&["defaults", "global", "repo"], false), "repo");
-    }
-
-    #[test]
-    fn tracked_list_source_label_keeps_all_contributors() {
-        assert_eq!(
-            source_label(&["defaults", "global", "repo"], true),
-            "defaults+global+repo"
-        );
-    }
-
-    #[test]
-    fn config_rejects_non_jina_embedding_model_identity() {
-        assert_eq!(
-            run(
-                Some("set"),
-                Some("embedding.model"),
-                Some("other-model"),
-                false
-            )
-            .unwrap(),
-            2
-        );
+        assert_eq!(source_label(&["defaults", "repo"]), "repo");
     }
 }

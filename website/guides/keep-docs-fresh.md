@@ -51,4 +51,4 @@ When a source-language file has translation siblings, editing it raises an i18n 
 mari i18n conform docs
 ```
 
-Add `--deep` for the attention pass that flags source passages a translation barely covers.
+Use `--strict` in continuous integration so structural differences fail the check.
