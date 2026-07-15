@@ -1,12 +1,39 @@
 # Mari
 
-[![Claude Code plugin](https://img.shields.io/badge/Claude_Code-plugin-D97757)](https://github.com/MariHQ/mari-cc)
-[![Latest release](https://img.shields.io/github/v/release/MariHQ/mari-cc?display_name=tag&sort=semver)](https://github.com/MariHQ/mari-cc/releases)
-[![173 prose rules](https://img.shields.io/badge/prose_rules-170+-2E8B57)](#rules)
-[![49 word lists](https://img.shields.io/badge/word_lists-49-1E6FA8)](#rules)
-[![Local first](https://img.shields.io/badge/local-first-0A7B83)](#local-by-default)
-[![MIT license](https://img.shields.io/github/license/MariHQ/mari-cc)](LICENSE)
+Mari is a local-first Claude Code plugin for curating, searching, and sharing
+your team's product knowledge — and for keeping everything Claude writes clean.
+It answers "what should our AI know, trust, and reuse?"
 
+Everything runs on your machine. Indexing, embeddings, search, and the prose
+detector are all local; there are no external LLM calls from the CLI and your
+credentials never enter the repo.
+
+## What it does
+
+- **Ingest and search.** Local hybrid (semantic + keyword) search over the
+  knowledge your team already uses: Slack, GitHub, Google Drive, Jira,
+  Confluence, Zendesk, Salesforce, HubSpot, Microsoft 365, Discord, Linear,
+  Granola, mailing-list archives (Apache Pony Mail), git history, and local
+  files (Markdown, HTML, PDF, and Office
+  documents).
+- **Curate.** Tag knowledge as canonical, stale, deprecated, draft, internal,
+  customer-facing, or needs-review; keep a glossary and a facts ledger; audit
+  the knowledge base.
+- **Improve AI-authored prose.** A deterministic ~170-rule detector for AI
+  slop, clarity, house style (Microsoft/Google/AP/Chicago/plain), and
+  inclusive language, plus editorial verbs (`deslop`, `tighten`, `clarify`,
+  `sharpen`, `understate`, `critique`, `polish`, …) and an opt-in grammar pass.
+- **Ground claims.** Factcheck content against a facts ledger, source-of-truth
+  files, or the knowledge base — catching contradictions and unsupported
+  claims before publish, with an optional local attention model for deep
+  grounding.
+- **Keep it alive.** A post-edit hook, doc↔code lineage, edit-notify rules and
+  nudges, localization staleness checks, and docsite generation/validation.
+
+## Install
+
+Mari is a Rust binary. Prebuilt binaries and an install channel are being set
+up (see `docs/05-distribution.md`); until then, build from source:
 
 ```sh
 /plugin marketplace add MariHQ/mari-cc
