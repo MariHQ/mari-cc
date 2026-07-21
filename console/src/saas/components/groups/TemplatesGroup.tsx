@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { FileStack, FilePlus2 } from "lucide-react";
 import { api, type Template } from "@saas/lib/client";
 import { toast } from "../feedback";
-import { Page, Badge, card, btnPrimary, btnDanger, focusRing } from "../console-ui";
+import { Page, Badge, card, btnPrimary, btnDanger, focusRing } from "../ui";
 
 function TemplateCard({ tpl, onDone }: { tpl: Template; onDone: () => void }) {
   const [title, setTitle] = useState("");

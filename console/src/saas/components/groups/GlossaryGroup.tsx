@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookMarked } from "lucide-react";
 import { api } from "@saas/lib/client";
-import { Page, Table, Badge, card } from "../console-ui";
+import { Page, Table, Badge, card } from "../ui";
 
 type GlossaryData = { file: string; terms: { use: string; variants: string[] }[] };
 

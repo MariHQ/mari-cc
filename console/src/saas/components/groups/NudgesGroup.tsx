@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Plus, Trash2, Link2, X } from "lucide-react";
 import { api } from "@saas/lib/client";
 import type { Nudge } from "@saas/lib/client";
-import { Page, DataTable, Drawer, btn, btnPrimary, btnDanger, card, focusRing } from "../console-ui";
-import type { Column } from "../console-ui";
+import { Page, DataTable, Drawer, btn, btnPrimary, btnDanger, card, focusRing } from "../ui";
+import type { Column } from "../ui";
 import { toast } from "../feedback";
 
 const inputCls =

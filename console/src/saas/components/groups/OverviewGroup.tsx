@@ -1,4 +1,4 @@
-import { Page, card } from "../console-ui";
+import { Page, card } from "../ui";
 
 function Stat({ value, label }: { value: string; label: string }) {
   return (

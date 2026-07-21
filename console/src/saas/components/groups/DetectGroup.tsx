@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { SpellCheck, Play, Ban, EyeOff, FileText, Type } from "lucide-react";
 import { api, type DetectResult, type DetectFinding } from "@saas/lib/client";
-import { Page, Badge, card, btn, btnPrimary, focusRing } from "../console-ui";
+import { Page, Badge, card, btn, btnPrimary, focusRing } from "../ui";
 import { toast } from "../feedback";
 import { DetectorLists } from "./DetectorLists";
 

@@ -7,7 +7,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { api, type ConfigResponse, type ConfigPath } from "@saas/lib/client";
-import { Page, Badge, card, btn, btnPrimary, focusRing } from "../console-ui";
+import { Page, Badge, card, btn, btnPrimary, focusRing } from "../ui";
 import { toast } from "../feedback";
 
 type Scope = "repo";

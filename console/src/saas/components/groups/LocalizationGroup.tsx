@@ -6,7 +6,7 @@ import {
   type LocalizationSource,
   type LocalizationCell,
 } from "@saas/lib/client";
-import { Page, Badge, card, focusRing } from "../console-ui";
+import { Page, Badge, btn, card, focusRing } from "../ui";
 
 const shortName = (p: string) => p.split("/").pop() || p;
 

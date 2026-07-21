@@ -17,8 +17,8 @@ import {
 } from "lucide-react";
 import { api } from "@saas/lib/client";
 import type { EditRule, DetectorInfo, DetectorRule } from "@saas/lib/client";
-import { Page, DataTable, Drawer, Badge, btn, btnPrimary, btnDanger, card, focusRing } from "../console-ui";
-import type { Column } from "../console-ui";
+import { Page, DataTable, Drawer, Badge, btn, btnPrimary, btnDanger, card, focusRing } from "../ui";
+import type { Column } from "../ui";
 import { toast } from "../feedback";
 
 const inputCls =

@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ChevronRight, Menu, X, Search } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { STEPS, stepById, type StepId, type Step } from "@saas/lib/pipeline";
-import { focusRing } from "./console-ui";
+import { focusRing } from "./ui";
 
 import { OverviewGroup } from "./groups/OverviewGroup";
 import { GlossaryGroup } from "./groups/GlossaryGroup";

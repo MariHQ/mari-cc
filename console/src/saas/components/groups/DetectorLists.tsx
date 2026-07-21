@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ListChecks, RotateCcw, Save, Search } from "lucide-react";
 import { api, type DetectorList } from "@saas/lib/client";
-import { card, btn, btnPrimary, focusRing, Badge } from "../console-ui";
+import { card, btn, btnPrimary, focusRing, Badge } from "../ui";
 import { toast } from "../feedback";
 
 /* A word/phrase list edits as one entry per line; map/weighted/groups edit as
